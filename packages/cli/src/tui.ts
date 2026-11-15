@@ -4544,9 +4544,18 @@ export function createTuiExtension(
       });
       pi.registerCommand("sign", {
         description: "Sign the current settled run",
-        handler: commandContext(state, async (runtime, context) => {
+        handler: commandContext(state, async (runtime, context, args) => {
           if (process.stdin.isTTY !== true) {
             context.ui.notify("sign requires a top-level TTY", "error");
+            return;
+          }
+          const requested = args.trim();
+          if (
+            requested !== "" &&
+            requested !== "complete" &&
+            requested !== "incomplete"
+          ) {
+            context.ui.notify("usage: /sign [complete|incomplete]", "warning");
             return;
           }
           const runId = state.lastRunId ?? runtime.host.currentRunId;
@@ -4560,21 +4569,29 @@ export function createTuiExtension(
             );
             return;
           }
-          const allowed = await context.ui.confirm(
-            "codepunk sign",
-            `Sign ${runId} as complete?`,
-          );
-          if (!allowed) {
+          const verdict =
+            requested === "complete" || requested === "incomplete"
+              ? requested
+              : await context.ui.select(`Sign ${runId}`, [
+                  "Sign as complete",
+                  "Sign as incomplete",
+                  "Cancel",
+                ]);
+          if (verdict === undefined || verdict === "Cancel") {
             return;
           }
+          const resolvedVerdict: "complete" | "incomplete" =
+            verdict === "Sign as incomplete" || verdict === "incomplete"
+              ? "incomplete"
+              : "complete";
           try {
-            const result = await runtime.signInProcess("complete", {
+            const result = await runtime.signInProcess(resolvedVerdict, {
               channel: "tui",
               tty: true,
             });
             await notify(
               context,
-              `verdict ${result.verdict} · ${result.artifactPath}`,
+              `verdict ${result.verdict.verdict} · ${result.artifactPath}`,
             );
           } catch (error) {
             context.ui.notify(

@@ -1052,6 +1052,108 @@ test("a real pty undoes and redoes Codepunk file changes", async () => {
   });
 });
 
+test("a real pty signs a settled run with an explicit verdict", async () => {
+  await withTempDirectory("codepunk-tui-sign-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(path.join(project, "note.txt"), "before\n");
+    const model = await startWriteModelServer({
+      path: "note.txt",
+      content: "after\n",
+    });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[approval]",
+        'mode = "allow"',
+        "",
+      ].join("\n"),
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(
+        session,
+        "/sign maybe",
+        "usage: /sign [complete|incomplete]",
+      );
+      session.child.stdin.write("write note.txt\r");
+      await waitForOutput(session, "WRITE_DONE", "model write");
+
+      await runCommandAfter(session, "/sign", "Sign as incomplete");
+      session.child.stdin.write("\u001b[B\r");
+      await waitForOutput(session, "verdict incomplete ·", "incomplete sign");
+
+      const eventFiles = (await fs.readdir(home, { recursive: true })).filter(
+        (entry) => entry.endsWith("session.jsonl"),
+      );
+      assert.equal(eventFiles.length, 1);
+      const events = (await fs.readFile(path.join(home, eventFiles[0]), "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      const signOff = events.find((entry) => entry.kind === "verdict/sign_off");
+      assert.ok(signOff);
+      assert.equal(signOff.data.signed_verdict, "incomplete");
+      assert.equal(signOff.data.channel, "tui");
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
+    }
+  });
+});
+
 test("a real pty creates a human-confirmed commit and records it", async () => {
   await withTempDirectory("codepunk-tui-commit-", async (root) => {
     const project = path.join(root, "project");
