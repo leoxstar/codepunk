@@ -1,0 +1,55 @@
+export {
+  ClaimConflictError,
+  ClaimStaleError,
+  ClaimStore,
+  type ClaimRecord,
+} from "./claims.ts";
+export {
+  Board,
+  WorkerPool,
+  decideSwarm,
+  type BoardWorker,
+  type SwarmDecision,
+  type SwarmDecisionInput,
+  type WorkerBudget,
+  type WorkerConfinement,
+  type WorkerEvent,
+  type WorkerJob,
+  type WorkerResult,
+  type WorkerStatus,
+  type WorkerUsage,
+} from "./pool.ts";
+export {
+  Subagent,
+  SubagentDispatcher,
+  SubagentError,
+  assertSubagentAction,
+  assertSubagentMask,
+  assertSubagentWriteTarget,
+  type SubagentPermissionMode,
+  type SubagentRequest,
+  type SubagentResult,
+  type SubagentHandle,
+  type SubagentStatus,
+  type SubagentTool,
+  type SubagentToolMask,
+} from "./subagent.ts";
+export {
+  WorkerSandbox,
+  WorkerSandboxError,
+  assertDepthTokenFormat,
+  assertWorkerArgv,
+  assertWorkerCommand,
+  defaultWorkerInstallRoots,
+  readHostLaunchToken,
+  spawnGuardedHost,
+  verifyGuardedHostLaunch,
+  type SpawnGuardedHostOptions,
+  type WorkerSandboxOptions,
+} from "./sandbox.ts";
+export {
+  ChildHostError,
+  runReadOnlySubagent,
+  type ReadOnlySubagentOptions,
+  type ReadOnlySubagentResult,
+} from "./child-host.ts";
