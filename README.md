@@ -76,7 +76,9 @@ An interactive start asks when project resources exist and no saved decision
 applies. The prompt is Pi's own `SelectList`: Up/Down moves the pointer, Enter
 confirms, Page Up/Page Down move a page, and Escape or Ctrl+C cancels. It has no
 numbered menu. The highlighted default is `Trust this workspace and remember`;
-choose `Trust for this session only` when the decision should not persist.
+choose `Trust for this session only` when the decision should not persist, or
+`Do not trust for this session only` to inspect the repository once without
+writing a saved decision.
 Print mode cannot prompt, so it refuses
 to start while the decision is unresolved and project resources exist; pass
 `--trust`, `--no-trust`, or save a decision first. An untrusted session skips
@@ -259,9 +261,11 @@ saved for the next session because the shell provider is bound when the host
 starts. Other TOML sections and comments are preserved.
 
 The approval selector offers `Allow once`, `Allow this exact command for the
-session`, `Always allow this exact command`, and `Deny` when the action is a
-simple shell argv. Session approval applies only to the same tool, argv, and
-working directory. Persistent approval first opens a separate rule preview
+session`, `Always allow this exact command`, `Deny`, and `Deny with guidance
+for the model` when the action is a simple shell argv. If the request has no
+reusable argv and cwd, the two exact-command options are hidden. Session
+approval applies only to the same tool, argv, and working directory.
+Persistent approval first opens a separate rule preview
 showing the exact argv, cwd, match scope, and storage location; cancelling the
 preview writes nothing. Confirming rewrites the scoped rule file with the same
 argv, cwd, and executable digest, then selects the `scoped` autonomy profile

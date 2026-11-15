@@ -1047,6 +1047,10 @@ async function resolveRunWorkspaceTrust(
       label: "Do not trust and remember this decision",
       value: "never" as const,
     },
+    {
+      label: "Do not trust for this session only",
+      value: "never-session" as const,
+    },
   ]).catch((error: unknown) => {
     if (error instanceof TerminalSelectCancelledError) {
       throw new Error(
@@ -1057,6 +1061,9 @@ async function resolveRunWorkspaceTrust(
   });
   if (decision === "session") {
     return { ...resolved, trusted: true, source: "prompt" };
+  }
+  if (decision === "never-session") {
+    return { ...resolved, trusted: false, source: "prompt" };
   }
   if (decision === "always") {
     const storePath = await saveWorkspaceTrust(paths.home, resolved.root, true);

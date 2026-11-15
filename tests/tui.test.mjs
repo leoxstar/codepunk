@@ -1127,6 +1127,55 @@ test("a real pty cancels workspace trust without hanging", async () => {
   });
 });
 
+test("a real pty can deny workspace trust for one session without saving", async () => {
+  await withTempDirectory("codepunk-tui-trust-deny-session-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "DENY_SESSION_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "Trust this workspace?", "trust prompt");
+      assert.match(
+        stripAnsi(session.output()),
+        /Do not trust for this session only/u,
+      );
+      session.child.stdin.write("\u001b[B\u001b[B\u001b[B\r");
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      assert.match(session.output(), /trust untrusted/u);
+      await assert.rejects(
+        fs.readFile(path.join(home, "trust.json"), "utf8"),
+        /ENOENT/u,
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
 test("--no-skills keeps project skills out of the /trust view", async () => {
   await withTempDirectory("codepunk-tui-trust-noskills-", async (root) => {
     const project = path.join(root, "project");

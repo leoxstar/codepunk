@@ -188,9 +188,11 @@ permission boundary.
 
 The interactive TUI prompts when protected resources exist and no saved
 decision applies. The highlighted default is persistent trust; the other
-choices are trust for this session only or do not trust and remember. This
-matches Pi's default trust selector and avoids the surprise of a session-only
-choice being re-asked on the next launch.
+choices are trust for this session only, do not trust and remember, or do not
+trust for this session only. The last two keep an untrusted repository out of
+the prompt's persistent store, so inspecting a suspicious checkout once does
+not write a decision. This follows Pi's remember/session split while keeping
+the exact-root rule.
 The prompt lists each protected resource with its class, file type, size, and
 SHA-256 preview before the decision. Digests are bounded to 1 MiB of content
 and 512 directory entries per resource, and symlinks are hashed as links
