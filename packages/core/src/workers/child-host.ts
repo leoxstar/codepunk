@@ -76,6 +76,12 @@ export interface ReadOnlySubagentOptions {
     max_wall_ms?: number;
     max_disk_bytes?: number;
   };
+  /**
+   * Observe bounded child progress without exposing the child's full event
+   * stream. Callback failures are ignored so a UI consumer cannot abort a
+   * running child.
+   */
+  onEvent?: (event: SubagentStreamEvent) => void;
   signal?: AbortSignal;
 }
 
@@ -115,6 +121,10 @@ export interface SubagentHostResult {
   changed_files: number | null;
 }
 
+export type SubagentStreamEvent =
+  | { type: "assistant_delta"; text: string }
+  | { type: "tool_start"; tool: string };
+
 /** @deprecated Use SubagentHostResult; the host also supports mutable profiles. */
 export type ReadOnlySubagentResult = SubagentHostResult;
 
@@ -126,6 +136,23 @@ interface ChildAssistantMessage {
 interface ChildJsonEvent {
   type?: unknown;
   message?: ChildAssistantMessage;
+  assistantMessageEvent?: {
+    type?: unknown;
+    delta?: unknown;
+  };
+  toolName?: unknown;
+}
+
+function emitStreamEvent(
+  options: ReadOnlySubagentOptions,
+  event: SubagentStreamEvent,
+): void {
+  try {
+    options.onEvent?.(event);
+  } catch {
+    // Progress rendering is observational. A broken UI callback must not
+    // change the child's execution or its evidence.
+  }
 }
 
 function assistantText(event: ChildJsonEvent): string | null {
@@ -592,8 +619,24 @@ async function runChild(
           if (text !== null) {
             summary = text;
           }
+          if (
+            event.type === "message_update" &&
+            event.assistantMessageEvent?.type === "text_delta" &&
+            typeof event.assistantMessageEvent.delta === "string" &&
+            event.assistantMessageEvent.delta.length > 0
+          ) {
+            emitStreamEvent(options, {
+              type: "assistant_delta",
+              text: event.assistantMessageEvent.delta,
+            });
+          }
           if (event.type === "tool_execution_start") {
             sawToolExecution = true;
+            emitStreamEvent(options, {
+              type: "tool_start",
+              tool:
+                typeof event.toolName === "string" ? event.toolName : "tool",
+            });
             try {
               context.consumeToolCall();
             } catch (error) {

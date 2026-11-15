@@ -539,6 +539,7 @@ export {
   type ReadOnlySubagentResult,
   type SubagentHostOptions,
   type SubagentHostResult,
+  type SubagentStreamEvent,
   type SpawnGuardedHostOptions,
   type SubagentPermissionMode,
   type SubagentRequest,

@@ -55,4 +55,5 @@ export {
   type ReadOnlySubagentResult,
   type SubagentHostOptions,
   type SubagentHostResult,
+  type SubagentStreamEvent,
 } from "./child-host.ts";

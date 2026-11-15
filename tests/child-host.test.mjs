@@ -207,11 +207,13 @@ test("read-only child runs as an independent session with evidence", async () =>
     const modelServer = await startChildModelServer();
     await writeModelHome(home, modelServer.baseUrl);
     try {
+      const streamed = [];
       const result = await runChild({
         cwd: project,
         parentSessionId: "parent-session",
         childSessionId: "child-session",
         prompt: "read the input file and summarize it",
+        onEvent: (event) => streamed.push(event),
         env: {
           ...process.env,
           CODEPUNK_HOME: home,
@@ -240,6 +242,18 @@ test("read-only child runs as an independent session with evidence", async () =>
       assert.equal(records.length, 1);
       assert.equal(records[0].tool, "read");
       assert.equal(core.evidenceRecordHash(records[0]), result.evidence_head);
+      assert.ok(
+        streamed.some(
+          (event) =>
+            event.type === "assistant_delta" &&
+            event.text.includes("child says hello"),
+        ),
+      );
+      assert.ok(
+        streamed.some(
+          (event) => event.type === "tool_start" && event.tool === "read",
+        ),
+      );
 
       const sessionLogs = (await fs.readdir(home, { recursive: true })).filter(
         (entry) => entry.endsWith(path.join("child-session", "session.jsonl")),

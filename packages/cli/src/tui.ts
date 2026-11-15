@@ -69,6 +69,7 @@ import {
   type PermissionProfile,
   type SkillReloadResult,
   type SubagentHostResult,
+  type SubagentStreamEvent,
 } from "@codepunk/core";
 import type {
   ApprovalAnswer,
@@ -198,6 +199,9 @@ export interface BackgroundSubagent {
   status: "running" | "completed" | "failed" | "stopped";
   result: SubagentHostResult | null;
   error: string | null;
+  streamTail: string;
+  lastTool: string | null;
+  lastStreamUpdate: number;
   controller: AbortController;
   promise: Promise<void>;
 }
@@ -2354,6 +2358,9 @@ async function runSubagent(
     status: "running",
     result: null,
     error: null,
+    streamTail: "",
+    lastTool: null,
+    lastStreamUpdate: 0,
     controller,
     promise: Promise.resolve(),
   };
@@ -2418,6 +2425,7 @@ async function runSubagent(
         thinking,
         bare: runtime.isolation.bare,
         noSkills: runtime.isolation.skills,
+        onEvent: (event) => observeSubagentEvent(state, record, event),
         signal: controller.signal,
       });
       record.status = "completed";
@@ -2504,6 +2512,71 @@ function formatSubagents(state: TuiState): string {
     .join("\n");
 }
 
+const SUBAGENT_STREAM_LIMIT = 1_200;
+const SUBAGENT_WIDGET_LINES = 6;
+const SUBAGENT_WIDGET_INTERVAL_MS = 120;
+
+function appendSubagentStream(previous: string, text: string): string {
+  const combined = `${previous}${text}`.replace(/\r/gu, "");
+  return combined.length <= SUBAGENT_STREAM_LIMIT
+    ? combined
+    : combined.slice(-SUBAGENT_STREAM_LIMIT);
+}
+
+function subagentWidgetLines(record: BackgroundSubagent): string[] {
+  const preview = record.streamTail
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .slice(-2)
+    .map((line) => (line.length > 160 ? line.slice(-160) : line));
+  if (preview.length === 0) {
+    return [];
+  }
+  return [
+    `${record.childSessionId.slice(0, 10)} ${record.profile ?? "built-in"}${
+      record.lastTool === null ? "" : ` · ${record.lastTool}`
+    }`,
+    ...preview.map((line) => `  ${line}`),
+  ];
+}
+
+function applySubagentWidget(state: TuiState): void {
+  if (state.context === null) {
+    return;
+  }
+  const lines = [...(state.subagents?.values() ?? [])]
+    .filter((record) => record.status === "running")
+    .flatMap(subagentWidgetLines)
+    .slice(-SUBAGENT_WIDGET_LINES);
+  state.context.ui.setWidget(
+    "subagents",
+    lines.length === 0 ? undefined : lines,
+    { placement: "aboveEditor" },
+  );
+}
+
+function observeSubagentEvent(
+  state: TuiState,
+  record: BackgroundSubagent,
+  event: SubagentStreamEvent,
+): void {
+  if (record.status !== "running") {
+    return;
+  }
+  if (event.type === "assistant_delta") {
+    record.streamTail = appendSubagentStream(record.streamTail, event.text);
+  } else {
+    record.lastTool = event.tool;
+  }
+  const now = Date.now();
+  if (now - record.lastStreamUpdate < SUBAGENT_WIDGET_INTERVAL_MS) {
+    return;
+  }
+  record.lastStreamUpdate = now;
+  applySubagentWidget(state);
+}
+
 function updateSubagentStatus(state: TuiState): void {
   if (state.context === null) {
     return;
@@ -2520,6 +2593,7 @@ function updateSubagentStatus(state: TuiState): void {
       ? "none"
       : `${running} running / ${records.length} total`,
   );
+  applySubagentWidget(state);
 }
 
 async function manageSubagents(
@@ -3568,6 +3642,7 @@ export function applyReplacedRuntime(
 ): void {
   state.context = context;
   state.channel.attach(context);
+  context.ui.setWidget("subagents", undefined);
   state.ready = true;
   state.lastRunId = runtime.host.currentRunId;
   state.lastEvidence = runtime.ledger.all.length;

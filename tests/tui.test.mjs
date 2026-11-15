@@ -3101,6 +3101,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
         `completed; use /agents result ${childSessionId}`,
         "/subagent completion",
       );
+      assert.match(session.output().slice(mark), /CHILD_OK/u);
       await runCommandAfter(
         session,
         `/agents result ${childSessionId}`,
