@@ -137,9 +137,11 @@ shell-free command line or URL, and reloads the server set.
 In the TUI, `/reload` re-reads `$CODEPUNK_HOME/mcp.toml` without replacing the
 Codepunk session: it starts the new server set, swaps the wrapped MCP tools,
 stops the previous server processes, and asks Pi to rebuild its tool registry.
-It also re-discovers skills in the same reload. Codepunk config and plugin
-inventory are still read at process start, so those changes still need a
-restart.
+It also re-discovers skills and user plugins in the same reload, and re-reads
+the layered Codepunk config. Approval mode, ordinary autonomy/scoped rules, and
+plugin enablement apply live; sandbox/filesystem/network grants, model routing,
+context/tools, session/budget/memory policy, TUI chrome, and the reviewer
+binding are reported for the next session.
 
 `login` is the only browser entry point. It runs Pi's sign-in flow against a
 loopback callback and stores the resulting client registration and tokens in
