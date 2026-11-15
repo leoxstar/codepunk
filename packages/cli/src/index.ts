@@ -19,6 +19,7 @@ import {
   DaemonServer,
   MemoryManager,
   collectCapabilities,
+  configSummary,
   createRuntime,
   daemonSocketPath,
   decidePolicy,
@@ -1461,17 +1462,25 @@ async function commandSessions(options: CliOptions): Promise<number> {
       { dryRun: !options.apply },
     );
     process.stdout.write(
-      `${plan.dryRun ? "DRY RUN" : "APPLIED"}: ${plan.actions.length} action(s)\n`,
+      options.json
+        ? `${JSON.stringify(plan)}\n`
+        : `${plan.dryRun ? "DRY RUN" : "APPLIED"}: ${plan.actions.length} action(s)\n`,
     );
-    for (const action of plan.actions) {
-      process.stdout.write(
-        `${action.kind} ${action.id} ${action.blocked === null ? "" : `[blocked: ${action.blocked}]`}\n`,
-      );
+    if (!options.json) {
+      for (const action of plan.actions) {
+        process.stdout.write(
+          `${action.kind} ${action.id} ${action.blocked === null ? "" : `[blocked: ${action.blocked}]`}\n`,
+        );
+      }
     }
     return 0;
   }
   const sessions = await listProjectSessions(paths.home, paths.projectId);
-  process.stdout.write(`${formatSessionList(sessions)}\n`);
+  process.stdout.write(
+    options.json
+      ? `${JSON.stringify(sessions)}\n`
+      : `${formatSessionList(sessions)}\n`,
+  );
   return 0;
 }
 
@@ -2695,7 +2704,16 @@ async function commandPermissions(options: CliOptions): Promise<number> {
       workspaceTrust,
       paths.additionalRoots,
     );
-    process.stdout.write(`${text}\n`);
+    process.stdout.write(
+      options.json
+        ? `${JSON.stringify({
+            summary: configSummary(config, paths.additionalRoots),
+            config_path: path.join(paths.home, "config.toml"),
+            workspace_trust: workspaceTrust,
+            additional_roots: paths.additionalRoots,
+          })}\n`
+        : `${text}\n`,
+    );
     return 0;
   }
   const group = options.positionals[1];
@@ -2708,7 +2726,7 @@ async function commandPermissions(options: CliOptions): Promise<number> {
         return 0;
       }
       process.stdout.write(
-        'scoped rules: none; choose "Always allow this exact command" in an approval, or pass --file\n',
+        'scoped rules: none; choose "Always allow this exact command" in an approval, or pass --scoped-rules <path>\n',
       );
       return 0;
     }

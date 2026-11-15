@@ -399,6 +399,39 @@ test("sessions and memory commands work through the product surface", async () =
   });
 });
 
+test("sessions emit machine-readable lists and prune plans", async () => {
+  await withTempDirectory("codepunk-cli-sessions-json-", async (root) => {
+    const { project, home } = await makeProject(root);
+    const empty = await runCli(["sessions", "--json"], { cwd: project, home });
+    assert.deepEqual(JSON.parse(empty.stdout), []);
+
+    await runCli(["memory", "add", "json session marker"], {
+      cwd: project,
+      home,
+    });
+    const listed = await runCli(["sessions", "--json"], {
+      cwd: project,
+      home,
+    });
+    const sessions = JSON.parse(listed.stdout);
+    assert.equal(sessions.length, 1);
+    assert.match(sessions[0].id, /^[A-Z0-9]{26}$/u);
+    assert.equal(sessions[0].title, null);
+    assert.equal(sessions[0].pinned, false);
+    assert.ok(sessions[0].last_seq > 0);
+
+    const prune = await runCli(["sessions", "prune", "--json"], {
+      cwd: project,
+      home,
+    });
+    const plan = JSON.parse(prune.stdout);
+    assert.equal(plan.dryRun, true);
+    assert.equal(plan.retainedCounts.sessions, 1);
+    assert.deepEqual(plan.actions, []);
+    assert.deepEqual(plan.warnings, []);
+  });
+});
+
 test("permission commands show effective modes, explain commands, and persist profiles", async () => {
   await withTempDirectory("codepunk-cli-permissions-", async (root) => {
     const { project, home } = await makeProject(root);
@@ -408,6 +441,17 @@ test("permission commands show effective modes, explain commands, and persist pr
     assert.match(shown.stdout, /behavior: ask prompts/u);
     assert.match(shown.stdout, /autonomy: ask/u);
     assert.match(shown.stdout, /sandbox: uncovered/u);
+    const shownJson = await runCli(["permissions", "--json"], {
+      cwd: project,
+      home,
+    });
+    const permissions = JSON.parse(shownJson.stdout);
+    assert.equal(permissions.config_path, path.join(home, "config.toml"));
+    assert.ok(Array.isArray(permissions.summary));
+    assert.ok(permissions.summary.includes("approval: ask"));
+    assert.ok(permissions.summary.includes("autonomy: ask"));
+    assert.equal(permissions.workspace_trust.trusted, true);
+    assert.deepEqual(permissions.additional_roots, []);
     const emptyRules = await runCli(["permissions", "--json", "rules"], {
       cwd: project,
       home,
