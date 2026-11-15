@@ -765,7 +765,17 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       await waitForOutput(session, "Trust this workspace?", "trust prompt");
       assert.match(session.output(), /AGENTS\.md/u);
       assert.match(session.output(), /sha256:[a-f0-9]{64}/u);
-      session.child.stdin.write("3\r");
+      assert.match(session.output(), /Up\/Down to move/u);
+      assert.match(session.output(), /\u2192 Trust for this session/u);
+      assert.doesNotMatch(session.output(), /1\. Trust for this session/u);
+      assert.doesNotMatch(session.output(), /1-3 to jump/u);
+      assert.doesNotMatch(session.output(), /\[1\/2\/3\]/u);
+      session.child.stdin.write("\u001b[B\u001b[B\r");
+      await waitForOutput(
+        session,
+        "selected: Do not trust and remember this decision",
+        "trust selection",
+      );
       await waitForOutput(session, "codepunk · auto/auto", "startup");
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([

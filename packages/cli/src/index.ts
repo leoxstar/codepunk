@@ -115,6 +115,10 @@ import {
   type TuiSessionTarget,
   type TuiState,
 } from "./tui.ts";
+import {
+  selectTerminalChoice,
+  TerminalSelectCancelledError,
+} from "./terminal-select.ts";
 
 const VERSION = "0.0.0";
 
@@ -1021,59 +1025,57 @@ async function resolveRunWorkspaceTrust(
     project.cwd,
     resourceOptions,
   );
-  const readline = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-  });
-  try {
-    process.stderr.write(
-      [
-        "",
-        "This workspace contains project resources that can change Codepunk's instructions or tools:",
-        ...previews.map(formatWorkspaceTrustResourcePreview),
-        `root: ${resolved.root}`,
-        "",
-        "1. Trust this workspace for this session",
-        "2. Always trust this workspace",
-        "3. Do not trust it and remember this decision",
-        "",
-      ].join("\n"),
-    );
-    const answer = (await readline.question("Trust this workspace? [1/2/3]: "))
-      .trim()
-      .toLowerCase();
-    if (answer === "1" || answer === "once" || answer === "session") {
-      return { ...resolved, trusted: true, source: "prompt" };
-    }
-    if (answer === "2" || answer === "always" || answer === "save") {
-      const storePath = await saveWorkspaceTrust(
-        paths.home,
-        resolved.root,
-        true,
+  process.stderr.write(
+    [
+      "",
+      "This workspace contains project resources that can change Codepunk's instructions or tools:",
+      ...previews.map(formatWorkspaceTrustResourcePreview),
+      `root: ${resolved.root}`,
+      "",
+    ].join("\n"),
+  );
+  const decision = await selectTerminalChoice("Trust this workspace?", [
+    {
+      label: "Trust for this session",
+      value: "session" as const,
+    },
+    {
+      label: "Always trust this workspace",
+      value: "always" as const,
+    },
+    {
+      label: "Do not trust and remember this decision",
+      value: "never" as const,
+    },
+  ]).catch((error: unknown) => {
+    if (error instanceof TerminalSelectCancelledError) {
+      throw new Error(
+        "workspace trust was not decided; choose an option or pass --trust / --no-trust",
       );
-      return {
-        ...resolved,
-        trusted: true,
-        source: "prompt",
-        savedPath: resolved.root,
-        storePath,
-      };
     }
-    const storePath = await saveWorkspaceTrust(
-      paths.home,
-      resolved.root,
-      false,
-    );
+    throw error;
+  });
+  if (decision === "session") {
+    return { ...resolved, trusted: true, source: "prompt" };
+  }
+  if (decision === "always") {
+    const storePath = await saveWorkspaceTrust(paths.home, resolved.root, true);
     return {
       ...resolved,
-      trusted: false,
+      trusted: true,
       source: "prompt",
       savedPath: resolved.root,
       storePath,
     };
-  } finally {
-    readline.close();
   }
+  const storePath = await saveWorkspaceTrust(paths.home, resolved.root, false);
+  return {
+    ...resolved,
+    trusted: false,
+    source: "prompt",
+    savedPath: resolved.root,
+    storePath,
+  };
 }
 
 function trustRuntimeOptions(trust: WorkspaceTrust): {
