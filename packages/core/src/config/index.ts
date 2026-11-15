@@ -123,6 +123,13 @@ export interface ConfigOverrides {
   model?: string | null;
   provider?: string | null;
   thinking?: ThinkingLevel | null;
+  /** Exact tool allowlist for this process, used by guarded child hosts. */
+  tools?: readonly string[] | null;
+  /** Per-process fallback chain, used by guarded child hosts. */
+  fallbackModels?: readonly string[] | null;
+  fallbackAllowCrossProvider?: boolean | null;
+  /** Additional system-prompt text appended after the configured layer. */
+  appendSystemPrompt?: string | null;
   approval?: ApprovalMode | null;
   reviewer?: ReviewerMode | null;
   reviewerModel?: string | null;
@@ -976,6 +983,47 @@ function applyCliOverrides(
   }
   if (overrides.thinking !== null && overrides.thinking !== undefined) {
     target.model.thinking = overrides.thinking;
+  }
+  if (overrides.tools !== null && overrides.tools !== undefined) {
+    const tools = [
+      ...new Set(overrides.tools.map((tool) => tool.trim())),
+    ].filter((tool) => tool.length > 0);
+    for (const tool of tools) {
+      if (!TOOL_NAMES.includes(tool as never)) {
+        throw new ConfigError(
+          `--tools contains unknown tool ${tool}`,
+          "tools.enabled",
+        );
+      }
+    }
+    target.tools.enabled = tools;
+  }
+  if (
+    overrides.fallbackModels !== null &&
+    overrides.fallbackModels !== undefined
+  ) {
+    target.model.fallback = overrides.fallbackModels.map((entry) =>
+      entry.trim(),
+    );
+  }
+  if (
+    overrides.fallbackAllowCrossProvider !== null &&
+    overrides.fallbackAllowCrossProvider !== undefined
+  ) {
+    target.model.fallback_allow_cross_provider =
+      overrides.fallbackAllowCrossProvider;
+  }
+  if (
+    overrides.appendSystemPrompt !== null &&
+    overrides.appendSystemPrompt !== undefined &&
+    overrides.appendSystemPrompt.length > 0
+  ) {
+    target.context.append = [
+      target.context.append,
+      overrides.appendSystemPrompt,
+    ]
+      .filter((entry) => entry.length > 0)
+      .join("\n\n");
   }
   if (overrides.approval !== null && overrides.approval !== undefined) {
     target.approval.mode = overrides.approval;

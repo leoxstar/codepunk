@@ -130,6 +130,10 @@ interface CliOptions {
   model: string | undefined;
   provider: string | undefined;
   thinking: string | undefined;
+  tools: string[] | undefined;
+  modelFallback: string[] | undefined;
+  fallbackAllowCrossProvider: boolean;
+  appendSystemPrompt: string | undefined;
   permissionMode: PermissionProfile | undefined;
   approval: "ask" | "deny" | "auto" | "allow" | undefined;
   reviewer: "off" | "model" | undefined;
@@ -263,6 +267,9 @@ function usage(): string {
     "      --model <provider/id>",
     "      --provider <id>",
     "      --thinking <level>",
+    "      --tools <read,search,write,edit,shell>",
+    "      --model-fallback <provider/id,...>",
+    "      --fallback-allow-cross-provider",
     `      --permission-mode ${PERMISSION_PROFILE_NAMES.join("|")}`,
     `      --approval ${APPROVAL_MODE_NAMES.join("|")}`,
     "      --approval-reviewer off|model   model review for auto-mode asks",
@@ -444,6 +451,10 @@ function parseCli(argv: string[]): CliOptions {
       model: { type: "string" },
       provider: { type: "string" },
       thinking: { type: "string" },
+      tools: { type: "string" },
+      "model-fallback": { type: "string" },
+      "fallback-allow-cross-provider": { type: "boolean" },
+      "append-system-prompt": { type: "string" },
       "permission-mode": { type: "string" },
       approval: { type: "string" },
       "approval-reviewer": { type: "string" },
@@ -660,6 +671,28 @@ function parseCli(argv: string[]): CliOptions {
   if (values.trust === true && values["no-trust"] === true) {
     throw new Error("--trust and --no-trust are mutually exclusive");
   }
+  const tools =
+    values.tools === undefined
+      ? undefined
+      : values.tools
+          .split(",")
+          .map((tool) => tool.trim())
+          .filter((tool) => tool.length > 0);
+  if (tools !== undefined && tools.length === 0) {
+    throw new Error("--tools must contain at least one tool name");
+  }
+  const modelFallback =
+    values["model-fallback"] === undefined
+      ? undefined
+      : values["model-fallback"]
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0);
+  if (modelFallback !== undefined && modelFallback.length === 0) {
+    throw new Error(
+      "--model-fallback must contain at least one provider/model",
+    );
+  }
   const trust =
     values.trust === true
       ? ("trusted" as const)
@@ -708,6 +741,11 @@ function parseCli(argv: string[]): CliOptions {
     model: values.model,
     provider: values.provider,
     thinking: values.thinking,
+    tools,
+    modelFallback,
+    fallbackAllowCrossProvider:
+      values["fallback-allow-cross-provider"] === true,
+    appendSystemPrompt: values["append-system-prompt"],
     permissionMode,
     approval,
     reviewer,
@@ -775,6 +813,16 @@ function configOverrides(options: CliOptions): ConfigOverrides {
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.thinking !== undefined
       ? { thinking: options.thinking as never }
+      : {}),
+    ...(options.tools !== undefined ? { tools: options.tools } : {}),
+    ...(options.modelFallback !== undefined
+      ? { fallbackModels: options.modelFallback }
+      : {}),
+    ...(options.fallbackAllowCrossProvider
+      ? { fallbackAllowCrossProvider: true }
+      : {}),
+    ...(options.appendSystemPrompt !== undefined
+      ? { appendSystemPrompt: options.appendSystemPrompt }
       : {}),
     ...(approval !== undefined ? { approval } : {}),
     ...(options.reviewer !== undefined ? { reviewer: options.reviewer } : {}),

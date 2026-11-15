@@ -354,6 +354,51 @@ test("CLI overrides environment, project, and user layers", async () => {
   });
 });
 
+test("child-host overrides can narrow tools and set a private model pool", async () => {
+  await withTempDirectory("codepunk-config-child-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "config.toml"),
+      [
+        "[context]",
+        'append = "base context"',
+        "",
+        "[model]",
+        'fallback = ["local/base"]',
+        "",
+      ].join("\n"),
+    );
+    const loaded = await core.loadConfig(
+      paths,
+      {},
+      {
+        tools: ["read", "search", "write"],
+        fallbackModels: ["local/one", "local/two"],
+        fallbackAllowCrossProvider: true,
+        appendSystemPrompt: "profile context",
+      },
+    );
+    assert.deepEqual(loaded.config.tools.enabled, ["read", "search", "write"]);
+    assert.deepEqual(loaded.config.model.fallback, ["local/one", "local/two"]);
+    assert.equal(loaded.config.model.fallback_allow_cross_provider, true);
+    assert.equal(
+      loaded.config.context.append,
+      "base context\n\nprofile context",
+    );
+    await assert.rejects(
+      () =>
+        core.loadConfig(
+          paths,
+          {},
+          {
+            tools: ["read", "memory_search", "unknown"],
+          },
+        ),
+      /unknown tool/u,
+    );
+  });
+});
+
 test("permission changes preserve unrelated user config and stay owner-only", async () => {
   await withTempDirectory("codepunk-config-permissions-", async (root) => {
     const { paths } = await makeProject(root);
