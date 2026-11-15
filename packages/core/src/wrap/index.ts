@@ -43,6 +43,7 @@ import {
   coverageFor,
   decidePolicy,
   effectsForTool,
+  isMcpProductTool,
   simpleShellArgv,
   type PolicyLayerInput,
   type PolicyMode,
@@ -249,7 +250,7 @@ function approvalArguments(
   tool: string,
   params: Record<string, unknown>,
 ): { preview: string; sha256: string } | null {
-  if (!tool.startsWith("mcp__")) {
+  if (!isMcpProductTool(tool)) {
     return null;
   }
   return {
@@ -264,7 +265,7 @@ function coveragePreview(
   tool: string,
   sandbox: ShellProvider | null,
 ): string | undefined {
-  if (tool.startsWith("mcp__")) {
+  if (isMcpProductTool(tool)) {
     return "uncovered: MCP server executes outside Codepunk's sandbox";
   }
   if (isShellTool(tool)) {
@@ -494,7 +495,7 @@ function shellCoverage(
   allowed: boolean,
   sandbox: ShellProvider | null,
 ): "enforced" | "uncovered" | "app-layer" {
-  if (tool.startsWith("mcp__")) {
+  if (isMcpProductTool(tool)) {
     return "uncovered";
   }
   if (tool === "bash" || tool === "exec" || tool === "user_bash") {
@@ -504,7 +505,7 @@ function shellCoverage(
 }
 
 function evidenceSource(tool: string): EvidenceRecord["source"] {
-  return tool.startsWith("mcp__") ? "mcp" : "tool";
+  return isMcpProductTool(tool) ? "mcp" : "tool";
 }
 
 function baseRecord(

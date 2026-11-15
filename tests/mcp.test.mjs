@@ -602,6 +602,197 @@ test("MCP results use Pi's model-facing output limit", async () => {
   });
 });
 
+test("MCP resources use Pi client operations and filter MCP Apps", async () => {
+  await withTempDirectory("codepunk-mcp-resources-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const paths = await projectPaths(root, project, home);
+    await writeFile(path.join(home, "mcp.toml"), serverTable("echo"));
+    const bundle = await core.loadMcpTools({ paths });
+    try {
+      assert.deepEqual(
+        bundle.tools.map((tool) => tool.name),
+        ["mcp__echo__echo"],
+      );
+      assert.deepEqual(bundle.resourceServers, ["echo"]);
+      assert.deepEqual(
+        bundle.resourceTools.map((tool) => tool.name),
+        [
+          "list_mcp_resources",
+          "list_mcp_resource_templates",
+          "read_mcp_resource",
+        ],
+      );
+
+      const list = bundle.resourceTools.find(
+        (tool) => tool.name === "list_mcp_resources",
+      );
+      const listed = await list.execute("list-resources", {});
+      assert.deepEqual(
+        listed.structuredContent.resources.map((resource) => resource.uri),
+        ["echo://greeting", "echo://image", "echo://binary"],
+      );
+      assert.equal(
+        listed.structuredContent.resources.some(
+          (resource) => resource.uri === "ui://panel",
+        ),
+        false,
+      );
+
+      const firstPage = await list.execute("list-resources-page", {
+        server: "echo",
+      });
+      assert.equal(firstPage.structuredContent.nextCursor, "page-2");
+      assert.deepEqual(
+        firstPage.structuredContent.resources.map((resource) => resource.uri),
+        ["echo://greeting", "echo://image"],
+      );
+
+      const templates = bundle.resourceTools.find(
+        (tool) => tool.name === "list_mcp_resource_templates",
+      );
+      const templateResult = await templates.execute(
+        "list-resource-templates",
+        { server: "echo" },
+      );
+      assert.deepEqual(
+        templateResult.structuredContent.resourceTemplates.map(
+          (template) => template.uriTemplate,
+        ),
+        ["echo://items/{id}"],
+      );
+
+      const read = bundle.resourceTools.find(
+        (tool) => tool.name === "read_mcp_resource",
+      );
+      const text = await read.execute("read-text", {
+        server: "echo",
+        uri: "echo://greeting",
+      });
+      assert.equal(text.content[0].text, "hello from resource");
+      assert.deepEqual(text.structuredContent.contents, [
+        {
+          uri: "echo://greeting",
+          mimeType: "text/plain",
+          text: "hello from resource",
+        },
+      ]);
+
+      const image = await read.execute("read-image", {
+        server: "echo",
+        uri: "echo://image",
+      });
+      assert.equal(image.content[0].type, "image");
+      const binary = await read.execute("read-binary", {
+        server: "echo",
+        uri: "echo://binary",
+      });
+      assert.match(binary.content[0].text, /binary resource echo:\/\/binary/u);
+
+      const unknown = await read
+        .execute("read-unknown", {
+          server: "missing",
+          uri: "echo://greeting",
+        })
+        .then(
+          () => null,
+          (error) => error,
+        );
+      assert.match(String(unknown), /has no resources/u);
+    } finally {
+      await bundle.close();
+    }
+  });
+});
+
+test("MCP resource reads require approval and record uncovered evidence", async () => {
+  await withTempDirectory("codepunk-mcp-resource-approval-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const paths = await projectPaths(root, project, home);
+    await writeFile(path.join(home, "mcp.toml"), serverTable("echo"));
+    const bundle = await core.loadMcpTools({ paths });
+    try {
+      const read = bundle.resourceTools.find(
+        (tool) => tool.name === "read_mcp_resource",
+      );
+      const ledger = await core.EvidenceLedger.open(
+        path.join(paths.evidenceDir, "mcp-resource-run.jsonl"),
+      );
+      const broker = new core.ApprovalBroker();
+      let approvalRequest = null;
+      broker.registerChannel({
+        id: "resource-approval",
+        kind: "cli",
+        isTTY: true,
+        async ask(request) {
+          approvalRequest = request;
+          return {
+            request_id: request.request_id,
+            answer: "allow",
+            channel: "cli",
+            channel_id: request.channel_id,
+            nonce_sha256: request.nonce_sha256,
+            worker_id: request.worker_id,
+            session_id: request.session_id,
+            tool_call_id: request.tool_call_id,
+            answered_at: new Date().toISOString(),
+          };
+        },
+      });
+      const options = {
+        cwd: project,
+        workspaceRoot: project,
+        deliveryRoot: project,
+        codepunkHome: home,
+        sessionId: "mcp-resource-session",
+        runId: "mcp-resource-run",
+        ledger,
+        approval: broker,
+      };
+      const wrapped = await core.wrapToolDefinition(read, options);
+      const result = await wrapped.execute(
+        "read-approved",
+        { server: "echo", uri: "echo://greeting" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.equal(result.content[0].text, "hello from resource");
+      const record = ledger.all.at(-1);
+      assert.equal(record.source, "mcp");
+      assert.equal(record.tool, "read_mcp_resource");
+      assert.equal(record.coverage, "uncovered");
+      assert.equal(record.rule, "mcp.resource.ask");
+      assert.equal(record.approval.channel, "cli");
+      assert.ok(approvalRequest);
+      assert.match(approvalRequest.args_preview, /echo:\/\/greeting/u);
+
+      const denied = await core.wrapToolDefinition(read, {
+        ...options,
+        sessionId: "mcp-resource-denied-session",
+        runId: "mcp-resource-denied-run",
+        ledger,
+        approval: new core.ApprovalBroker(),
+      });
+      const deniedResult = await denied.execute(
+        "read-denied",
+        { server: "echo", uri: "echo://greeting" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.equal(deniedResult.isError, true);
+      assert.match(deniedResult.content[0].text, /approval\.unavailable/u);
+      assert.doesNotMatch(deniedResult.content[0].text, /hello from resource/u);
+      assert.equal(ledger.all.at(-1).decision, "deny");
+      assert.equal(ledger.all.at(-1).rule, "approval.unavailable");
+    } finally {
+      await bundle.close();
+    }
+  });
+});
+
 test("tolerant MCP startup reports one failed server and keeps the rest", async () => {
   await withTempDirectory("codepunk-mcp-fatal-", async (root) => {
     const project = await makeRepo(root);
@@ -1257,6 +1448,7 @@ test("runtime starts user-scope servers and records the start", async () => {
     try {
       assert.deepEqual(runtime.mcpServers, ["echo"]);
       assert.ok(runtime.host.wrappedToolNames.includes("mcp__echo__echo"));
+      assert.ok(runtime.host.wrappedToolNames.includes("read_mcp_resource"));
       const start = runtime.session.allEvents.find(
         (event) => event.kind === "mcp/server_start",
       );
@@ -1578,6 +1770,12 @@ test("MCP management preserves unrelated config and checks a real connection", a
     assert.deepEqual(result.servers, ["echo"]);
     assert.deepEqual(result.tool_counts, { echo: 1 });
     assert.deepEqual(result.tools, ["mcp__echo__echo"]);
+    assert.deepEqual(result.resource_servers, ["echo"]);
+    assert.deepEqual(result.resource_tools, [
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+    ]);
 
     const removed = await runCli(["mcp", "remove", "echo"], {
       cwd: project,

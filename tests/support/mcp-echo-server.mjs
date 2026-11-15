@@ -38,7 +38,7 @@ input.on("line", (line) => {
       id: request.id,
       result: {
         protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: "echo", version: "1.0.0" },
       },
     });
@@ -135,6 +135,125 @@ input.on("line", (line) => {
       result: {
         content: [{ type: "text", text: `echo:${text}` }],
       },
+    });
+    return;
+  }
+  if (request.method === "resources/list") {
+    if (mode === "hang-resources-list") {
+      return;
+    }
+    if (request.params?.cursor === "page-2") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          resources: [
+            {
+              uri: "echo://binary",
+              name: "binary",
+              mimeType: "application/octet-stream",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        resources: [
+          {
+            uri: "echo://greeting",
+            name: "greeting",
+            mimeType: "text/plain",
+          },
+          {
+            uri: "echo://image",
+            name: "image",
+            mimeType: "image/png",
+          },
+          {
+            uri: "ui://panel",
+            name: "panel",
+            mimeType: "text/html;profile=mcp-app",
+          },
+        ],
+        nextCursor: "page-2",
+      },
+    });
+    return;
+  }
+  if (request.method === "resources/templates/list") {
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        resourceTemplates: [
+          {
+            uriTemplate: "echo://items/{id}",
+            name: "item",
+            mimeType: "text/plain",
+          },
+        ],
+      },
+    });
+    return;
+  }
+  if (request.method === "resources/read") {
+    const uri = request.params?.uri;
+    if (uri === "echo://greeting") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          contents: [
+            {
+              uri,
+              mimeType: "text/plain",
+              text: "hello from resource",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (uri === "echo://image") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          contents: [
+            {
+              uri,
+              mimeType: "image/png",
+              blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (uri === "echo://binary") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          contents: [
+            {
+              uri,
+              mimeType: "application/octet-stream",
+              blob: "AAECAwQ=",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32602, message: `unknown resource ${uri}` },
     });
     return;
   }

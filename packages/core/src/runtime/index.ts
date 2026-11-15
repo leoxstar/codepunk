@@ -1008,7 +1008,7 @@ export async function createRuntime(
         await ledger.prepare(runId);
       },
       onRunEnd: runEnded,
-      extraTools: mcp.tools,
+      extraTools: [...mcp.tools, ...mcp.resourceTools],
       ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
     });
   } catch (error) {

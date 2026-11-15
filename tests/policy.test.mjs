@@ -1008,6 +1008,36 @@ test("unknown tools, MCP approval, and worker memory search are denied", () => {
       "deny",
     );
   }
+  for (const tool of [
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+  ]) {
+    const interactive = core.decidePolicy(
+      request({
+        tool,
+        args: { server: "echo", uri: "echo://greeting" },
+        mode: "interactive",
+        userDefault: "allow",
+      }),
+    );
+    assert.equal(interactive.decision, "ask", tool);
+    assert.equal(interactive.rule, "mcp.resource.ask", tool);
+    for (const mode of ["headless", "worker"]) {
+      assert.equal(
+        core.decidePolicy(
+          request({
+            tool,
+            args: { server: "echo", uri: "echo://greeting" },
+            mode,
+            userDefault: "allow",
+          }),
+        ).decision,
+        "deny",
+        `${tool} in ${mode}`,
+      );
+    }
+  }
 });
 
 test("codepunk state is never readable through file tools", () => {

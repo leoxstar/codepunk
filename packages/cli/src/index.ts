@@ -2231,6 +2231,8 @@ async function commandMcp(options: CliOptions): Promise<number> {
               servers: bundle.servers,
               tool_counts: bundle.toolCounts,
               tools: bundle.tools.map((tool) => tool.name),
+              resource_servers: bundle.resourceServers,
+              resource_tools: bundle.resourceTools.map((tool) => tool.name),
               failures: bundle.failures,
             },
             null,
@@ -2243,7 +2245,12 @@ async function commandMcp(options: CliOptions): Promise<number> {
         const lines = ["MCP connection check:"];
         for (const server of bundle.servers) {
           const count = bundle.toolCounts[server] ?? 0;
-          lines.push(`  ${server}: ok, ${count} tool${count === 1 ? "" : "s"}`);
+          const resources = bundle.resourceServers.includes(server)
+            ? ", resources available"
+            : "";
+          lines.push(
+            `  ${server}: ok, ${count} tool${count === 1 ? "" : "s"}${resources}`,
+          );
         }
         for (const failure of bundle.failures) {
           lines.push(`  ${failure.server}: failed, ${failure.message}`);

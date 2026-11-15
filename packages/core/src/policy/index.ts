@@ -23,6 +23,7 @@ import {
   resolveRealPath,
 } from "../platform/path.ts";
 import { isShellLauncher } from "../platform/shell.ts";
+import { MCP_RESOURCE_TOOL_NAMES, isMcpResourceTool } from "../mcp/names.ts";
 
 export type PolicyMode = "interactive" | "headless" | "worker";
 
@@ -89,6 +90,10 @@ const SEVERITY: Record<Decision, number> = {
 };
 
 export const DEFAULT_POLICY_MODE: PolicyMode = "interactive";
+
+export function isMcpProductTool(tool: string): boolean {
+  return tool.startsWith("mcp__") || isMcpResourceTool(tool);
+}
 
 function resolveRulePath(rulePath: string, cwd: string): string {
   return path.isAbsolute(rulePath) ? rulePath : path.resolve(cwd, rulePath);
@@ -199,6 +204,10 @@ function toolEffects(tool: string): Effects {
     case "exec":
     case "user_bash":
       return { fs: "unknown", shell: true, network: true };
+    case "list_mcp_resources":
+    case "list_mcp_resource_templates":
+    case "read_mcp_resource":
+      return { fs: "none", shell: false, network: true };
     default:
       return { fs: "unknown", shell: false, network: false };
   }
@@ -212,6 +221,9 @@ export function coverageFor(
   tool: string,
   sandbox: PolicyDecision["decision"] | undefined,
 ): Coverage {
+  if (isMcpProductTool(tool)) {
+    return "uncovered";
+  }
   if (tool === "bash" || tool === "exec" || tool === "user_bash") {
     return sandbox === "allow" ? "enforced" : "uncovered";
   }
@@ -1791,6 +1803,20 @@ function toolDecision(request: PolicyRequest): {
       reason: "MCP tool calls are uncovered by the sandbox and need approval",
       rule: {
         id: "mcp.tool.ask",
+        tool: request.tool,
+        decision: "ask",
+      },
+      pathTarget: null,
+      approvalClass: "mcp",
+    };
+  }
+  if (MCP_RESOURCE_TOOL_NAMES.has(request.tool)) {
+    return {
+      decision: "ask",
+      reason:
+        "MCP resource operations are uncovered by the sandbox and need approval",
+      rule: {
+        id: "mcp.resource.ask",
         tool: request.tool,
         decision: "ask",
       },
