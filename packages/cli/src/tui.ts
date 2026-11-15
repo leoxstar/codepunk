@@ -91,6 +91,7 @@ import {
   type AgentProfile,
   type CheckpointPreview,
   type CodepunkRuntime,
+  type ConfigReloadResult,
   type FilesystemMode,
   type GitCommitStage,
   type GitCommitResult,
@@ -397,7 +398,7 @@ export function codepunkHelp(): string {
     "  /remember, /memory         write, search, archive, or delete memory",
     "  /doctor, /policy           run diagnostics or print effective policy",
     "  /compact                   ask Pi to compact the current context",
-    "  /reload                    reload plugins, skills, and user MCP servers",
+    "  /reload                    reload config, plugins, skills, and user MCP servers",
     "  /help                      show this command list",
     "  /quit                      exit",
     "",
@@ -2094,6 +2095,31 @@ async function setAutonomyProfile(
     );
   }
   runtime.autonomy.setProfile("scoped");
+}
+
+function formatConfigReload(outcome: ConfigReloadResult): string {
+  if (!outcome.changed) {
+    return [
+      "Codepunk config: unchanged.",
+      ...outcome.warnings.map((warning) => `warning: ${warning}`),
+    ].join("\n");
+  }
+  return [
+    "Codepunk config reloaded.",
+    ...(outcome.applied.length === 0
+      ? []
+      : [`applied now: ${outcome.applied.join(", ")}`]),
+    ...(outcome.pluginsChanged
+      ? ["plugin surface follows plugins.enabled; see the plugin result below"]
+      : []),
+    ...(outcome.nextSession.length === 0
+      ? []
+      : [`next session: ${outcome.nextSession.join(", ")}`]),
+    ...(outcome.blocked.length === 0
+      ? []
+      : [`blocked: ${outcome.blocked.join("; ")}`]),
+    ...outcome.warnings.map((warning) => `warning: ${warning}`),
+  ].join("\n");
 }
 
 export class TuiApprovalChannel implements ApprovalChannel {
@@ -4487,19 +4513,44 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
             return true;
           }
           try {
+            const previousPluginsEnabled = runtime.config.plugins.enabled;
+            const configReload = await runtime.reloadConfig();
             const plugins = await runtime.reloadPlugins();
+            const pluginRolledBack =
+              configReload.pluginsChanged && plugins.error !== null;
+            if (pluginRolledBack) {
+              runtime.config.plugins.enabled = previousPluginsEnabled;
+            }
+            const reportedConfig = pluginRolledBack
+              ? {
+                  ...configReload,
+                  applied: configReload.applied.filter(
+                    (entry) => !entry.startsWith("plugins.enabled="),
+                  ),
+                  pluginsChanged: false,
+                  blocked: [
+                    ...configReload.blocked,
+                    "plugins.enabled: reload failed, so the previous setting was restored",
+                  ],
+                }
+              : configReload;
             const skills = await runtime.reloadSkills();
             const result = await runtime.reloadMcp();
+            const failed =
+              result.error !== null ||
+              skills.error !== null ||
+              plugins.error !== null;
             state.context?.ui.notify(
-              `${formatPluginReload(plugins)}\n${formatSkillReload(skills)}\n${formatMcpReload(result)}`,
-              result.error === null &&
-                skills.error === null &&
-                plugins.error === null
-                ? "info"
-                : "error",
+              `${formatConfigReload(reportedConfig)}\n${formatPluginReload(plugins)}\n${formatSkillReload(skills)}\n${formatMcpReload(result)}`,
+              failed
+                ? "error"
+                : reportedConfig.blocked.length > 0 ||
+                    reportedConfig.warnings.length > 0
+                  ? "warning"
+                  : "info",
             );
           } catch (error) {
-            context.ui.notify(
+            state.context?.ui.notify(
               `Reload failed: ${
                 error instanceof Error ? error.message : String(error)
               }`,
