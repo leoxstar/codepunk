@@ -573,6 +573,13 @@ The status line, `/status`, `/session`, and `/budget` read the last
 `/new`. The same snapshot keeps the pre-stop usage visible instead of letting a
 later counter hide why the session stopped.
 
+Pi remains the full catalog selector and owns fuzzy search, auth state, and
+default persistence. Codepunk adds a small UX layer on its `model_select`
+event: `$CODEPUNK_HOME/model-history.json` stores at most ten recent and twenty
+favorite `provider/id` references with mode `0600`; `/models` opens an
+arrow-key menu, `/favorite` toggles the current physical model, and F2 cycles
+recent models. No request routing or model catalog is duplicated.
+
 ## What other agents do
 
 The useful comparison is not the number of slash commands. It is where each
@@ -869,8 +876,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 576 tests, 576 pass
-# repository check: 506 files, 3 packages
+# 582 tests, 582 pass
+# repository check: 512 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only

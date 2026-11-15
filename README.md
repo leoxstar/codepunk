@@ -28,6 +28,9 @@ explicit policy boundary around file and shell actions.
 - `/init` bootstraps `AGENTS.md` from repository evidence through a normal
   model turn, and `/status` summarizes the model, session, permissions, trust,
   capabilities, evidence, and token usage.
+- `/models` picks from recent or favorite models, `/favorite` toggles the
+  current model, and F2 cycles recent models. Pi's `/model` fuzzy search is
+  unchanged.
 - `/diff` shows the working-tree status, staged and unstaged stats, and a
   bounded patch without sending a model request or writing the index.
 - `/commit [message]` previews staged, unstaged, and untracked files, asks for
@@ -380,6 +383,8 @@ not from the repository:
 - `~/.codepunk/config.toml` selects the default `model.provider` and `model.id`.
 - `~/.codepunk/models.json` declares custom providers and their models.
 - `~/.codepunk/auth.json` stores credentials managed by the Pi host.
+- `~/.codepunk/model-history.json` stores recent and favorite model references
+  with owner-only permissions; it contains no credentials.
 
 List what is configured, import an OpenAI-compatible endpoint, and choose a
 default:
