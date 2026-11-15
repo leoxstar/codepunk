@@ -339,8 +339,9 @@ in the comparison.
     Up to four children run in the background and are managed with `/agents`.
     A human can review the child worktree, sign it complete or incomplete,
     merge only the signed exact commit, or discard it. Bounded child progress
-    (`assistant_delta` and `tool_start`) reaches the parent TUI; full child
-    transcripts/tool output are not streamed, and merging is never automatic.
+    (`assistant_delta`, `tool_start`, and `tool_end`) reaches the parent TUI.
+    The full child stdout transcript is stored as a `0600` artifact and
+    `/agents transcript <id>` renders it. Merging is never automatic.
 11. Pi emits OSC 7501 program status, and Codepunk inherits it because it runs
     Pi's interactive runtime. The reported app identity is still Pi's
     `APP_NAME`, Codepunk adds no per-event notifications, and the status line
@@ -377,8 +378,8 @@ in the comparison.
 
 Ordered by expected value for the next iteration:
 
-1. Full child transcripts and tool output for profile-driven `/subagent`
-   sessions.
+1. A full-screen transcript browser and live streaming of complete tool
+   output for profile-driven `/subagent` sessions.
 2. Codepunk configuration hot reload with the same policy gating as runtime
    tool calls. MCP, skill, and plugin reload, OAuth login, and token refresh
    are implemented.

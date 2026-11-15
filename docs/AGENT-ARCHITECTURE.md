@@ -752,26 +752,27 @@ These are real gaps, not hidden fallbacks:
    reimplementing accounting.
 6. `/subagent` runs profile-driven child Pi sessions with up to four
    background handles (`/agents`, `/agents profiles`, `/agents result <id>`,
-   `/agents wait <id>`, `/agents stop <id>`, `/agents review <id>`,
-   `/agents sign <id>`, `/agents merge <id>`, `/agents discard <id>`); the
-   child product session header records the parent id. Pi's `parentSession`
-   path field is not used for this link. Without a profile the child is
-   `read`/`search` only and shares the parent checkout. A profile that enables
-   `write` or `edit` runs in a detached worktree, and `--worktree` can isolate
-   a read-only profile. The child is pinned to `sandbox = required`,
-   `filesystem = workspace`, and either `approval = deny` for read-only work
-   or `approval = allow` with `autonomy = ask` for a mutating profile,
-   regardless of the parent's persisted config. An explicit parent trust
-   decision is inherited in both directions; a worktree child receives the
-   parent's decision because it is created from the same base commit. The
-   child does not inherit the parent's scoped rules or full filesystem. A
-   mutating child worktree is preserved until a human reviews it. The
-   `/agents sign` command records the verdict, and only a complete sign-off
-   enables `/agents merge`, which freezes the exact commit, writes the
-   handoff, merges with `--no-ff`, and cleans up the verified worktree.
-   `/agents discard` removes an unmerged worktree only after confirmation.
-   Child progress is streamed as bounded assistant deltas and tool-start
-   events; full child transcripts and tool output are not streamed.
+   `/agents transcript <id>`, `/agents wait <id>`, `/agents stop <id>`,
+   `/agents review <id>`, `/agents sign <id>`, `/agents merge <id>`,
+   `/agents discard <id>`); the child product session header records the
+   parent id. Pi's `parentSession` path field is not used for this link.
+   Without a profile the child is `read`/`search` only and shares the parent
+   checkout. A profile that enables `write` or `edit` runs in a detached
+   worktree, and `--worktree` can isolate a read-only profile. The child is
+   pinned to `sandbox = required`, `filesystem = workspace`, and either
+   `approval = deny` for read-only work or `approval = allow` with
+   `autonomy = ask` for a mutating profile, regardless of the parent's
+   persisted config. An explicit parent trust decision is inherited in both
+   directions; a worktree child receives the parent's decision because it is
+   created from the same base commit. The child does not inherit the parent's
+   scoped rules or full filesystem. A mutating child worktree is preserved
+   until a human reviews it. The `/agents sign` command records the verdict,
+   and only a complete sign-off enables `/agents merge`, which freezes the
+   exact commit, writes the handoff, merges with `--no-ff`, and cleans up the
+   verified worktree. `/agents discard` removes an unmerged worktree only
+   after confirmation. Child progress is streamed as bounded assistant
+   deltas plus tool-start and tool-end events. The complete child stdout JSONL
+   is stored as a `0600` artifact and `/agents transcript <id>` renders it.
 7. Session surfaces are live: `/resume` and `/new` rebuild the TUI host,
    `/fork` and `/clone` create child product sessions, `/tree` navigates the
    Pi branch, `/export` forwards to `/cp-export`, and the aliases do not appear
@@ -849,10 +850,10 @@ The next work should follow the trust boundary, not the feature count:
    gate as runtime use. MCP, skill, and plugin reload already exist.
 2. Make session identity first-class: one visible command name per surface,
    and a fork flow with explicit parent-child evidence links.
-3. Extend the child-session path with full transcript/tool-output streaming,
-   then a bidirectional protocol and out-of-terminal status signals. Worktree
-   review, human sign-off, merge handoff, and discard are already exposed
-   through `/agents`.
+3. Add a full-screen transcript browser and live streaming of complete tool
+   output, then a bidirectional protocol and out-of-terminal status signals.
+   The complete transcript artifact, worktree review, human sign-off, merge
+   handoff, and discard are already exposed through `/agents`.
 
 ## Local evidence
 

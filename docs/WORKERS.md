@@ -90,7 +90,7 @@ records the parent session id in its own session header, and records its own
 session events and evidence. The parent records a `subagent/result` event with
 both session ids, the child run id when an evidence run exists, the evidence
 head, exit code, status, profile digest, isolation, worktree, and changed-file
-count.
+count. A completed child also returns the path to its full stdout transcript.
 
 ### Agent profiles
 
@@ -168,8 +168,11 @@ read-only path has no disk-write surface, so it does not charge disk bytes.
 The prompt is delivered over the child's standard input rather than its
 command-line arguments.
 
-Child progress is streamed to the parent TUI as bounded `assistant_delta`
-and `tool_start` events; the full child transcript and tool output are not
-streamed. A child failure that leaves a worktree behind reports that path in
-the error message and `subagent/result`; a failed run with no changes may
-still leave a clean worktree for inspection.
+Child progress is streamed to the parent TUI as bounded `assistant_delta`,
+`tool_start`, and `tool_end` events. The raw child stdout JSONL is written to
+`artifacts/subagents/<child-session>/transcript.jsonl` with mode `0600`;
+`/agents transcript <id>` renders the assistant messages, tool calls, and tool
+results, and prints the full artifact path when the preview is truncated. A
+child failure reports the transcript path together with any worktree path in
+the error and `subagent/result`; a failed run with no changes may still leave
+a clean worktree for inspection.

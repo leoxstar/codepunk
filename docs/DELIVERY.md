@@ -68,6 +68,8 @@ The TUI exposes the same checks for profile-driven `/subagent` work:
 
 ```text
 /agents review <id>   show status, changed files, bounded patch, and summary
+/agents transcript <id>
+                      render assistant messages, tool calls, and tool results
 /agents sign <id>     record a human complete/incomplete verdict
 /agents merge <id>    freeze, hand off, merge the exact commit, then clean up
 /agents discard <id>  remove an unmerged registered worktree after confirmation
@@ -76,6 +78,7 @@ The TUI exposes the same checks for profile-driven `/subagent` work:
 `/agents sign` writes the sign-off through the child session's project store,
 because its project id can differ from the parent checkout. The sign-off is
 bound to the child evidence head; a model summary is not a verdict.
+`/agents transcript <id>` renders the complete `0600` child stdout artifact.
 
 `/agents merge` additionally requires the parent `HEAD` to equal the child's
 recorded base commit, a parent working tree clean outside Codepunk's generated
