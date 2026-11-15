@@ -357,9 +357,86 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
+  assert.match(help, /\/mcp \[list\|add \[name\]\|remove/u);
   assert.match(help, /\/status\s+show model, session, permissions/u);
   assert.match(help, /\/help\s+show this command list/u);
   assert.doesNotMatch(help, /\/share/u);
+});
+
+test("MCP login target selection rejects unsafe or ambiguous servers", async () => {
+  const { resolveMcpLoginTarget } = await importSource(
+    "packages/cli/src/tui.ts",
+  );
+  const stdio = {
+    name: "local",
+    transport: "stdio",
+    command: "node",
+    args: [],
+    cwd: "/tmp",
+    env: {},
+  };
+  const oauth = {
+    name: "remote",
+    transport: "http",
+    url: "https://example.invalid/mcp",
+    headers: {},
+  };
+  const header = {
+    name: "legacy",
+    transport: "http",
+    url: "https://example.invalid/legacy",
+    headers: { Authorization: "Bearer token" },
+  };
+  const secondOauth = {
+    name: "remote-two",
+    transport: "http",
+    url: "https://example.invalid/two",
+    headers: {},
+  };
+  assert.equal(resolveMcpLoginTarget([stdio, oauth], undefined), oauth);
+  assert.throws(
+    () => resolveMcpLoginTarget([stdio], undefined),
+    /none is configured/u,
+  );
+  assert.throws(
+    () => resolveMcpLoginTarget([stdio, oauth, secondOauth, header], undefined),
+    /requires a server name; candidates: remote, remote-two/u,
+  );
+  assert.throws(
+    () => resolveMcpLoginTarget([stdio, oauth], "missing"),
+    /is not configured/u,
+  );
+  assert.throws(
+    () => resolveMcpLoginTarget([stdio, oauth], "local"),
+    /uses stdio/u,
+  );
+  assert.throws(
+    () => resolveMcpLoginTarget([stdio, oauth, header], "legacy"),
+    /Authorization header/u,
+  );
+});
+
+test("MCP command lines and headers parse without invoking a shell", async () => {
+  const { splitMcpArguments, parseMcpHeader } = await importSource(
+    "packages/cli/src/tui.ts",
+  );
+  assert.deepEqual(
+    splitMcpArguments(
+      'npx -y "@scope/server" --root "path with spaces" --flag=\'a b\'',
+    ),
+    ["npx", "-y", "@scope/server", "--root", "path with spaces", "--flag=a b"],
+  );
+  assert.deepEqual(splitMcpArguments('""'), [""]);
+  assert.throws(
+    () => splitMcpArguments('"unterminated'),
+    /unterminated quote/u,
+  );
+  assert.deepEqual(parseMcpHeader("Authorization: Bearer ${MCP_TOKEN}"), {
+    name: "Authorization",
+    value: "Bearer ${MCP_TOKEN}",
+  });
+  assert.equal(parseMcpHeader("missing separator"), null);
+  assert.equal(parseMcpHeader("Name:\r\nInjected"), null);
 });
 
 test("/init prompts the model with repository-evidence instructions", async () => {
@@ -912,6 +989,150 @@ test("a real pty undoes and redoes Codepunk file changes", async () => {
     } finally {
       await stopPty(session);
       model.server.close();
+    }
+  });
+});
+
+test("a real pty manages MCP auth without leaving the TUI", async () => {
+  await withTempDirectory("codepunk-tui-mcp-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(
+        session,
+        "/mcp status",
+        "no user MCP servers configured",
+      );
+      await fs.writeFile(
+        path.join(home, "mcp.toml"),
+        [
+          "[servers.alpha]",
+          'url = "https://alpha.example.invalid/mcp"',
+          "",
+          "[servers.beta]",
+          'url = "https://beta.example.invalid/mcp"',
+          "",
+        ].join("\n"),
+      );
+      const logoutMark = session.output().length;
+      session.child.stdin.write("/mcp logout\r");
+      await waitForOutputAfter(
+        session,
+        logoutMark,
+        "MCP server to sign out",
+        "/mcp logout selector",
+      );
+      assert.match(
+        stripAnsi(session.output().slice(logoutMark)),
+        /\u2192 alpha/u,
+      );
+      assert.match(stripAnsi(session.output().slice(logoutMark)), /beta/u);
+      session.child.stdin.write("\u001b[B\r");
+      await waitForOutputAfter(
+        session,
+        logoutMark,
+        "beta: no stored credentials",
+        "/mcp logout completion",
+      );
+      await fs.rm(path.join(home, "mcp.toml"));
+      await runCommandAfter(
+        session,
+        "/mcp login",
+        "MCP sign-in failed: mcp login requires an HTTP server",
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("a real pty adds and removes an MCP server without editing TOML", async () => {
+  await withTempDirectory("codepunk-tui-mcp-edit-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/mcp add echo", "MCP transport");
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "Command and arguments", "stdio command");
+      session.child.stdin.write('node -e "process.exit(0)"\r');
+      await waitForOutput(
+        session,
+        "Working directory inside the project",
+        "stdio cwd",
+      );
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "MCP server echo saved", "MCP server saved");
+      const config = await fs.readFile(path.join(home, "mcp.toml"), "utf8");
+      assert.match(config, /\[servers\.echo\]/u);
+      assert.match(config, /command = "node"/u);
+      assert.match(config, /args = \["-e", "process\.exit\(0\)"\]/u);
+
+      await runCommandAfter(
+        session,
+        "/mcp remove echo",
+        "Remove MCP server echo?",
+      );
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "MCP server echo removed", "MCP removal");
+      const after = await fs.readFile(path.join(home, "mcp.toml"), "utf8");
+      assert.doesNotMatch(after, /servers\.echo/u);
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
     }
   });
 });

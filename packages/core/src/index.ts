@@ -485,6 +485,7 @@ export {
   MCP_REQUEST_TIMEOUT_MS,
   McpError,
   loadMcpTools,
+  mcpUsesAuthorizationHeader,
   readMcpConfig,
   removeMcpServer,
   writeMcpServer,

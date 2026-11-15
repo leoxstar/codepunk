@@ -38,12 +38,18 @@ import {
   loadAgentProfiles,
   loadScopedRules,
   LOCK_LEASE_MS,
+  loginMcpServer,
+  McpAuthStore,
+  mcpUsesAuthorizationHeader,
   normalizeNetworkAllow,
   normalizeNetworkDeny,
+  oauthSettings,
   persistScopedRule,
   permissionBehaviorSummary,
   permissionProfileFor,
   previewWorkspaceTrustResources,
+  readMcpConfig,
+  removeMcpServer,
   readOnlyLiveWidenIssue,
   readOnlyLiveSwitchIssue,
   readLock,
@@ -59,6 +65,7 @@ import {
   saveWorkspaceTrust,
   staleLockReason,
   setConfiguredModel,
+  writeMcpServer,
   writeUserPermissionProfile,
   writeUserPermissionSelection,
   writeUserThinkingSelection,
@@ -68,7 +75,10 @@ import {
   type CodepunkRuntime,
   type FilesystemMode,
   type McpReloadResult,
+  type McpServerConfig,
+  type McpServerInput,
   type PermissionProfile,
+  type PluginReloadResult,
   type SkillReloadResult,
   type SubagentHostResult,
   type SubagentStreamEvent,
@@ -341,12 +351,14 @@ export function codepunkHelp(): string {
     "  /new                       start a new session in this TUI",
     "",
     "Local capabilities",
-    "  /skills, /mcp, /plugins    list installed capabilities",
+    "  /skills, /plugins          list installed capabilities",
+    "  /mcp [list|add [name]|remove [name]|login [name]|status [name]|logout [name]]",
+    "                             manage user MCP servers",
     "  /capabilities              summarize skills, MCP servers, and plugins",
     "  /remember, /memory         write, search, archive, or delete memory",
     "  /doctor, /policy           run diagnostics or print effective policy",
     "  /compact                   ask Pi to compact the current context",
-    "  /reload                    reload Pi resources, skills, and user MCP servers",
+    "  /reload                    reload plugins, skills, and user MCP servers",
     "  /help                      show this command list",
     "  /quit                      exit",
     "",
@@ -514,6 +526,246 @@ function formatMcpReload(result: McpReloadResult): string {
   return lines.join("\n");
 }
 
+/**
+ * Parse the command line used by `/mcp add` without invoking a shell. The
+ * editor form accepts quoted arguments so a command such as
+ * `npx -y "@scope/server" --root "path with spaces"` maps to exact argv.
+ */
+export function splitMcpArguments(input: string): string[] {
+  const args: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let started = false;
+  for (const character of input) {
+    if (escaped) {
+      token += character;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") {
+        quote = null;
+      } else {
+        token += character;
+        started = true;
+      }
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+      } else if (character === "\\") {
+        escaped = true;
+      } else {
+        token += character;
+        started = true;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      if (started) {
+        args.push(token);
+        token = "";
+        started = false;
+      }
+      continue;
+    }
+    token += character;
+    started = true;
+  }
+  if (quote !== null) {
+    throw new Error("command line has an unterminated quote");
+  }
+  if (escaped) {
+    token += "\\";
+  }
+  if (started) {
+    args.push(token);
+  }
+  return args;
+}
+
+export function parseMcpHeader(
+  input: string,
+): { name: string; value: string } | null {
+  if (/[\r\n]/u.test(input)) {
+    return null;
+  }
+  const separator = input.indexOf(":");
+  if (separator <= 0) {
+    return null;
+  }
+  const name = input.slice(0, separator).trim();
+  const value = input.slice(separator + 1).trim();
+  if (name.length === 0) {
+    return null;
+  }
+  return { name, value };
+}
+
+interface McpEditResult {
+  message: string;
+  level: "info" | "error";
+}
+
+async function addMcpServerInteractive(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  requestedName: string | undefined,
+): Promise<McpEditResult | null> {
+  let name = requestedName?.trim();
+  if (name === undefined || name.length === 0) {
+    name = (
+      await context.ui.input(
+        "MCP server name",
+        "lowercase name, for example github",
+      )
+    )?.trim();
+  }
+  if (name === undefined || name.length === 0) {
+    return null;
+  }
+  const configs = await readMcpConfig(runtime.paths);
+  const existing = configs.find((config) => config.name === name);
+  if (existing !== undefined) {
+    const replace = await context.ui.select(
+      `MCP server ${name} already exists`,
+      ["Replace the existing server", "Cancel"],
+    );
+    if (replace !== "Replace the existing server") {
+      return null;
+    }
+  }
+  const transport = await context.ui.select("MCP transport", [
+    "stdio - run a local command",
+    "Streamable HTTP - connect to a URL",
+  ]);
+  if (transport === undefined) {
+    return null;
+  }
+  let input: McpServerInput;
+  if (transport.startsWith("Streamable HTTP")) {
+    const url = (
+      await context.ui.input("MCP server URL", "https://example.invalid/mcp")
+    )?.trim();
+    if (url === undefined || url.length === 0) {
+      return null;
+    }
+    const headers: Record<string, string> = {};
+    const headerLine = (
+      await context.ui.input(
+        "Optional HTTP header",
+        "Authorization: Bearer ${MCP_TOKEN}",
+      )
+    )?.trim();
+    if (headerLine !== undefined && headerLine.length > 0) {
+      const header = parseMcpHeader(headerLine);
+      if (header === null) {
+        context.ui.notify(
+          "HTTP header must use the form Name: value",
+          "warning",
+        );
+        return null;
+      }
+      headers[header.name] = header.value;
+    }
+    input = { name, url, headers };
+  } else {
+    const commandLine = (
+      await context.ui.input(
+        "Command and arguments",
+        'npx -y "@modelcontextprotocol/server-filesystem" .',
+      )
+    )?.trim();
+    if (commandLine === undefined || commandLine.length === 0) {
+      return null;
+    }
+    const argv = splitMcpArguments(commandLine);
+    if (argv.length === 0) {
+      context.ui.notify("command is required", "warning");
+      return null;
+    }
+    const cwd = (
+      await context.ui.input(
+        "Working directory inside the project (optional)",
+        ".",
+      )
+    )?.trim();
+    input = {
+      name,
+      command: argv[0]!,
+      args: argv.slice(1),
+      ...(cwd === undefined || cwd.length === 0 ? {} : { cwd }),
+    };
+  }
+  const configPath = await writeMcpServer(runtime.paths, input, {
+    force: existing !== undefined,
+  });
+  const reload = await runtime.reloadMcp();
+  return {
+    message: [
+      `MCP server ${name} saved to ${configPath}`,
+      "Environment variables and extra headers remain available through `codepunk mcp add`.",
+      formatMcpReload(reload),
+    ].join("\n"),
+    level: reload.error === null ? "info" : "error",
+  };
+}
+
+async function removeMcpServerInteractive(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  requestedName: string | undefined,
+): Promise<McpEditResult | null> {
+  const configs = await readMcpConfig(runtime.paths);
+  if (configs.length === 0) {
+    await notify(context, "No user MCP servers configured.");
+    return null;
+  }
+  let name = requestedName?.trim();
+  if (name === undefined || name.length === 0) {
+    name = await context.ui.select(
+      "MCP server to remove",
+      configs.map((config) => config.name),
+    );
+  }
+  if (name === undefined || name.length === 0) {
+    return null;
+  }
+  if (!configs.some((config) => config.name === name)) {
+    context.ui.notify(`MCP server ${name} is not configured`, "warning");
+    return null;
+  }
+  const confirmed = await context.ui.select(`Remove MCP server ${name}?`, [
+    `Remove ${name}`,
+    "Cancel",
+  ]);
+  if (confirmed !== `Remove ${name}`) {
+    return null;
+  }
+  const configPath = await removeMcpServer(runtime.paths, name);
+  const reload = await runtime.reloadMcp();
+  return {
+    message: [
+      `MCP server ${name} removed from ${configPath}`,
+      formatMcpReload(reload),
+    ].join("\n"),
+    level: reload.error === null ? "info" : "error",
+  };
+}
+
 function formatSkillReload(result: SkillReloadResult): string {
   if (result.error !== null) {
     return `Skill reload failed: ${result.error}`;
@@ -526,6 +778,27 @@ function formatSkillReload(result: SkillReloadResult): string {
   }
   return `Skills reloaded: ${result.skills
     .map((skill) => `${skill.name} (${skill.scope})`)
+    .join(", ")}`;
+}
+
+function formatPluginReload(result: PluginReloadResult): string {
+  if (result.error !== null) {
+    return `Plugin reload failed: ${result.error}\nThe previous plugin surface was kept.`;
+  }
+  if (result.skipped === "disabled") {
+    return "Plugins are disabled for this session.";
+  }
+  if (result.skipped === "read-only") {
+    return "Plugins are not loaded while autonomy is read-only.";
+  }
+  if (result.skipped === "headless") {
+    return "Plugins are not loaded in headless sessions.";
+  }
+  if (result.plugins.paths.length === 0) {
+    return "Plugins reloaded: none installed.";
+  }
+  return `Plugins reloaded: ${result.plugins.paths
+    .map((file) => path.basename(file))
     .join(", ")}`;
 }
 
@@ -2169,6 +2442,45 @@ async function restoreCheckpoint(
   );
 }
 
+export function resolveMcpLoginTarget(
+  configs: readonly McpServerConfig[],
+  requested: string | undefined,
+): Extract<McpServerConfig, { transport: "http" }> {
+  const oauthCandidates = configs.filter(
+    (config) =>
+      config.transport === "http" && !mcpUsesAuthorizationHeader(config),
+  );
+  const target =
+    requested === undefined
+      ? oauthCandidates.length === 1
+        ? oauthCandidates[0]
+        : undefined
+      : configs.find((config) => config.name === requested);
+  if (requested === undefined && target === undefined) {
+    throw new Error(
+      oauthCandidates.length === 0
+        ? "mcp login requires an HTTP server without an Authorization header; none is configured"
+        : `mcp login requires a server name; candidates: ${oauthCandidates
+            .map((config) => config.name)
+            .join(", ")}`,
+    );
+  }
+  if (target === undefined) {
+    throw new Error(`MCP server ${requested} is not configured`);
+  }
+  if (target.transport !== "http") {
+    throw new Error(
+      `MCP server ${target.name} uses stdio and does not use OAuth`,
+    );
+  }
+  if (mcpUsesAuthorizationHeader(target)) {
+    throw new Error(
+      `MCP server ${target.name} uses an Authorization header; remove it to use OAuth`,
+    );
+  }
+  return target;
+}
+
 function modelLabel(model: {
   provider: string;
   id: string;
@@ -3174,11 +3486,16 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
             return true;
           }
           try {
+            const plugins = await runtime.reloadPlugins();
             const skills = await runtime.reloadSkills();
             const result = await runtime.reloadMcp();
             state.context?.ui.notify(
-              `${formatSkillReload(skills)}\n${formatMcpReload(result)}`,
-              result.error === null && skills.error === null ? "info" : "error",
+              `${formatPluginReload(plugins)}\n${formatSkillReload(skills)}\n${formatMcpReload(result)}`,
+              result.error === null &&
+                skills.error === null &&
+                plugins.error === null
+                ? "info"
+                : "error",
             );
           } catch (error) {
             context.ui.notify(
@@ -3586,34 +3903,228 @@ export function createTuiExtension(
               "disable: codepunk plugins disable",
               "add:     codepunk plugins add <file> [--force]",
               "remove:  codepunk plugins remove <file>",
-              "restart codepunk after changes; plugin tools are rejected",
+              "run /reload after changes; plugin tools are rejected",
             ].join("\n"),
           );
         }),
       });
       pi.registerCommand("mcp", {
-        description: "List user MCP servers and connection check commands",
-        handler: commandContext(state, async (runtime, context) => {
-          const snapshot = await collectCapabilities(runtime.paths, {
-            pluginEnabled: runtime.plugins.enabled,
-            skills: runtime.skills,
-            ...(runtime.plugins.paths.length > 0
-              ? { pluginFiles: runtime.plugins.paths }
-              : {}),
-          });
-          await notify(
-            context,
-            [
-              ...formatMcpServers(snapshot.mcp),
-              "",
-              "add:    codepunk mcp add <name> -- <command> [args...]",
-              "check:  codepunk mcp test [name]",
-              "remove: codepunk mcp remove <name>",
-              "login:  codepunk mcp login <name>",
-              "status: codepunk mcp status [name]",
-              "logout: codepunk mcp logout <name>",
-              "run /reload after changing MCP configuration",
-            ].join("\n"),
+        description: "List, sign in to, or inspect user MCP servers",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const parts = args
+            .trim()
+            .split(/\s+/u)
+            .filter((part) => part.length > 0);
+          const action = parts[0] ?? "list";
+          if (action === "list") {
+            const snapshot = await collectCapabilities(runtime.paths, {
+              pluginEnabled: runtime.plugins.enabled,
+              skills: runtime.skills,
+              ...(runtime.plugins.paths.length > 0
+                ? { pluginFiles: runtime.plugins.paths }
+                : {}),
+            });
+            await notify(
+              context,
+              [
+                ...formatMcpServers(snapshot.mcp),
+                "",
+                "usage: /mcp [list|add [name]|remove [name]|login [name]|status [name]|logout [name]]",
+                "check:  codepunk mcp test [name]",
+                "run /reload after changing MCP configuration",
+              ].join("\n"),
+            );
+            return;
+          }
+          if (action === "add") {
+            const result = await addMcpServerInteractive(
+              runtime,
+              context,
+              parts[1],
+            );
+            if (result !== null) {
+              (state.context ?? context).ui.notify(
+                result.message,
+                result.level,
+              );
+            }
+            return;
+          }
+          if (action === "remove") {
+            const result = await removeMcpServerInteractive(
+              runtime,
+              context,
+              parts[1],
+            );
+            if (result !== null) {
+              (state.context ?? context).ui.notify(
+                result.message,
+                result.level,
+              );
+            }
+            return;
+          }
+          if (action === "status" || action === "logout") {
+            let name = parts[1];
+            const configs = await readMcpConfig(runtime.paths);
+            if (name === undefined && action === "logout") {
+              const candidates = configs.filter(
+                (config) =>
+                  config.transport === "http" &&
+                  !mcpUsesAuthorizationHeader(config),
+              );
+              if (candidates.length === 0) {
+                await notify(
+                  context,
+                  "No user MCP servers with OAuth credentials are configured.",
+                );
+                return;
+              }
+              if (candidates.length === 1) {
+                name = candidates[0]!.name;
+              } else {
+                const selected = await context.ui.select(
+                  "MCP server to sign out",
+                  candidates.map((config) => config.name),
+                );
+                if (selected === undefined) {
+                  return;
+                }
+                name = selected;
+              }
+            }
+            const selected =
+              name === undefined
+                ? configs
+                : configs.filter((config) => config.name === name);
+            if (name !== undefined && selected.length === 0) {
+              context.ui.notify(
+                `MCP server ${name} is not configured`,
+                "warning",
+              );
+              return;
+            }
+            if (selected.length === 0) {
+              await notify(context, "no user MCP servers configured");
+              return;
+            }
+            const store = new McpAuthStore(runtime.paths.home);
+            const lines: string[] = [];
+            for (const config of selected) {
+              if (config.transport !== "http") {
+                lines.push(`${config.name}: stdio (no OAuth)`);
+                continue;
+              }
+              if (mcpUsesAuthorizationHeader(config)) {
+                lines.push(`${config.name}: Authorization header`);
+                continue;
+              }
+              if (action === "logout") {
+                const removed = await store.remove(config.name, config.url);
+                lines.push(
+                  `${config.name}: ${
+                    removed ? "signed out" : "no stored credentials"
+                  }`,
+                );
+                continue;
+              }
+              const status = await store.status(config.name, config.url);
+              lines.push(
+                `${config.name}: ${status.signed_in ? "signed in" : "signed out"}${
+                  status.expires_at === null
+                    ? ""
+                    : ` · expires ${status.expires_at}`
+                }`,
+              );
+            }
+            await notify(context, lines.join("\n"));
+            return;
+          }
+          if (action === "login") {
+            const controller = new AbortController();
+            try {
+              const configs = await readMcpConfig(runtime.paths);
+              let requested = parts[1];
+              if (requested === undefined) {
+                const candidates = configs.filter(
+                  (config) =>
+                    config.transport === "http" &&
+                    !mcpUsesAuthorizationHeader(config),
+                );
+                if (candidates.length > 1) {
+                  const selected = await context.ui.select(
+                    "MCP server to sign in",
+                    candidates.map((config) => config.name),
+                  );
+                  if (selected === undefined) {
+                    return;
+                  }
+                  requested = selected;
+                }
+              }
+              const target = resolveMcpLoginTarget(configs, requested);
+              const store = new McpAuthStore(runtime.paths.home);
+              await notify(
+                context,
+                `Starting MCP sign-in for ${target.name}...`,
+              );
+              const result = await loginMcpServer({
+                server: target.name,
+                serverUrl: target.url,
+                store,
+                settings: oauthSettings(target.oauth, target.name),
+                signal: controller.signal,
+                onAuthorizationUrl: (url) => {
+                  context.ui.notify(
+                    [
+                      `MCP server ${target.name} requires authorization.`,
+                      "Open this URL in a browser:",
+                      url.href,
+                      "Then paste the full redirect URL when prompted.",
+                    ].join("\n"),
+                    "info",
+                  );
+                },
+                promptForRedirectUrl: async () => {
+                  const value = await context.ui.input(
+                    "MCP redirect URL",
+                    "Paste the full redirect URL, or leave empty to cancel",
+                  );
+                  const trimmed = value?.trim() ?? "";
+                  if (trimmed.length === 0) {
+                    controller.abort();
+                  }
+                  return trimmed.length === 0 ? undefined : trimmed;
+                },
+              });
+              const status = await store.status(target.name, target.url);
+              await notify(
+                context,
+                [
+                  result.already_authorized
+                    ? `MCP server ${target.name} already had usable credentials`
+                    : `signed in to MCP server ${target.name}`,
+                  `signed in: ${status.signed_in ? "yes" : "no"}`,
+                  `expires: ${status.expires_at ?? "not reported"}`,
+                  `scope: ${status.scope ?? "not reported"}`,
+                  "run /reload to start this server",
+                ].join("\n"),
+              );
+            } catch (error) {
+              context.ui.notify(
+                controller.signal.aborted
+                  ? "MCP sign-in cancelled"
+                  : `MCP sign-in failed: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                "error",
+              );
+            }
+            return;
+          }
+          context.ui.notify(
+            "usage: /mcp [list|add [name]|remove [name]|login [name]|status [name]|logout [name]]",
+            "warning",
           );
         }),
       });

@@ -49,6 +49,7 @@ import {
   listProjectSessions,
   loadConfig,
   loadMcpTools,
+  mcpUsesAuthorizationHeader,
   loginMcpServer,
   McpAuthStore,
   oauthSettings,
@@ -1961,17 +1962,6 @@ async function promptForMcpRedirectUrl(
   }
 }
 
-function hasMcpAuthorizationHeader(
-  config: Awaited<ReturnType<typeof readMcpConfig>>[number],
-): boolean {
-  return (
-    config.transport === "http" &&
-    Object.keys(config.headers).some(
-      (header) => header.toLowerCase() === "authorization",
-    )
-  );
-}
-
 async function commandMcp(options: CliOptions): Promise<number> {
   const paths = await resolveDaemonProject();
   const workspaceTrust = await resolveWorkspaceTrust({
@@ -2004,8 +1994,7 @@ async function commandMcp(options: CliOptions): Promise<number> {
     const requested = options.positionals[2];
     const configs = await readMcpConfig(paths);
     const oauthCandidates = configs.filter(
-      (config) =>
-        config.transport === "http" && !hasMcpAuthorizationHeader(config),
+      (config) => !mcpUsesAuthorizationHeader(config),
     );
     const target =
       requested === undefined
@@ -2028,7 +2017,7 @@ async function commandMcp(options: CliOptions): Promise<number> {
         `MCP server ${target.name} uses stdio and does not use OAuth`,
       );
     }
-    if (hasMcpAuthorizationHeader(target)) {
+    if (mcpUsesAuthorizationHeader(target)) {
       throw new Error(
         `MCP server ${target.name} uses an Authorization header; remove it to use OAuth`,
       );
@@ -2149,13 +2138,13 @@ async function commandMcp(options: CliOptions): Promise<number> {
             scope: null,
           };
         }
-        const status = hasMcpAuthorizationHeader(config)
+        const status = mcpUsesAuthorizationHeader(config)
           ? { signed_in: false, expires_at: null, scope: null }
           : await store.status(config.name, config.url);
         return {
           server: config.name,
           transport: "http",
-          auth: hasMcpAuthorizationHeader(config) ? "header" : "oauth",
+          auth: mcpUsesAuthorizationHeader(config) ? "header" : "oauth",
           ...status,
         };
       }),
