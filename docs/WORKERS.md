@@ -156,7 +156,8 @@ read-only path has no disk-write surface, so it does not charge disk bytes.
 The prompt is delivered over the child's standard input rather than its
 command-line arguments.
 
-Streamed child output is not implemented. A child failure that leaves a
-worktree behind reports that path in the error message and
-`subagent/result`; a failed run with no changes may still leave a clean
-worktree for inspection.
+Child progress is streamed to the parent TUI as bounded `assistant_delta`
+and `tool_start` events; the full child transcript and tool output are not
+streamed. A child failure that leaves a worktree behind reports that path in
+the error message and `subagent/result`; a failed run with no changes may
+still leave a clean worktree for inspection.

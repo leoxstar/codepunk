@@ -129,6 +129,11 @@ writes failures to stderr. `list` is read-only and does not start servers.
 `test --json` also reports `resource_servers` and the shared `resource_tools`
 list when a connected server advertises resources.
 The TUI `/mcp` command shows the same configured list and lifecycle guidance.
+`/mcp login [name]` and `/mcp logout [name]` open an arrow-key server choice
+when the OAuth server is not named on the command.
+`/mcp add [name]` and `/mcp remove [name]` use the same validated `mcp.toml`
+writer as the CLI. The add form selects stdio or Streamable HTTP, accepts a
+shell-free command line or URL, and reloads the server set.
 In the TUI, `/reload` re-reads `$CODEPUNK_HOME/mcp.toml` without replacing the
 Codepunk session: it starts the new server set, swaps the wrapped MCP tools,
 stops the previous server processes, and asks Pi to rebuild its tool registry.

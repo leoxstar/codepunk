@@ -27,9 +27,11 @@ user-scope error as project config. A cloned repository cannot ship a
 
 ## No model configured
 
-An interactive session with no active model shows the setup notice at startup,
-not only after the first prompt:
+An interactive session with no active model shows a persistent setup hint above
+the editor and opens an arrow-key setup menu on the first ordinary prompt:
 
+- the menu can select an already-authenticated model, open `/login`, explain a
+  custom OpenAI-compatible endpoint, or show the exact setup commands.
 - `/model` opens Pi's searchable picker; with no credential it reports that no
   authenticated models are available.
 - `/login` adds a built-in provider credential.
@@ -39,10 +41,11 @@ not only after the first prompt:
 
 Ordinary input is gated only when no model is active, so the first prompt does
 not silently fail inside the host. If Pi supplies a host default, that model is
-usable immediately and the setup notice explains how to persist an explicit
-default. Print mode has no picker: it exits `1` with the same import and set
-hints. Codepunk does not ship a separate model wizard; the model catalog,
-credentials, and picker are Pi's surfaces.
+usable immediately and the hint explains how to persist an explicit default.
+Print mode has no picker: it exits `1` with the same import and set hints.
+Codepunk does not own a second model catalog, credential store, or search
+implementation; the menu only routes into Pi's surfaces or Codepunk's file
+commands.
 
 `/model` stays Pi's path on purpose. It is the only entry point that combines
 the live authenticated catalog, fuzzy search, session-scoped selection, and the
