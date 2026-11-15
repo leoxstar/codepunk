@@ -126,6 +126,33 @@ export const BashResultEventSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CommitCreatedEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("commit/created"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        commit: NonEmptyStringSchema,
+        previous_commit: Type.Union([NonEmptyStringSchema, Type.Null()]),
+        tree: NonEmptyStringSchema,
+        message_sha256: Sha256Schema,
+        message_bytes: Type.Integer({ minimum: 1 }),
+        files: Type.Array(Type.String()),
+        stage: Type.Union([
+          Type.Literal("staged"),
+          Type.Literal("tracked"),
+          Type.Literal("all"),
+        ]),
+        root: NonEmptyStringSchema,
+        evidence_head: Type.Union([Sha256Schema, Type.Null()]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const CheckpointRestoreEventSchema = Type.Object(
   {
     ...EventBase,
@@ -688,6 +715,7 @@ export const SessionEventSchema = Type.Union([
   SessionTreeEventSchema,
   ApprovalAnswerEventSchema,
   BashResultEventSchema,
+  CommitCreatedEventSchema,
   CheckpointRestoreEventSchema,
   ContextLoadedEventSchema,
   TrustDecisionEventSchema,
@@ -719,6 +747,7 @@ export type SessionForkedEvent = Static<typeof SessionForkedEventSchema>;
 export type SessionTreeEvent = Static<typeof SessionTreeEventSchema>;
 export type ApprovalAnswerEvent = Static<typeof ApprovalAnswerEventSchema>;
 export type BashResultEvent = Static<typeof BashResultEventSchema>;
+export type CommitCreatedEvent = Static<typeof CommitCreatedEventSchema>;
 export type CheckpointRestoreEvent = Static<
   typeof CheckpointRestoreEventSchema
 >;

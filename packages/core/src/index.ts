@@ -362,6 +362,16 @@ export {
   type WorkspaceDiffOptions,
 } from "./ops/diff.ts";
 export {
+  GitCommitError,
+  createGitCommit,
+  readWorkspaceCommitPreview,
+  type GitCommitOptions,
+  type GitCommitResult,
+  type GitCommitStage,
+  type WorkspaceCommitPreview,
+  type WorkspaceCommitPreviewOptions,
+} from "./ops/commit.ts";
+export {
   CLI_PACKAGE_NAME,
   PackageActionError,
   installPackage,
