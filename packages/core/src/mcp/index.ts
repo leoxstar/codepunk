@@ -71,6 +71,15 @@ export interface McpHttpServerConfig {
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
 
+export function mcpUsesAuthorizationHeader(config: McpServerConfig): boolean {
+  return (
+    config.transport === "http" &&
+    Object.keys(config.headers).some(
+      (header) => header.toLowerCase() === "authorization",
+    )
+  );
+}
+
 export interface McpServerStart {
   server: string;
   command_sha256: string;
