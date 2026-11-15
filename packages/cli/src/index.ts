@@ -1036,12 +1036,12 @@ async function resolveRunWorkspaceTrust(
   );
   const decision = await selectTerminalChoice("Trust this workspace?", [
     {
-      label: "Trust for this session",
-      value: "session" as const,
+      label: "Trust this workspace and remember",
+      value: "always" as const,
     },
     {
-      label: "Always trust this workspace",
-      value: "always" as const,
+      label: "Trust for this session only",
+      value: "session" as const,
     },
     {
       label: "Do not trust and remember this decision",

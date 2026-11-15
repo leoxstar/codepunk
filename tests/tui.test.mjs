@@ -966,8 +966,14 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       assert.match(session.output(), /AGENTS\.md/u);
       assert.match(session.output(), /sha256:[a-f0-9]{64}/u);
       assert.match(session.output(), /Up\/Down to move/u);
-      assert.match(session.output(), /\u2192 Trust for this session/u);
-      assert.doesNotMatch(session.output(), /1\. Trust for this session/u);
+      assert.match(
+        session.output(),
+        /\u2192 Trust this workspace and remember/u,
+      );
+      assert.doesNotMatch(
+        session.output(),
+        /1\. Trust this workspace and remember/u,
+      );
       assert.doesNotMatch(session.output(), /1-3 to jump/u);
       assert.doesNotMatch(session.output(), /\[1\/2\/3\]/u);
       session.child.stdin.write("\u001b[B\u001b[B\r");
@@ -1002,6 +1008,70 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       await waitForOutput(second, "codepunk · auto/auto", "saved decision");
       assert.doesNotMatch(second.output(), /Trust this workspace\?/u);
       second.child.stdin.write("/quit\r");
+    } finally {
+      await stopPty(second);
+    }
+  });
+});
+
+test("a real pty remembers the default trust choice", async () => {
+  await withTempDirectory("codepunk-tui-trust-default-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "DEFAULT_TRUST_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const env = {
+      ...process.env,
+      CODEPUNK_HOME: home,
+      PI_OFFLINE: "1",
+      TERM: "xterm-256color",
+      NO_COLOR: "1",
+    };
+    const first = startPty(process.execPath, [cli], { cwd: project, env });
+    try {
+      await waitForOutput(first, "Trust this workspace?", "first trust prompt");
+      first.child.stdin.write("\r");
+      await waitForOutput(
+        first,
+        "selected: Trust this workspace and remember",
+        "default trust selection",
+      );
+      await waitForOutput(first, "codepunk · auto/auto", "first startup");
+      const store = JSON.parse(
+        await fs.readFile(path.join(home, "trust.json"), "utf8"),
+      );
+      const realProject = await fs.realpath(project);
+      assert.equal(store[realProject], true);
+      first.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        first.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(first);
+    }
+
+    const second = startPty(process.execPath, [cli], { cwd: project, env });
+    try {
+      await waitForOutput(second, "codepunk · auto/auto", "trusted restart");
+      assert.doesNotMatch(second.output(), /Trust this workspace\?/u);
+      second.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        second.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(second);
     }
