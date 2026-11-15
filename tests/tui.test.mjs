@@ -1525,6 +1525,122 @@ test("a real pty reports status without a configured model", async () => {
   });
 });
 
+test("a real pty reloads config in place and preserves state on invalid input", async () => {
+  await withTempDirectory("codepunk-tui-config-reload-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const configPath = path.join(home, "config.toml");
+    await fs.writeFile(
+      configPath,
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[approval]",
+        'mode = "ask"',
+        "",
+        "[autonomy]",
+        'profile = "ask"',
+        "",
+      ].join("\n"),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--allow-unsandboxed-shell"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await fs.writeFile(
+        configPath,
+        [
+          "[sandbox]",
+          'mode = "required"',
+          "",
+          "[approval]",
+          'mode = "deny"',
+          "",
+          "[autonomy]",
+          'profile = "read-only"',
+          "",
+          "[model]",
+          'provider = "next"',
+          'id = "next-model"',
+          "",
+        ].join("\n"),
+      );
+
+      const reloadMark = session.output().length;
+      await runCommandAfter(session, "/reload", "Codepunk config reloaded.");
+      const reloaded = session.output().slice(reloadMark);
+      assert.match(
+        reloaded,
+        /applied now: approval\.mode=deny, autonomy=read-only/u,
+      );
+      assert.match(reloaded, /next session: model, sandbox/u);
+      assert.match(
+        reloaded,
+        /Plugins are not loaded while autonomy is read-only\./u,
+      );
+      assert.match(
+        reloaded,
+        /MCP is not started while autonomy is read-only\./u,
+      );
+
+      const permissionsMark = session.output().length;
+      await runCommandAfter(session, "/permissions", "approvals: deny");
+      const permissions = session.output().slice(permissionsMark);
+      assert.match(permissions, /autonomy: read-only/u);
+      assert.match(permissions, /current shell: explicit-unsandboxed/u);
+      assert.match(permissions, /next session sandbox: required/u);
+
+      await fs.writeFile(configPath, '[approval]\nmode = "not-a-mode"\n');
+      const invalidMark = session.output().length;
+      await runCommandAfter(session, "/reload", "Reload failed:");
+      assert.match(
+        session.output().slice(invalidMark),
+        /approval\.mode|not-a-mode/u,
+      );
+
+      const preservedMark = session.output().length;
+      await runCommandAfter(session, "/permissions", "approvals: deny");
+      assert.match(
+        session.output().slice(preservedMark),
+        /autonomy: read-only/u,
+      );
+
+      const sessionsBeforeQuit = (
+        await fs.readdir(home, { recursive: true })
+      ).filter((entry) => entry.endsWith("session.jsonl"));
+      assert.equal(sessionsBeforeQuit.length, 1);
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
 test("/init refuses to overwrite an existing root instruction file", async () => {
   await withTempDirectory("codepunk-tui-init-existing-", async (root) => {
     const project = path.join(root, "project");
