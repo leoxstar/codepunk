@@ -3230,6 +3230,12 @@ async function commandPackage(
   options: CliOptions,
   verb: "install" | "upgrade" | "uninstall",
 ): Promise<number> {
+  const targetVersion = options.packageVersion ?? VERSION;
+  if (verb === "install" && targetVersion === "0.0.0") {
+    throw new Error(
+      "this checkout is version 0.0.0 and @codepunk/cli is not published; install from the repository checkout or pass --package-version <published-version>",
+    );
+  }
   const base = {
     prefix: options.prefix ?? null,
     cwd: process.cwd(),
@@ -3239,7 +3245,7 @@ async function commandPackage(
     verb === "install"
       ? await installPackage({
           ...base,
-          version: options.packageVersion ?? VERSION,
+          version: targetVersion,
         })
       : verb === "upgrade"
         ? await upgradePackage(base)

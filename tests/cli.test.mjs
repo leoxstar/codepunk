@@ -821,6 +821,31 @@ test("permission commands show effective modes, explain commands, and persist pr
   });
 });
 
+test("install refuses an unpublished checkout version", async () => {
+  await withTempDirectory("codepunk-cli-install-", async (root) => {
+    const { project, home } = await makeProject(root);
+    await assert.rejects(
+      () => runCli(["install", "--dry-run"], { cwd: project, home }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(
+          error.stderr,
+          /this checkout is version 0\.0\.0 and @codepunk\/cli is not published/u,
+        );
+        assert.match(error.stderr, /--package-version <published-version>/u);
+        return true;
+      },
+    );
+
+    const dryRun = await runCli(
+      ["install", "--dry-run", "--package-version", "9.9.9"],
+      { cwd: project, home },
+    );
+    assert.match(dryRun.stdout, /npm install/u);
+    assert.match(dryRun.stdout, /@codepunk\/cli@9\.9\.9/u);
+  });
+});
+
 test("--add-dir extends file policy for permission inspection but not project resources", async () => {
   await withTempDirectory("codepunk-cli-add-dir-", async (root) => {
     const { project, home } = await makeProject(root);
