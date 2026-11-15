@@ -454,6 +454,7 @@ export {
 export {
   createRuntime,
   signStandalone,
+  type ConfigReloadResult,
   type CodepunkRuntime,
   type McpReloadResult,
   type McpReloadSkip,

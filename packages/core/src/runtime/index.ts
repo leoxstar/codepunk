@@ -40,6 +40,8 @@ import {
 } from "../evidence/index.ts";
 import {
   filesystemFullStartupIssue,
+  readOnlyLiveSwitchIssue,
+  readOnlyLiveWidenIssue,
   shellUnavailableReason,
 } from "../permissions/index.ts";
 import {
@@ -211,6 +213,7 @@ export interface CodepunkRuntime {
   project: ProjectContext;
   paths: ProjectPaths;
   config: CodepunkConfig;
+  configOverrides: ConfigOverrides;
   loadedConfig: LoadedConfig;
   policy: PolicyFiles;
   plugins: PluginSummary;
@@ -252,6 +255,13 @@ export interface CodepunkRuntime {
   };
   usage(): ModelUsageSummary;
   setApprovalMode(mode: "ask" | "deny" | "auto" | "allow"): void;
+  /**
+   * Re-read the layered Codepunk config without replacing the session.
+   * Approval mode, autonomy, and the plugin-enable switch can take effect
+   * live. Settings bound into the Pi host or OS sandbox are reported for the
+   * next session and are not applied to the active execution boundary.
+   */
+  reloadConfig(): Promise<ConfigReloadResult>;
   signInProcess(
     verdict: "complete" | "incomplete",
     options?: { channel?: "tui" | "cli"; actor?: string; tty?: boolean },
@@ -309,6 +319,16 @@ export interface PluginReloadResult {
   skipped: "disabled" | "read-only" | "headless" | null;
   plugins: PluginSummary;
   error: string | null;
+}
+
+export interface ConfigReloadResult {
+  changed: boolean;
+  changedSections: readonly string[];
+  applied: readonly string[];
+  nextSession: readonly string[];
+  blocked: readonly string[];
+  warnings: readonly string[];
+  pluginsChanged: boolean;
 }
 
 function executableHash(bytes: Buffer): string {
@@ -542,9 +562,32 @@ async function openSession(
   });
 }
 
+const CONFIG_SECTIONS = [
+  "tui",
+  "context",
+  "model",
+  "plugins",
+  "tools",
+  "approval",
+  "autonomy",
+  "sandbox",
+  "filesystem",
+  "session",
+  "evidence",
+  "budget",
+  "memory",
+  "telemetry",
+] as const satisfies readonly (keyof CodepunkConfig)[];
+
+function configValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export async function createRuntime(
   options: RuntimeOptions,
 ): Promise<CodepunkRuntime> {
+  const environment = options.environment ?? process.env;
+  const configOverrides = { ...(options.configOverrides ?? {}) };
   const project = await findDeliveryRoot(options.cwd);
   const home = pathsHome(options.environment);
   const bare = options.bare === true;
@@ -579,12 +622,9 @@ export async function createRuntime(
   if (projectConfigSafety === null && workspaceTrust.trusted) {
     await ensureProjectConfigDir(paths);
   }
-  const loadedConfig = await loadConfig(
-    paths,
-    options.environment ?? process.env,
-    options.configOverrides ?? {},
-    { projectTrusted: workspaceTrust.trusted },
-  );
+  const loadedConfig = await loadConfig(paths, environment, configOverrides, {
+    projectTrusted: workspaceTrust.trusted,
+  });
   const config = loadedConfig.config;
   const disableContext = bare;
   if (bare) {
@@ -1116,10 +1156,69 @@ export async function createRuntime(
     await host.recordEvent("mcp/server_start", start);
   }
 
+  const applyApprovalMode = (
+    mode: CodepunkConfig["approval"]["mode"],
+  ): void => {
+    config.approval.mode = mode;
+    if (mode === "allow" || mode === "deny") {
+      approval.clearSessionGrants();
+    }
+    approval.replaceChannel(
+      mode === "deny" ? null : interactiveApprovalChannel,
+    );
+  };
+
+  const applyAutonomy = async (
+    next: CodepunkConfig["autonomy"],
+  ): Promise<void> => {
+    if (next.profile === "read-only") {
+      const issue = readOnlyLiveSwitchIssue({
+        pluginsEnabled: pluginState.current.summary.enabled,
+        mcpServers: mcp.servers,
+        sandboxStartedWritable: sandbox?.sandboxed === true && !readOnly,
+      });
+      if (issue !== null) {
+        throw new Error(issue);
+      }
+    } else if (autonomy.profile === "read-only") {
+      const issue = readOnlyLiveWidenIssue({
+        target: next.profile,
+        sandboxStartedReadOnly: sandbox?.sandboxed === true && readOnly,
+      });
+      if (issue !== null) {
+        throw new Error(issue);
+      }
+    }
+
+    let rules: readonly ScopedRule[] = autonomy.rules;
+    let rulesSha256 = autonomy.rulesSha256;
+    if (next.profile === "scoped") {
+      const loaded = await loadScopedRules(next.scoped_rules!, paths);
+      rules = loaded.rules;
+      rulesSha256 = loaded.rulesSha256;
+    }
+
+    const previousProfile = autonomy.profile;
+    const previousRules = autonomy.rules;
+    const previousRulesSha256 = autonomy.rulesSha256;
+    try {
+      if (next.profile === "scoped") {
+        autonomy.replaceRules(rules, rulesSha256);
+      }
+      autonomy.setProfile(next.profile);
+    } catch (error) {
+      autonomy.replaceRules(previousRules, previousRulesSha256);
+      autonomy.setProfile(previousProfile);
+      throw error;
+    }
+    config.autonomy = structuredClone(next);
+  };
+
   const runtime: CodepunkRuntime = {
     project,
     paths,
     config,
+    configOverrides,
     loadedConfig,
     policy,
     get plugins() {
@@ -1169,14 +1268,105 @@ export async function createRuntime(
         cost: stats.cost,
       });
     },
-    setApprovalMode(mode) {
-      config.approval.mode = mode;
-      if (mode === "allow" || mode === "deny") {
-        approval.clearSessionGrants();
+    setApprovalMode: applyApprovalMode,
+    async reloadConfig() {
+      if (host.session.isStreaming) {
+        throw new Error(
+          "Wait for the current response to finish before reloading.",
+        );
       }
-      approval.replaceChannel(
-        mode === "deny" ? null : interactiveApprovalChannel,
+      if (host.session.isCompacting) {
+        throw new Error("Wait for compaction to finish before reloading.");
+      }
+      const loaded = await loadConfig(paths, environment, configOverrides, {
+        projectTrusted: workspaceTrust.trusted,
+      });
+      const next = loaded.config;
+      const changedSections = CONFIG_SECTIONS.filter(
+        (section) => !configValuesEqual(config[section], next[section]),
       );
+      if (changedSections.length === 0) {
+        return {
+          changed: false,
+          changedSections: [],
+          applied: [],
+          nextSession: [],
+          blocked: [],
+          warnings: [...loaded.warnings],
+          pluginsChanged: false,
+        };
+      }
+
+      const applied: string[] = [];
+      const nextSession: string[] = [];
+      const blocked: string[] = [];
+      let autonomyBlocked = false;
+      if (config.approval.mode !== next.approval.mode) {
+        applyApprovalMode(next.approval.mode);
+        applied.push(`approval.mode=${next.approval.mode}`);
+      }
+
+      if (!configValuesEqual(config.autonomy, next.autonomy)) {
+        try {
+          await applyAutonomy(next.autonomy);
+          applied.push(`autonomy=${next.autonomy.profile}`);
+        } catch (error) {
+          autonomyBlocked = true;
+          blocked.push(
+            `autonomy: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      const reviewerChanged =
+        config.approval.reviewer !== next.approval.reviewer ||
+        config.approval.reviewer_model !== next.approval.reviewer_model ||
+        config.approval.reviewer_timeout_ms !==
+          next.approval.reviewer_timeout_ms;
+
+      const pluginsChanged = !configValuesEqual(config.plugins, next.plugins);
+      if (pluginsChanged) {
+        config.plugins.enabled = next.plugins.enabled;
+        applied.push(`plugins.enabled=${next.plugins.enabled}`);
+      }
+
+      if (!configValuesEqual(config.sandbox, next.sandbox)) {
+        config.sandbox = structuredClone(next.sandbox);
+      }
+      if (!configValuesEqual(config.filesystem, next.filesystem)) {
+        config.filesystem = structuredClone(next.filesystem);
+      }
+
+      for (const section of changedSections) {
+        if (section === "approval") {
+          if (reviewerChanged) {
+            nextSession.push("approval.reviewer");
+          }
+          continue;
+        }
+        if (section === "autonomy") {
+          if (autonomyBlocked) {
+            nextSession.push("autonomy");
+          }
+          continue;
+        }
+        if (section === "plugins") {
+          continue;
+        }
+        nextSession.push(section);
+      }
+
+      return {
+        changed: true,
+        changedSections,
+        applied,
+        nextSession,
+        blocked,
+        warnings: [...loaded.warnings],
+        pluginsChanged,
+      };
     },
     async signInProcess(verdict, signOptions = {}) {
       const request: Omit<SignOffRequest, "run_id"> = {
@@ -1324,11 +1514,13 @@ export async function createRuntime(
       }
       const skipped: PluginReloadResult["skipped"] = disablePlugins
         ? "disabled"
-        : readOnly
+        : autonomy.profile === "read-only"
           ? "read-only"
           : options.headless === true
             ? "headless"
-            : null;
+            : !(options.allowPlugins === true || config.plugins.enabled)
+              ? "disabled"
+              : null;
       if (skipped !== null) {
         const disabled = await loadUserPlugins({
           allowed: false,
@@ -1395,7 +1587,7 @@ export async function createRuntime(
         ? "disabled"
         : !hasModel
           ? "no-model"
-          : config.autonomy.profile === "read-only"
+          : autonomy.profile === "read-only"
             ? "read-only"
             : null;
       const warnings: string[] = [];
