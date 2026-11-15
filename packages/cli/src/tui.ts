@@ -12,17 +12,23 @@ import {
   ChildHostError,
   CheckpointConflictError,
   APPROVAL_MODE_NAMES,
+  DEFAULT_PROTECTED_PATHS,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
   PI_INSTRUCTION_FILE_NAMES,
   autonomyRulesHash,
   collectCapabilities,
+  createHandoff,
   createGitCommit,
+  createTaskSpec,
   configSummary,
   decidePolicy,
+  discardWorktree,
   explainPermission,
   exportSession,
+  findDeliveryRoot,
   forkLiveSession,
+  freezeWorktree,
   formatCapabilities,
   formatDoctor,
   formatAgentProfiles,
@@ -59,6 +65,9 @@ import {
   readSkillInvocation,
   readWorkState,
   readSavedWorkspaceTrust,
+  mergeHandoff,
+  projectPaths,
+  removeMergedWorktree,
   SessionStore,
   createUlid,
   runSubagentHost,
@@ -66,8 +75,10 @@ import {
   resolveConfiguredModel,
   resolveModelSelection,
   saveWorkspaceTrust,
+  signRun,
   staleLockReason,
   setConfiguredModel,
+  writeHandoff,
   outputSha,
   recordHash,
   redactOutputPreview,
@@ -98,6 +109,9 @@ import type {
   ApprovalAnswer,
   ApprovalRequest,
   ApprovalScope,
+  MergeRecord,
+  TaskHandoff,
+  Verdict,
 } from "@codepunk/protocol";
 import { appendBuildDoctorCheck, inspectCliBuild } from "./build-info.ts";
 
@@ -224,11 +238,22 @@ export interface BackgroundSubagent {
   status: "running" | "completed" | "failed" | "stopped";
   result: SubagentHostResult | null;
   error: string | null;
+  worktree: string | null;
   streamTail: string;
   lastTool: string | null;
   lastStreamUpdate: number;
+  delivery: BackgroundSubagentDelivery | null;
   controller: AbortController;
   promise: Promise<void>;
+}
+
+interface BackgroundSubagentDelivery {
+  state: "signed" | "signed-incomplete" | "merged" | "discarded";
+  verdict: Verdict;
+  handoff?: TaskHandoff;
+  handoffPath?: string;
+  merge?: MergeRecord;
+  mergeRecordPath?: string;
 }
 
 interface Renderable {
@@ -340,7 +365,7 @@ export function codepunkHelp(): string {
     "  !<command>                 run a shell command through the same policy gate",
     "  /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
     "                             start a child session from a discovered profile",
-    "  /agents [profiles|result|wait|stop <id>]",
+    "  /agents [profiles|result|wait|stop|review|sign|merge|discard <id>]",
     "                             list profiles or manage child sessions",
     "  /plan                      show the current plan",
     "  /todos                     show the current todo list",
@@ -3228,9 +3253,11 @@ async function runSubagent(
     status: "running",
     result: null,
     error: null,
+    worktree: null,
     streamTail: "",
     lastTool: null,
     lastStreamUpdate: 0,
+    delivery: null,
     controller,
     promise: Promise.resolve(),
   };
@@ -3299,11 +3326,13 @@ async function runSubagent(
         signal: controller.signal,
       });
       record.status = "completed";
+      record.worktree = record.result?.worktree ?? null;
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error);
       if (error instanceof ChildHostError && error.worktree !== null) {
         failureWorktree = error.worktree;
       }
+      record.worktree = failureWorktree;
       stopped =
         error instanceof ChildHostError && error.code === "subagent.stopped";
       record.status = stopped ? "stopped" : "failed";
@@ -3324,6 +3353,7 @@ async function runSubagent(
       profile: record.result?.profile ?? profile?.name ?? null,
       profile_sha256: record.result?.profile_sha256 ?? profile?.sha256 ?? null,
       worktree: record.result?.worktree ?? failureWorktree,
+      base_commit: record.result?.base_commit ?? null,
       changed_files: record.result?.changed_files ?? null,
     };
     try {
@@ -3344,7 +3374,11 @@ async function runSubagent(
           ...(record.result?.worktree === null ||
           record.result?.worktree === undefined
             ? []
-            : [`worktree: ${record.result.worktree}`]),
+            : [
+                `worktree: ${record.result.worktree}`,
+                `next: /agents review ${childSessionId} → /agents sign ${childSessionId} → /agents merge ${childSessionId}`,
+                `discard: /agents discard ${childSessionId}`,
+              ]),
         ].join("\n"),
         "info",
       );
@@ -3375,11 +3409,413 @@ function formatSubagents(state: TuiState): string {
         Math.floor((Date.now() - record.startedAt) / 1_000),
       );
       const prompt = record.prompt.replace(/\s+/gu, " ").slice(0, 100);
+      const delivery =
+        record.delivery === null ? "" : `  ${record.delivery.state}`;
+      const worktree = record.worktree === null ? "" : "  worktree";
       return `${record.childSessionId}  ${record.status}  ${elapsed}s  ${
         record.profile ?? "built-in"
-      }  ${record.isolation}  ${prompt}`;
+      }  ${record.isolation}${delivery}${worktree}  ${prompt}`;
     })
     .join("\n");
+}
+
+function boundedSubagentText(value: string, limit = 12_000): string {
+  return value.length <= limit
+    ? value
+    : `${value.slice(0, limit)}\n[truncated]`;
+}
+
+function isCodepunkReviewPath(filePath: string): boolean {
+  const normalized = filePath.split("\\").join("/");
+  return normalized === ".codepunk/.gitignore";
+}
+
+async function subagentReviewText(record: BackgroundSubagent): Promise<string> {
+  const worktree = record.worktree ?? record.result?.worktree ?? null;
+  if (worktree === null) {
+    return `subagent ${record.childSessionId} has no worktree to review`;
+  }
+  const [diff, preview] = await Promise.all([
+    readWorkspaceDiff({ root: worktree, maxBytes: 48 * 1024 }),
+    readWorkspaceCommitPreview({ root: worktree }),
+  ]);
+  const files = [
+    ...preview.staged,
+    ...preview.unstaged,
+    ...preview.untracked,
+  ].filter((entry) => !isCodepunkReviewPath(entry));
+  const frozenPaths = record.delivery?.handoff?.changed_paths ?? [];
+  const untracked = diff.untracked
+    .split("\n")
+    .filter((entry) => entry.length > 0 && !isCodepunkReviewPath(entry));
+  const fileLines =
+    files.length > 0
+      ? [...new Set(files)].map((entry) => `  ${entry}`).join("\n")
+      : frozenPaths.length > 0
+        ? frozenPaths.map((entry) => `  ${entry} (frozen)`).join("\n")
+        : "  (no files)";
+  const patch = [diff.staged, diff.unstaged]
+    .filter((entry) => entry.length > 0)
+    .join("\n");
+  return boundedSubagentText(
+    [
+      `subagent ${record.childSessionId} · ${record.status}${
+        record.delivery === null ? "" : ` · ${record.delivery.state}`
+      }`,
+      `profile: ${record.profile ?? "built-in"} · isolation: ${record.isolation}`,
+      `worktree: ${worktree}`,
+      `files: ${files.length > 0 ? files.length : frozenPaths.length}`,
+      fileLines,
+      ...(preview.staged_stat.length === 0 ? [] : [preview.staged_stat]),
+      ...(preview.unstaged_stat.length === 0 ? [] : [preview.unstaged_stat]),
+      ...(untracked.length === 0
+        ? []
+        : [`untracked:\n${untracked.join("\n")}`]),
+      ...(patch.length === 0 ? [] : ["patch:", patch]),
+      ...(diff.truncated ? ["[patch truncated]"] : []),
+      `summary: ${record.result?.summary ?? record.error ?? record.status}`,
+    ].join("\n\n"),
+  );
+}
+
+async function childProjectPaths(
+  runtime: CodepunkRuntime,
+  record: BackgroundSubagent,
+): Promise<{
+  paths: ReturnType<typeof projectPaths>;
+  cwd: string;
+  projectRoot: string;
+}> {
+  const worktree = record.worktree ?? record.result?.worktree ?? null;
+  const context = await findDeliveryRoot(worktree ?? runtime.paths.cwd);
+  return {
+    paths: projectPaths(context, runtime.paths.home),
+    cwd: worktree ?? runtime.paths.cwd,
+    projectRoot: context.deliveryRoot,
+  };
+}
+
+async function reviewSubagent(
+  context: ExtensionCommandContext,
+  record: BackgroundSubagent,
+): Promise<void> {
+  try {
+    context.ui.notify(await subagentReviewText(record), "info");
+  } catch (error) {
+    context.ui.notify(
+      `subagent review failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
+}
+
+async function signSubagent(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  record: BackgroundSubagent,
+): Promise<void> {
+  const result = record.result;
+  if (
+    record.status !== "completed" ||
+    result === null ||
+    record.worktree === null
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} has no completed worktree to sign`,
+      "warning",
+    );
+    return;
+  }
+  if (
+    result.child_run_id === null ||
+    result.child_evidence_path === null ||
+    result.evidence_head === null
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} has no child evidence to sign`,
+      "warning",
+    );
+    return;
+  }
+  await reviewSubagent(context, record);
+  const selected = await context.ui.select(
+    `Sign subagent ${record.childSessionId}`,
+    ["Sign as complete", "Sign as incomplete", "Cancel"],
+  );
+  if (selected === undefined || selected === "Cancel") {
+    return;
+  }
+  const signed = selected === "Sign as complete" ? "complete" : "incomplete";
+  try {
+    const child = await childProjectPaths(runtime, record);
+    const signedResult = await signRun({
+      paths: child.paths,
+      cwd: child.cwd,
+      projectRoot: child.projectRoot,
+      runId: result.child_run_id,
+      request: {
+        version: 1,
+        evidence_head: result.evidence_head,
+        signed_verdict: signed,
+        channel: "tui",
+        actor: "local-user",
+        is_tty: true,
+        source: "human",
+        previous_sign_off_id: record.delivery?.verdict.sign_off_id ?? null,
+      },
+    });
+    record.delivery = {
+      state: signed === "complete" ? "signed" : "signed-incomplete",
+      verdict: signedResult.verdict,
+    };
+    context.ui.notify(
+      [
+        `subagent ${record.childSessionId} signed ${signed}`,
+        `verdict: ${signedResult.verdict.verdict}`,
+        ...(signedResult.verdict.verdict === "complete"
+          ? [
+              `next: /agents merge ${record.childSessionId}`,
+              `discard: /agents discard ${record.childSessionId}`,
+            ]
+          : [`the child run remains incomplete; merge is blocked`]),
+      ].join("\n"),
+      signedResult.verdict.verdict === "complete" ? "info" : "warning",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `subagent sign failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
+}
+
+async function mergeSubagent(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  record: BackgroundSubagent,
+): Promise<void> {
+  const result = record.result;
+  if (
+    record.status !== "completed" ||
+    result === null ||
+    record.worktree === null ||
+    result.base_commit === null
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} has no completed worktree to merge`,
+      "warning",
+    );
+    return;
+  }
+  if (
+    record.delivery?.state === "merged" ||
+    record.delivery?.state === "discarded"
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} is already ${record.delivery.state}`,
+      "warning",
+    );
+    return;
+  }
+  if (
+    record.delivery?.verdict.verdict !== "complete" ||
+    record.delivery.verdict.sign_off_id === null
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} is not signed complete; use /agents sign ${record.childSessionId}`,
+      "warning",
+    );
+    return;
+  }
+  if (
+    result.child_run_id === null ||
+    result.child_evidence_path === null ||
+    result.evidence_head === null
+  ) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} has no child evidence to merge`,
+      "warning",
+    );
+    return;
+  }
+  const target = await readWorkspaceCommitPreview({
+    root: runtime.paths.deliveryRoot,
+  });
+  if (target.head !== result.base_commit) {
+    context.ui.notify(
+      `cannot merge: parent HEAD ${target.head ?? "none"} is not the child base ${result.base_commit}`,
+      "error",
+    );
+    return;
+  }
+  const targetChanges = [
+    ...target.staged,
+    ...target.unstaged,
+    ...target.untracked,
+  ].filter((entry) => entry !== ".codepunk" && !entry.startsWith(".codepunk/"));
+  if (targetChanges.length > 0) {
+    context.ui.notify(
+      `cannot merge: the parent working tree is dirty (${targetChanges.join(
+        ", ",
+      )}); commit or stash its changes first`,
+      "error",
+    );
+    return;
+  }
+  await reviewSubagent(context, record);
+  const confirmed = await context.ui.select(
+    `Merge subagent ${record.childSessionId}?`,
+    ["Merge the signed child commit", "Cancel"],
+  );
+  if (confirmed !== "Merge the signed child commit") {
+    return;
+  }
+  try {
+    const summaryLine =
+      (result.summary.split(/\r?\n/u)[0] ?? "")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 160) || `subagent ${record.childSessionId}`;
+    const spec = createTaskSpec({
+      taskId: `subagent-${record.childSessionId}`,
+      title: `Subagent ${record.profile ?? "built-in"}`,
+      objective: record.prompt,
+      baseCommit: result.base_commit,
+      writeSet: ["."],
+      acceptance: ["human review and signed child run"],
+      isolation: "worktree",
+    });
+    const frozen = await freezeWorktree({
+      repoRoot: runtime.paths.deliveryRoot,
+      worktree: record.worktree,
+      baseCommit: result.base_commit,
+      protectedPaths: DEFAULT_PROTECTED_PATHS,
+      message: `subagent: ${summaryLine}`,
+    });
+    const handoff = await createHandoff({
+      spec,
+      worktree: record.worktree,
+      workerId: record.childSessionId,
+      runId: result.child_run_id,
+      evidencePath: result.child_evidence_path,
+      verdict: {
+        verdict: "complete",
+        sign_off_id: record.delivery.verdict.sign_off_id,
+        evidence_head: result.evidence_head,
+      },
+    });
+    const handoffPath = await writeHandoff(runtime.paths, handoff);
+    const merge = await mergeHandoff({
+      paths: runtime.paths,
+      repoRoot: runtime.paths.deliveryRoot,
+      sourceWorktree: record.worktree,
+      spec,
+      handoff,
+      evidencePath: result.child_evidence_path,
+      actor: "local-user",
+      human: true,
+      taskState: "review_passed",
+    });
+    const mergeRecordPath = path.join(
+      runtime.paths.projectDir,
+      "merges",
+      spec.task_id,
+      `${merge.merge_id}.json`,
+    );
+    let cleanupError: string | null = null;
+    try {
+      await removeMergedWorktree({
+        repoRoot: runtime.paths.deliveryRoot,
+        worktree: record.worktree,
+        mergeCommit: merge.merge_commit,
+      });
+      record.worktree = null;
+      result.worktree = null;
+    } catch (error) {
+      cleanupError = error instanceof Error ? error.message : String(error);
+    }
+    record.delivery = {
+      state: "merged",
+      verdict: record.delivery.verdict,
+      handoff,
+      handoffPath,
+      merge,
+      mergeRecordPath,
+    };
+    context.ui.notify(
+      [
+        `subagent ${record.childSessionId} merged`,
+        `child commit: ${frozen.headCommit}`,
+        `merge commit: ${merge.merge_commit}`,
+        `handoff: ${handoffPath}`,
+        `merge record: ${mergeRecordPath}`,
+        ...(cleanupError === null
+          ? ["worktree removed"]
+          : [`worktree cleanup failed: ${cleanupError}`]),
+      ].join("\n"),
+      cleanupError === null ? "info" : "warning",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `subagent merge failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
+}
+
+async function discardSubagent(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  record: BackgroundSubagent,
+): Promise<void> {
+  const worktree = record.worktree ?? record.result?.worktree ?? null;
+  if (worktree === null) {
+    context.ui.notify(
+      `subagent ${record.childSessionId} has no worktree to discard`,
+      "warning",
+    );
+    return;
+  }
+  const confirmed = await context.ui.select(
+    `Discard subagent ${record.childSessionId} worktree?`,
+    ["Discard unmerged worktree", "Cancel"],
+  );
+  if (confirmed !== "Discard unmerged worktree") {
+    return;
+  }
+  try {
+    await discardWorktree({
+      repoRoot: runtime.paths.deliveryRoot,
+      worktree,
+    });
+    record.worktree = null;
+    if (record.result !== null) {
+      record.result.worktree = null;
+    }
+    if (record.delivery !== null) {
+      record.delivery = {
+        ...record.delivery,
+        state: "discarded",
+      };
+    }
+    context.ui.notify(
+      `subagent ${record.childSessionId} worktree discarded`,
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `subagent discard failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
 }
 
 const SUBAGENT_STREAM_LIMIT = 1_200;
@@ -3487,16 +3923,24 @@ async function manageSubagents(
     );
     return;
   }
-  if (action !== "result" && action !== "wait" && action !== "stop") {
+  if (
+    action !== "result" &&
+    action !== "wait" &&
+    action !== "stop" &&
+    action !== "review" &&
+    action !== "sign" &&
+    action !== "merge" &&
+    action !== "discard"
+  ) {
     context.ui.notify(
-      "usage: /agents [profiles|result|wait|stop] [child-session-id]",
+      "usage: /agents [profiles|result|wait|stop|review|sign|merge|discard] [child-session-id]",
       "warning",
     );
     return;
   }
   if (childSessionId === undefined) {
     context.ui.notify(
-      "usage: /agents [profiles|result|wait|stop] [id]",
+      "usage: /agents [profiles|result|wait|stop|review|sign|merge|discard] [id]",
       "warning",
     );
     return;
@@ -3504,6 +3948,22 @@ async function manageSubagents(
   const record = state.subagents?.get(childSessionId);
   if (record === undefined) {
     context.ui.notify(`subagent ${childSessionId} is not registered`, "error");
+    return;
+  }
+  if (action === "review") {
+    await reviewSubagent(context, record);
+    return;
+  }
+  if (action === "sign") {
+    await signSubagent(runtime, context, record);
+    return;
+  }
+  if (action === "merge") {
+    await mergeSubagent(runtime, context, record);
+    return;
+  }
+  if (action === "discard") {
+    await discardSubagent(runtime, context, record);
     return;
   }
   if (action === "stop") {
@@ -3534,6 +3994,13 @@ async function manageSubagents(
         `evidence: ${
           record.result.evidence_head ?? "none (the child made no tool calls)"
         }`,
+        ...(record.worktree === null
+          ? []
+          : [
+              `worktree: ${record.worktree}`,
+              `delivery: ${record.delivery?.state ?? "unreviewed"}`,
+              `next: /agents review ${childSessionId}`,
+            ]),
         summary,
       ].join("\n"),
       "info",
@@ -3543,7 +4010,7 @@ async function manageSubagents(
   context.ui.notify(
     `subagent ${childSessionId} is ${record.status}${
       record.error === null ? "" : `: ${record.error}`
-    }`,
+    }${record.worktree === null ? "" : `\nworktree: ${record.worktree}`}`,
     record.status === "failed" ? "error" : "warning",
   );
 }
@@ -4537,7 +5004,7 @@ export function createTuiExtension(
         }),
       });
       pi.registerCommand("agents", {
-        description: "List profiles, stop, or collect background subagents",
+        description: "Review, sign, merge, or discard background subagents",
         handler: commandContext(state, async (runtime, context, args) => {
           await manageSubagents(state, runtime, context, args);
         }),

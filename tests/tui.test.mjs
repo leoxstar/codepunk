@@ -2153,6 +2153,7 @@ test("a real pty approval selector allows and denies shell commands", async () =
       assert.equal(excluded.exit_code, 0);
       await waitForBashResult(home, "touch excluded.txt");
 
+      await waitForQuiet(session, 250);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -2160,7 +2161,11 @@ test("a real pty approval selector allows and denies shell commands", async () =
           setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
         ),
       ]);
-      assert.deepEqual(result, { code: 0, signal: null });
+      assert.deepEqual(
+        result,
+        { code: 0, signal: null },
+        stripAnsi(session.output()).slice(-2_000),
+      );
     } finally {
       await stopPty(session);
     }
@@ -3980,6 +3985,170 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
+test("a real pty reviews, signs, and merges a mutating subagent worktree", async () => {
+  await withTempDirectory("codepunk-tui-subagent-delivery-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(path.join(home, "agents"), { recursive: true });
+    await fs.writeFile(
+      path.join(home, "agents", "worker.md"),
+      [
+        "---",
+        "name: worker",
+        "description: Write a bounded child change",
+        "tools: read, write",
+        "---",
+        "Write the requested file in the child worktree.",
+        "",
+      ].join("\n"),
+    );
+    await fs.writeFile(path.join(project, "hello.txt"), "hello\n");
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await execFileAsync("git", ["config", "user.email", "child@example.test"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["config", "user.name", "Child Test"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["add", "hello.txt"], { cwd: project });
+    await execFileAsync("git", ["commit", "-qm", "fixture"], {
+      cwd: project,
+    });
+    await trustWorkspace(home, project);
+    const modelServer = await startWriteModelServer({
+      path: "child-output.txt",
+      content: "merged by child\n",
+    });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "auth.json"),
+      JSON.stringify({ local: { type: "api_key", key: "sk-child-test" } }),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            baseUrl: modelServer.baseUrl,
+            apiKey: "sk-child-test",
+            api: "openai-completions",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 4_000,
+                maxTokens: 1_000,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+          PI_OFFLINE: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/agents profiles", "worker (user)");
+      const startMark = session.output().length;
+      session.child.stdin.write(
+        "/subagent --profile worker write child-output.txt\r",
+      );
+      await waitForOutputAfter(
+        session,
+        startMark,
+        "subagent started:",
+        "/subagent start",
+      );
+      const childSessionId = session
+        .output()
+        .slice(startMark)
+        .match(/subagent started: ([A-Za-z0-9_-]+)/u)?.[1];
+      assert.ok(childSessionId);
+      await waitForOutputAfter(
+        session,
+        startMark,
+        `completed; use /agents result ${childSessionId}`,
+        "/subagent completion",
+      );
+      await runCommandAfter(
+        session,
+        `/agents review ${childSessionId}`,
+        "child-output.txt",
+      );
+
+      const signMark = session.output().length;
+      session.child.stdin.write(`/agents sign ${childSessionId}\r`);
+      await waitForOutputAfter(
+        session,
+        signMark,
+        `Sign subagent ${childSessionId}`,
+        "/agents sign menu",
+      );
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        signMark,
+        "signed complete",
+        "/agents sign complete",
+      );
+
+      const mergeMark = session.output().length;
+      session.child.stdin.write(`/agents merge ${childSessionId}\r`);
+      await waitForOutputAfter(
+        session,
+        mergeMark,
+        `Merge subagent ${childSessionId}?`,
+        "/agents merge menu",
+      );
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        mergeMark,
+        "merge commit:",
+        "/agents merge commit",
+      );
+      assert.equal(
+        await fs.readFile(path.join(project, "child-output.txt"), "utf8"),
+        "merged by child\n",
+      );
+      assert.match(session.output().slice(mergeMark), /worktree removed/u);
+      await runCommandAfter(session, "/agents", childSessionId);
+      assert.match(session.output(), /merged/u);
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });
