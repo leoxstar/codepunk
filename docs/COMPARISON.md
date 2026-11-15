@@ -111,7 +111,7 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. The TUI also covers `/init` guard and model-prompt
 injection, `/status`, skill hot reload, and the arrow-key trust selector.
-On 2026-11-15, the local suite reported 536 tests and the repository check
+On 2026-11-15, the local suite reported 537 tests and the repository check
 reported 484 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens

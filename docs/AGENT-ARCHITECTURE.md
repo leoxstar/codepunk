@@ -777,7 +777,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 536 tests, 536 pass
+# 537 tests, 537 pass
 # repository check: 484 files, 3 packages
 ```
 
