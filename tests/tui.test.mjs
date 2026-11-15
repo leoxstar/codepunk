@@ -2169,7 +2169,11 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/bug a synthetic report hint",
         "Pi's /bug flow can upload a session transcript",
       );
-      await runCommandAfter(session, "/reload", "Hot reload is not supported");
+      await runCommandAfter(
+        session,
+        "/reload",
+        "Reloaded Pi resources and MCP configuration.",
+      );
       await runCommandAfter(session, "/fork", "forked ");
       await runCommandAfter(session, "/tree", "Session tree");
       await runCommandAfter(

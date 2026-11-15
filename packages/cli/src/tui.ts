@@ -64,6 +64,7 @@ import {
   type AgentProfile,
   type CodepunkRuntime,
   type FilesystemMode,
+  type McpReloadResult,
   type PermissionProfile,
   type SubagentHostResult,
 } from "@codepunk/core";
@@ -329,6 +330,7 @@ export function codepunkHelp(): string {
     "  /remember, /memory         write, search, archive, or delete memory",
     "  /doctor, /policy           run diagnostics or print effective policy",
     "  /compact                   ask Pi to compact the current context",
+    "  /reload                    reload Pi resources and user MCP servers",
     "  /help                      show this command list",
     "  /quit                      exit",
     "",
@@ -368,7 +370,6 @@ const INTERCEPTED_PI_COMMANDS = new Set([
   "import",
   "share",
   "bug",
-  "reload",
 ]);
 
 export function filterInterceptedAutocomplete<T extends { value: string }>(
@@ -453,6 +454,48 @@ function permissionSummary(runtime: CodepunkRuntime): string {
     "",
     permissionUsage(),
   ].join("\n");
+}
+
+function formatMcpReload(result: McpReloadResult): string {
+  if (result.error !== null) {
+    return [
+      "MCP reload did not complete.",
+      `MCP reload failed: ${result.error}`,
+      "The previous MCP server processes were kept; restart codepunk if the error mentions the Pi reload.",
+    ].join("\n");
+  }
+  const lines = ["Reloaded Pi resources and MCP configuration."];
+  if (result.skipped === "disabled") {
+    lines.push("MCP is disabled for this session.");
+  } else if (result.skipped === "read-only") {
+    lines.push(
+      "MCP is not started while autonomy is read-only. Leave read-only, then run /reload.",
+    );
+  } else if (result.skipped === "no-model") {
+    lines.push(
+      "MCP is not started because no model is selected. Select one with /model, then run /reload.",
+    );
+  } else if (result.servers.length === 0) {
+    lines.push("No user-scope MCP servers are configured.");
+  } else {
+    lines.push(
+      `MCP servers: ${result.servers
+        .map((server) => `${server} (${result.toolCounts[server] ?? 0} tools)`)
+        .join(", ")}`,
+    );
+    if (result.resourceServers.length > 0) {
+      lines.push(`Resource servers: ${result.resourceServers.join(", ")}`);
+    }
+  }
+  for (const failure of result.failures) {
+    lines.push(
+      `MCP server ${failure.server} skipped: ${failure.code}: ${failure.message}`,
+    );
+  }
+  for (const warning of result.warnings) {
+    lines.push(warning);
+  }
+  return lines.join("\n");
 }
 
 function sessionSummary(runtime: CodepunkRuntime): string {
@@ -2614,13 +2657,24 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           return true;
         }
         if (isSlashCommand(trimmed, "/reload")) {
-          context.ui.notify(
-            [
-              "Hot reload is not supported in codepunk.",
-              "Restart codepunk to reload config, skills, plugins, MCP servers, and extensions.",
-            ].join("\n"),
-            "warning",
-          );
+          if (trimmed !== "/reload") {
+            context.ui.notify("usage: /reload", "warning");
+            return true;
+          }
+          try {
+            const result = await runtime.reloadMcp();
+            state.context?.ui.notify(
+              formatMcpReload(result),
+              result.error === null ? "info" : "error",
+            );
+          } catch (error) {
+            context.ui.notify(
+              `Reload failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
           return true;
         }
         if (
