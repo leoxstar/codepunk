@@ -49,8 +49,8 @@ rather than executed behavior, it is marked.
 | Plugins/extensions          | opt-in user plugins; list/add/remove/enable/disable CLI; `--no-plugins` and `--bare` isolate plugin loading                                                                                                                                                                                                                                                                                           | `plugin`                                      | `extensions`                | `plugin`               | plugins                                                                           |
 | Skills                      | discovered from user/project skills; `--no-skills` and `--bare` isolate skill loading                                                                                                                                                                                                                                                                                                                 | not verified                                  | `skills`                    | not verified           | skills in help                                                                    |
 | Hooks                       | not exposed                                                                                                                                                                                                                                                                                                                                                                                           | hook trust controls in help                   | `hooks`                     | not verified           | hooks in help                                                                     |
-| Session list/resume         | CLI list/resume; TUI list-only                                                                                                                                                                                                                                                                                                                                                                        | yes                                           | yes                         | `session`              | yes                                                                               |
-| Session fork/clone          | settled CLI `--fork`; no live TUI fork                                                                                                                                                                                                                                                                                                                                                                | `fork`                                        | not exposed in help         | `--fork`               | `--fork-session`                                                                  |
+| Session list/resume         | CLI list/resume plus live TUI `/resume` that rebuilds the host                                                                                                                                                                                                                                                                                                                                        | yes                                           | yes                         | `session`              | yes                                                                               |
+| Session fork/clone          | settled CLI `--fork` plus live TUI `/fork`/`/clone` into a child product session                                                                                                                                                                                                                                                                                                                      | `fork`                                        | not exposed in help         | `--fork`               | `--fork-session`                                                                  |
 | Sub-agent delegation        | `/subagent` read-only child Pi session with its own session and evidence                                                                                                                                                                                                                                                                                                                              | not verified                                  | not exposed in help         | not exposed in help    | not verified                                                                      |
 | Worktree isolation          | library-level delivery worktrees (`WorkerSandbox`/`WorkerPool`); no CLI command yet                                                                                                                                                                                                                                                                                                                   | `--worktree`                                  | `-w`                        | not exposed in help    | not exposed in help                                                               |
 | Evidence chain and sign-off | yes                                                                                                                                                                                                                                                                                                                                                                                                   | no equivalent observed                        | no equivalent observed      | no equivalent observed | no equivalent observed                                                            |
@@ -107,9 +107,10 @@ MCP gating, daemon/view, delivery worktrees, merge and handoff checks, workers,
 plugins, TUI behavior, real child Pi sessions in `/subagent`, package
 install/upgrade/uninstall, an execution-level read-only/standard/auto/
 auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
-`--bare` isolation, PTY tests for both read-only live-switch directions, and
-repository negative controls. On 2026-11-15,
-the local suite reported 510 tests and the repository check reported 468 files
+`--bare` isolation, PTY tests for both read-only live-switch directions,
+live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
+negative controls. On 2026-11-15,
+the local suite reported 517 tests and the repository check reported 468 files
 across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
@@ -232,7 +233,7 @@ per-capability rationale is in `docs/AGENT-ARCHITECTURE.md`.
 | Policy, approval, autonomy  | `ModelRuntime.completeSimple` for the optional reviewer; no approval loop                                            | presets, scoped exact-argv rules, approval broker, reviewer eligibility, explanations                        |
 | Sandbox                     | none                                                                                                                 | `srt` profiles, coverage descriptors, read-only write removal                                                |
 | File roots                  | tool `cwd` for relative paths; no project trust side effect for extra roots                                          | `--add-dir` canonical roots, path containment, symlink recheck, srt write set                                |
-| Sessions, evidence, workers | Pi can persist a JSONL session tree and custom entries; Codepunk supplies an in-memory Pi manager                    | durable product session log, forked cold sessions, evidence chain, worktrees                                 |
+| Sessions, evidence, workers | Pi's in-memory branch tree and `navigateTree`; Codepunk records tree moves and snapshots the active branch           | durable product session log, cold and live forks, evidence chain, worktrees                                  |
 
 ## Architecture observations
 
@@ -313,13 +314,12 @@ in the comparison.
    the shell sandbox.
    Skills and plugins have file-based add/remove, plugins have enable/disable,
    and hot reload plus TUI management commands are still missing.
-9. A settled cold fork is available as `codepunk --fork <id>`; delivery
-   worktrees provide code isolation, and read-only child sessions provide
-   delegated work, but neither replaces live branch navigation. There is
-   still no live TUI `fork`/`clone` flow. `/export` aliases `/cp-export`;
-   `/resume` states that live resume is unavailable, lists the sessions, and
-   points at `codepunk --session <id>` instead of pretending to switch
-   sessions.
+9. Session continuity is live: `/resume` and `/new` rebuild the host,
+   `/fork` and `/clone` write a child product session and switch to it, and
+   `/tree` lists or navigates Pi's branch. Codepunk records `session/forked`
+   and `session/tree` and snapshots the active branch. Sibling branches are
+   still in-memory only, so there is no durable cross-session branch graph.
+   `/export` aliases `/cp-export`.
 10. `/subagent` gives a read-only child Pi process its own Codepunk session,
     run id, and evidence head, linked from the parent through a
     `subagent/result` event. Up to four children run in the background and are
@@ -352,8 +352,8 @@ in the comparison.
     writes the redacted title. `codepunk pin <id>` and `pin <id> --unpin`
     control retention, and TUI `/session` reports the id, effective model,
     thinking level, Pi context usage, run id, evidence count, and session
-    directory. Codepunk does not expose Pi's live branch tree as a product
-    surface.
+    directory. `/tree` exposes Pi's live branch tree and records each move, but
+    only the active branch is snapshotted into the product store.
 17. `--add-dir` adds explicit file roots without treating them as trusted
     project roots. Each root is canonicalized and symlink-rechecked; `.codepunk`
     and Git control paths stay protected in every root; project config, policy,

@@ -18,11 +18,11 @@ explicit policy boundary around file and shell actions.
   the extra directory's project config, skills, MCP, or instructions.
 - Shell confinement through `srt`, with coverage reported per execution surface.
 - Append-only evidence with a hash chain and human sign-off.
-- Codepunk-owned sessions with resume, listing, export, retention, and
-  compaction checkpoints. A checkpoint is evidence about the compaction
-  boundary, not a user-visible session rewind. The first prompt seeds a
-  redacted title, later Pi title changes are mirrored, and
-  `pin <id> [--unpin]` controls retention.
+- Codepunk-owned sessions with live `/resume`, `/new`, `/fork`, `/clone`, and
+  `/tree` in the TUI, plus CLI listing, export, retention, and compaction
+  checkpoints. A checkpoint is evidence about the compaction boundary, not a
+  user-visible session rewind. The first prompt seeds a redacted title, later
+  Pi title changes are mirrored, and `pin <id> [--unpin]` controls retention.
 - Project context from `AGENTS.md`, local memory, skills, and gated MCP servers.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI

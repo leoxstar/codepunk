@@ -59,14 +59,16 @@ Provider endpoint
 The authoritative product record is Codepunk's append-only session event log.
 Pi's session manager is deliberately in memory in this adapter; Codepunk does
 not write a second Pi session file. That avoids two competing session truths,
-but it also means Pi session-tree features are not automatically available to
-Codepunk.
+so the Pi branch is an execution surface, not a second durable product tree.
+Codepunk records `/tree` navigation and snapshots the active branch.
 
-The Pi runtime factory admits only the initial product session. A later Pi
-session replacement with a different cwd, agent directory, or session manager
-fails closed instead of reusing the old host. In the TUI, `/new`, `/resume`,
-`/import`, `/fork`, `/clone`, `/tree`, `/share`, `/bug`, and `/reload` are
-intercepted with product-specific guidance before that path can be reached.
+The Pi runtime factory admits only explicit Codepunk session targets. `/resume`
+and `/new` dispose the old host, build a new Codepunk runtime for the selected
+or newly created session, and rebind the product extension context. `/fork` and
+`/clone` first write a live child session, then switch to it through the same
+replacement path. A Pi session replacement without a Codepunk target fails
+closed, as do `/import`, `/share`, `/bug`, and `/reload`; `/settings` and
+`/scoped-models` keep their file-backed product guidance.
 
 `/subagent` reuses that same stack in a guarded child Codepunk process. The
 child gets its own product session and evidence; the parent records the link.
@@ -479,8 +481,8 @@ would leave the next process with a route that has not been registered yet.
 | Plugins and extensions           | Opt-in trusted code                  | Pi loads extensions in-process; an enabled plugin can call `pi.exec` and filesystem APIs directly, outside Codepunk policy, approval, sandbox, and evidence. Only reviewed plugins should be enabled.                                                                                                                                                                                                                                                                                         |
 | MCP                              | Gate in Codepunk                     | Pi supplies the protocol client, `createMcpToolName`, `normalizeMcpInputSchema`, and the OAuth sign-in/refresh flow; Codepunk keeps user-scope config only, ignores project MCP files with a warning at every trust level, stores credentials at `mcp-auth.json`, requires explicit login, fails closed on unwrapped tools, and offers `--no-mcp`/`--bare` as one-session escape hatches. Startup resolves the model and session before any stdio server runs.                                |
 | TUI layout and editor            | Delegate to Pi                       | Codepunk registers an extension and adds header/footer/status/commands; it does not render a second TUI.                                                                                                                                                                                                                                                                                                                                                                                      |
-| Session fork/clone               | Keep in Codepunk (settled cold fork) | `codepunk --fork <id>` takes the parent writer lock, reopens the log, and refuses a live writer or `state_covers_seq != last_seq` before copying the Pi branch. The product header and `session/forked` carry the parent id and state hash; the restored Pi header only takes the child id. Pi's `parentSession` path field is not reused as a product link. Codepunk's Pi manager is in-memory, so the host branch is not exposed as a product tree.                                         |
-| Session tree navigation          | Not delegated                        | Codepunk's durable store is linear. Exposing the host branch without persisting it with the same evidence semantics would create a false product promise.                                                                                                                                                                                                                                                                                                                                     |
+| Session fork/clone               | Codepunk state, Pi branch            | `codepunk --fork <id>` is the settled cold path: it takes the parent writer lock and refuses a live writer or `state_covers_seq != last_seq` before copying the Pi branch. In the TUI, `/fork [entry]` and `/clone` validate the live agent state, write a child product session plus `session/forked` (`mode: "live"`), and switch to it. The product header carries the parent id and state hash; Pi's `parentSession` path field is not reused as a product link.                          |
+| Session tree navigation          | Pi branch, recorded by Codepunk      | `/tree` lists the in-memory branch tree; `/tree <entry-id>` calls Pi's `navigateTree`, writes `session/tree` with the from/to entry ids and active branch length, and saves the agent-state snapshot. This is live navigation inside one session, not a second durable event tree: only the active branch is snapshotted, so sibling branches do not survive a process restart as separate product sessions.                                                                                  |
 | User-visible sub-agents          | Read-only child Pi sessions          | `/subagent` launches a separate Codepunk/Pi child with its own session, parent session id, and evidence namespace. Pi has no first-class delegation surface, so Codepunk supplies the link, not a second loop.                                                                                                                                                                                                                                                                                |
 | Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, and evidence event. No second request loop.                                                                                                                                                                                                                                                                                                                                                 |
 | Cost budget                      | Keep in Codepunk, implemented        | `config.budget.max_tokens` / `max_cost_usd` combine assistant and compaction usage with Pi's `getSessionStats()` totals, then add direct summary calls separately by `model/usage.source`. A larger Pi total can no longer hide summary tokens. The host aborts and blocks further input with a `budget/exceeded` event. This is product policy over the host's accounting, not a second retry loop.                                                                                          |
@@ -574,26 +576,26 @@ picker mechanics to Pi.
 The TUI intercepts a slash command only when Pi's behavior would be wrong or
 misleading for Codepunk:
 
-| Command                          | Owner                        | Behavior                                                                                                                                                              |
-| -------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/model`                         | Pi, with Codepunk adapter    | Bare command opens Pi's picker. An exact `provider/id` or unique bare ID is resolved by Codepunk and persisted. Partial queries fall through to Pi's fuzzy picker.    |
-| `/help`                          | Codepunk                     | Registered command that lists the usable product and Pi surface instead of exposing intercepted builtins as normal commands.                                          |
-| `/permissions`                   | Codepunk                     | Registered command. Shows the profile, current shell, and next-session sandbox; `/permissions why -- <command>` replays the real decision chain without executing it. |
-| `/plan`, `/evidence`, `/budget`  | Codepunk                     | Read the durable plan, evidence head, and token/USD usage from the Codepunk store.                                                                                    |
-| `/doctor`, `/policy`             | Codepunk                     | Run product diagnostics or print the effective layered policy and isolation flags.                                                                                    |
-| `/sign`                          | Codepunk                     | Record a human sign-off bound to a settled run head.                                                                                                                  |
-| `/login`, `/logout`              | Pi                           | Credentials and provider auth stay in the host.                                                                                                                       |
-| `/compact`                       | Pi, checkpointed by Codepunk | Pi owns cutting and summarization. Codepunk records the resulting keeps boundary and persists the restorable branch.                                                  |
-| `/thinking`                      | Pi, persisted by Codepunk    | Pi owns the selector and clamping; Codepunk writes the resulting effective level to `config.toml`.                                                                    |
-| `/scoped-models`                 | Codepunk                     | Refused with file-backed guidance because Pi's selector would only change in-memory host state in this host.                                                          |
-| `/settings`                      | Codepunk                     | Explain the file-backed Codepunk config and the policy boundary instead of opening Pi settings.                                                                       |
-| `/trust`                         | Codepunk                     | Show the current and saved workspace decision; `grant` and `revoke` write the Pi project trust store under `$CODEPUNK_HOME` for future sessions.                      |
-| `/resume`, `/export`, `/session` | Codepunk                     | These operate on the Codepunk session/evidence store, not Pi's in-memory session.                                                                                     |
-| `/new`                           | Codepunk                     | A new Pi session without a Codepunk store boundary would not be a product session.                                                                                    |
-| `/fork`, `/clone`, `/tree`       | Codepunk refusal             | The store is linear; the command says so instead of creating a branch the evidence chain cannot represent.                                                            |
-| `/import`, `/share`              | Codepunk refusal             | Pi import/share would bypass the Codepunk evidence and redaction boundary.                                                                                            |
-| `/bug`                           | Codepunk refusal             | Pi's bug report can upload a session transcript; Codepunk points at `/cp-export` for a local redacted transcript instead.                                             |
-| `/reload`                        | Codepunk refusal             | Codepunk loads skills, plugins, MCP servers, and config at startup; restart the process instead of rebuilding the in-process Pi runtime.                              |
+| Command                          | Owner                        | Behavior                                                                                                                                                                         |
+| -------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/model`                         | Pi, with Codepunk adapter    | Bare command opens Pi's picker. An exact `provider/id` or unique bare ID is resolved by Codepunk and persisted. Partial queries fall through to Pi's fuzzy picker.               |
+| `/help`                          | Codepunk                     | Registered command that lists the usable product and Pi surface instead of exposing intercepted builtins as normal commands.                                                     |
+| `/permissions`                   | Codepunk                     | Registered command. Shows the profile, current shell, and next-session sandbox; `/permissions why -- <command>` replays the real decision chain without executing it.            |
+| `/plan`, `/evidence`, `/budget`  | Codepunk                     | Read the durable plan, evidence head, and token/USD usage from the Codepunk store.                                                                                               |
+| `/doctor`, `/policy`             | Codepunk                     | Run product diagnostics or print the effective layered policy and isolation flags.                                                                                               |
+| `/sign`                          | Codepunk                     | Record a human sign-off bound to a settled run head.                                                                                                                             |
+| `/login`, `/logout`              | Pi                           | Credentials and provider auth stay in the host.                                                                                                                                  |
+| `/compact`                       | Pi, checkpointed by Codepunk | Pi owns cutting and summarization. Codepunk records the resulting keeps boundary and persists the restorable branch.                                                             |
+| `/thinking`                      | Pi, persisted by Codepunk    | Pi owns the selector and clamping; Codepunk writes the resulting effective level to `config.toml`.                                                                               |
+| `/scoped-models`                 | Codepunk                     | Refused with file-backed guidance because Pi's selector would only change in-memory host state in this host.                                                                     |
+| `/settings`                      | Codepunk                     | Explain the file-backed Codepunk config and the policy boundary instead of opening Pi settings.                                                                                  |
+| `/trust`                         | Codepunk                     | Show the current and saved workspace decision; `grant` and `revoke` write the Pi project trust store under `$CODEPUNK_HOME` for future sessions.                                 |
+| `/resume`, `/export`, `/session` | Codepunk                     | `/resume [id\|latest]` rebuilds the host for a Codepunk session in the TUI; `/export` and `/session` operate on the Codepunk session/evidence store, not Pi's in-memory session. |
+| `/new`                           | Codepunk                     | Confirms, then creates a new Codepunk session and switches the live TUI host to it.                                                                                              |
+| `/fork`, `/clone`, `/tree`       | Codepunk + Pi                | `/fork [entry]` and `/clone` create and switch to a live child product session; `/tree` lists or navigates Pi's branch and records the move in the Codepunk log.                 |
+| `/import`, `/share`              | Codepunk refusal             | Pi import/share would bypass the Codepunk evidence and redaction boundary.                                                                                                       |
+| `/bug`                           | Codepunk refusal             | Pi's bug report can upload a session transcript; Codepunk points at `/cp-export` for a local redacted transcript instead.                                                        |
+| `/reload`                        | Codepunk refusal             | Codepunk loads skills, plugins, MCP servers, and config at startup; restart the process instead of rebuilding the in-process Pi runtime.                                         |
 
 The `cp-` prefix is not a copy of Pi. It marks a Codepunk-owned command whose
 name would otherwise collide with a Pi builtin. Only two commands need it:
@@ -612,9 +614,10 @@ canonical name because it already owns profile, approval, autonomy, sandbox,
 rules, reviewer, and network configuration; `/permission` is the singular
 compatibility alias.
 
-The TUI wraps Pi's autocomplete provider so names in the refusal list do not
-appear as normal choices. `/help` lists the usable surface, while typing a
-refused command still produces the product-specific explanation.
+The TUI wraps Pi's autocomplete provider so unsupported Pi builtins do not
+appear as normal choices. Supported session commands (`/resume`, `/new`,
+`/fork`, `/clone`, `/tree`) stay visible; `/help` lists the usable surface,
+while typing a refused command still produces the product-specific explanation.
 
 Unknown slash commands are rejected in the editor bridge before Pi can treat
 them as model input. The accepted set is composed at `session_start` from
@@ -628,10 +631,11 @@ fails with the expected path rather than silently rejecting a legal command.
 
 These are real gaps, not hidden fallbacks:
 
-1. A settled cold fork exists as `codepunk --fork <id>`; in-TUI live fork and
-   session-tree navigation remain unavailable because the durable Codepunk
-   store is linear and a live writer is refused. Pi's branch API is not a
-   substitute until the branch is persisted with the same evidence semantics.
+1. Live `/resume`, `/new`, `/fork`, `/clone`, and `/tree` now run through Pi's
+   session replacement and branch APIs. The remaining branch gap is durability:
+   the agent-state snapshot stores the active branch, while sibling branches
+   exist only in the in-memory Pi session for the current process. There is no
+   queryable cross-session branch graph yet.
 2. MCP has user-scope `list/add/remove/test/login/logout/status` and `/mcp`
    over Pi's MCP client; both stdio and Streamable HTTP transports are wired.
    Session startup skips one failed server with a configuration warning, while
@@ -670,8 +674,10 @@ These are real gaps, not hidden fallbacks:
    worktrees, and streamed child output are still missing. They should extend
    the child Pi session path rather than adding role prompts inside one
    context.
-7. Session surfaces are split: `/resume` redirects to `codepunk --session`,
-   `/export` forwards to `/cp-export`, and the aliases do not appear in help.
+7. Session surfaces are live: `/resume` and `/new` rebuild the TUI host,
+   `/fork` and `/clone` create child product sessions, `/tree` navigates the
+   Pi branch, `/export` forwards to `/cp-export`, and the aliases do not appear
+   in help.
 8. Pi 1.5.2 emits OSC 7501 program status through its interactive runtime, and
    Codepunk keeps that path enabled. The status app identity still comes from
    Pi's `APP_NAME`, and Codepunk adds no per-event desktop notifications, so a
@@ -746,7 +752,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 510 tests, 510 pass
+# 517 tests, 517 pass
 # repository check: 468 files, 3 packages
 ```
 
@@ -756,6 +762,9 @@ commands for read-only, standard allow/deny, auto, auto-approve, and
 full-access. Two PTY tests start real `srt` sessions and prove that a writable
 profile cannot switch into read-only and a read-only profile cannot widen, so
 the UI cannot claim an OS grant that the sandbox did not make.
+Four PTY tests cover the session lifecycle end to end: live `/resume`,
+in-place `/new`, `/tree` navigation followed by `/fork`, and Enter during a
+streaming turn recorded as steering.
 `tests/isolation.test.mjs` separately proves that `--no-skills` suppresses
 skill discovery, `--no-plugins` prevents user plugin code from executing, and
 `--bare` removes instructions, skills, plugins, MCP startup, and memory in one
