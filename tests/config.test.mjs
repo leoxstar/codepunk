@@ -82,6 +82,128 @@ test("runtime sessions use configured heartbeat and lease values", async () => {
   });
 });
 
+test("runtime config reload applies live settings and defers host bindings", async () => {
+  await withTempDirectory("codepunk-config-reload-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const configPath = path.join(paths.home, "config.toml");
+    await writeFile(
+      configPath,
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[approval]",
+        'mode = "ask"',
+        "",
+        "[autonomy]",
+        'profile = "ask"',
+        "",
+      ].join("\n"),
+    );
+    const runtime = await core.createRuntime({
+      cwd: projectRoot,
+      environment: { CODEPUNK_HOME: paths.home },
+      approvalChannel: null,
+      allowMissingModel: true,
+    });
+    try {
+      await writeFile(
+        configPath,
+        [
+          "[sandbox]",
+          'mode = "required"',
+          "",
+          "[approval]",
+          'mode = "deny"',
+          "",
+          "[autonomy]",
+          'profile = "read-only"',
+          "",
+          "[model]",
+          'provider = "next"',
+          'id = "next-model"',
+          "",
+        ].join("\n"),
+      );
+
+      const result = await runtime.reloadConfig();
+      assert.equal(result.changed, true);
+      assert.deepEqual(result.applied, [
+        "approval.mode=deny",
+        "autonomy=read-only",
+      ]);
+      assert.deepEqual(result.nextSession, ["model", "sandbox"]);
+      assert.equal(runtime.config.approval.mode, "deny");
+      assert.equal(runtime.autonomy.profile, "read-only");
+      assert.equal(runtime.config.autonomy.profile, "read-only");
+      assert.equal(runtime.config.sandbox.mode, "required");
+      assert.equal(runtime.config.model.id, null);
+      assert.equal(runtime.permissionSnapshot.filesystem, "workspace");
+
+      await writeFile(configPath, '[approval]\nmode = "not-a-mode"\n');
+      await assert.rejects(
+        () => runtime.reloadConfig(),
+        /approval\.mode|Unknown|invalid/u,
+      );
+      assert.equal(runtime.config.approval.mode, "deny");
+      assert.equal(runtime.autonomy.profile, "read-only");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
+test("config reload turns loaded plugins off without restarting", async () => {
+  await withTempDirectory("codepunk-config-plugin-reload-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const configPath = path.join(paths.home, "config.toml");
+    await writeFile(
+      configPath,
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[plugins]",
+        "enabled = true",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      path.join(paths.home, "extensions", "probe.js"),
+      "export default function probe() {}\n",
+    );
+    const runtime = await core.createRuntime({
+      cwd: projectRoot,
+      environment: { CODEPUNK_HOME: paths.home },
+      approvalChannel: null,
+      allowMissingModel: true,
+    });
+    try {
+      assert.equal(runtime.plugins.enabled, true);
+      await writeFile(
+        configPath,
+        [
+          "[sandbox]",
+          'mode = "uncovered"',
+          "",
+          "[plugins]",
+          "enabled = false",
+          "",
+        ].join("\n"),
+      );
+      const result = await runtime.reloadConfig();
+      assert.equal(result.pluginsChanged, true);
+      const reloaded = await runtime.reloadPlugins();
+      assert.equal(reloaded.error, null);
+      assert.equal(reloaded.skipped, "disabled");
+      assert.equal(runtime.plugins.enabled, false);
+      assert.deepEqual(runtime.plugins.paths, []);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
 test("read-only autonomy removes the runtime sandbox write grant", async () => {
   await withTempDirectory("codepunk-config-readonly-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);
