@@ -116,6 +116,12 @@ import type {
   Verdict,
 } from "@codepunk/protocol";
 import { appendBuildDoctorCheck, inspectCliBuild } from "./build-info.ts";
+import {
+  nextRecentModel,
+  readModelHistory,
+  recordRecentModel,
+  toggleFavoriteModel,
+} from "./model-history.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
@@ -354,6 +360,9 @@ export function codepunkHelp(): string {
     "  /model [query]             open Pi's fuzzy model picker",
     "                             Enter is session-only; Ctrl+S saves the default",
     "                             an exact provider/id or unique bare id saves immediately",
+    "  /models                    pick from recent or favorite models",
+    "  /favorite                  toggle the current model in favorites",
+    "                             F2 cycles through recent models",
     "  /login, /logout            manage Pi provider credentials",
     "  /thinking                  choose the reasoning level; saved to config",
     "  /scoped-models             explain the file-backed model scope",
@@ -3133,6 +3142,174 @@ async function selectModelReference(
   return true;
 }
 
+type ModelPickerResult = "selected" | "delegate" | "cancelled" | "empty";
+
+function modelReference(model: { provider: string; id: string }): string {
+  return `${model.provider}/${model.id}`;
+}
+
+async function showModelHistoryPicker(
+  state: TuiState,
+  context: ExtensionContext,
+  runtime: CodepunkRuntime,
+): Promise<ModelPickerResult> {
+  const history = await readModelHistory(runtime.paths.home);
+  if (history.warning !== null) {
+    context.ui.notify(history.warning, "warning");
+  }
+  let models: Awaited<ReturnType<typeof availableModels>>;
+  try {
+    models = await availableModels(runtime);
+  } catch (error) {
+    context.ui.notify(
+      `No authenticated models.\n${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "warning",
+    );
+    return "cancelled";
+  }
+  const available = new Map(
+    models.map((model) => [modelReference(model), model]),
+  );
+  const current = physicalModel(runtime);
+  const currentReference =
+    current === undefined ? null : modelReference(current);
+  const favorites = history.favorites.filter((entry) => available.has(entry));
+  const recent = history.recent.filter(
+    (entry) => available.has(entry) && !favorites.includes(entry),
+  );
+  if (favorites.length === 0 && recent.length === 0) {
+    return "empty";
+  }
+  const selections = new Map<string, string>();
+  const options: string[] = [];
+  for (const reference of favorites) {
+    const label = `\u2605 ${reference}${
+      reference === currentReference ? " (current)" : ""
+    }`;
+    selections.set(label, reference);
+    options.push(label);
+  }
+  for (const reference of recent) {
+    const label = `\u21ba ${reference}${
+      reference === currentReference ? " (current)" : ""
+    }`;
+    selections.set(label, reference);
+    options.push(label);
+  }
+  const search = "\u2315 Search all models (Pi)";
+  const cancel = "Cancel";
+  options.push(search, cancel);
+  const selected = await context.ui.select("Select model", options);
+  if (selected === undefined || selected === cancel) {
+    return "cancelled";
+  }
+  if (selected === search) {
+    return "delegate";
+  }
+  const reference = selections.get(selected);
+  if (reference === undefined) {
+    return "cancelled";
+  }
+  await selectModelReference(state, context, reference);
+  return "selected";
+}
+
+async function showFavoriteModels(
+  state: TuiState,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const result = await showModelHistoryPicker(state, context, runtime);
+  if (result === "empty") {
+    context.ui.notify(
+      "No recent or favorite models yet. Use /model to search all models.",
+      "info",
+    );
+  } else if (result === "delegate") {
+    context.ui.setEditorText("/model");
+    context.ui.notify("Press Enter to open Pi's fuzzy model search.", "info");
+  }
+}
+
+async function cycleRecentModel(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const history = await readModelHistory(runtime.paths.home);
+  if (history.warning !== null) {
+    context.ui.notify(history.warning, "warning");
+  }
+  let models: Awaited<ReturnType<typeof availableModels>>;
+  try {
+    models = await availableModels(runtime);
+  } catch (error) {
+    context.ui.notify(
+      `No authenticated models.\n${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "warning",
+    );
+    return;
+  }
+  const available = new Set(models.map((model) => modelReference(model)));
+  const current = physicalModel(runtime);
+  const next = nextRecentModel(
+    history.recent,
+    current === undefined ? null : modelReference(current),
+    available,
+  );
+  if (next === null) {
+    context.ui.notify(
+      "No recent models to cycle. Select a model once with /model.",
+      "info",
+    );
+    return;
+  }
+  await selectModelReference(state, context, next);
+}
+
+async function toggleFavorite(
+  state: TuiState,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const current = physicalModel(runtime);
+  if (current === undefined) {
+    context.ui.notify("No model is selected. Use /model first.", "warning");
+    return;
+  }
+  const reference = modelReference(current);
+  try {
+    const result = await toggleFavoriteModel(runtime.paths.home, reference);
+    context.ui.notify(
+      `${result.favorite ? "Added to" : "Removed from"} favorites: ${reference}`,
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `favorite could not be saved: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
+}
+
 async function notify(
   context: ExtensionCommandContext,
   message: string,
@@ -4767,6 +4944,19 @@ export function createTuiExtension(
           setupChrome(state, context);
           return;
         }
+        try {
+          await recordRecentModel(
+            runtime.paths.home,
+            modelReference(event.model),
+          );
+        } catch (error) {
+          context.ui.notify(
+            `recent model could not be saved: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            "warning",
+          );
+        }
         runtime.primaryModel = event.model;
         const settings = runtime.host.services.settingsManager;
         const persistedDefault =
@@ -4933,6 +5123,24 @@ export function createTuiExtension(
               : `${records.length} evidence record(s); head ${runtime.ledger.head ?? "none"}`,
           );
         }),
+      });
+      pi.registerCommand("models", {
+        description: "Select a recent or favorite model",
+        handler: commandContext(state, async (_runtime, context) => {
+          await showFavoriteModels(state, context);
+        }),
+      });
+      pi.registerCommand("favorite", {
+        description: "Toggle the current model in favorites",
+        handler: commandContext(state, async (_runtime, context) => {
+          await toggleFavorite(state, context);
+        }),
+      });
+      pi.registerShortcut("f2", {
+        description: "Cycle through recent models",
+        handler: async (context) => {
+          await cycleRecentModel(state, context);
+        },
       });
       pi.registerCommand("budget", {
         description: "Show model token and cost usage against the budget",
