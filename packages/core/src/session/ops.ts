@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
+  AgentState,
   SessionEvent,
   SessionHeader,
   SessionMeta,
@@ -411,6 +412,91 @@ export async function forkSession(options: {
     parentStateCoversSeq: snapshot.parentStateCoversSeq,
     parentEvents: snapshot.parentEvents,
     forkEntries: snapshot.parentState.branch.length,
+  };
+}
+
+/**
+ * Fork a session whose writer is the calling process.
+ *
+ * `forkSession` needs the parent lock to snapshot a settled session. The TUI
+ * already owns that lock, so it hands over the in-memory Pi state instead. The
+ * parent state must already cover the full log; that is what makes the copied
+ * branch and the recorded parent position refer to the same settled moment.
+ */
+export async function forkLiveSession(options: {
+  parent: SessionStore;
+  parentState: AgentState;
+  rootDir: string;
+  cwd: string;
+  projectRoot: string;
+  projectId: string;
+  branch?: readonly unknown[];
+  forkEntryId?: string;
+  now?: () => Date;
+}): Promise<ForkSessionResult> {
+  if (options.parentState.session_id !== options.parent.sessionId) {
+    throw new Error("parent agent state does not belong to the live session");
+  }
+  const branch = options.branch ?? options.parentState.branch;
+  if (branch.length === 0) {
+    throw new Error(
+      `session ${options.parent.sessionId} has no agent branch to fork; settle a run first`,
+    );
+  }
+  const parentLastSeq = options.parent.lastSeq;
+  const parentStateCoversSeq = options.parent.metadata.state_covers_seq;
+  if (parentStateCoversSeq !== parentLastSeq) {
+    throw new Error(
+      `session ${options.parent.sessionId} has events beyond its saved agent state; save the settled state before forking`,
+    );
+  }
+  const forkEntryId =
+    options.forkEntryId ?? latestBranchEntryId(branch) ?? undefined;
+  if (
+    options.forkEntryId !== undefined &&
+    latestBranchEntryId(branch) !== options.forkEntryId
+  ) {
+    throw new Error("fork entry is not the leaf of the selected branch");
+  }
+  const forkedAt = (options.now?.() ?? new Date()).toISOString();
+  const child = await SessionStore.create({
+    rootDir: options.rootDir,
+    cwd: options.cwd,
+    projectRoot: options.projectRoot,
+    projectId: options.projectId,
+    model: options.parent.header.model,
+    parentSessionId: options.parent.sessionId,
+    ...(forkEntryId === undefined ? {} : { forkEntryId }),
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
+  const writer = await child.acquireWriter();
+  try {
+    await child.append("session/forked", {
+      parent_session_id: options.parent.sessionId,
+      parent_last_seq: parentLastSeq,
+      parent_state_covers_seq: parentStateCoversSeq,
+      parent_state_sha256: recordHash(options.parentState),
+      fork_entry_id: forkEntryId ?? null,
+      mode: "live",
+    });
+    await child.saveAgentState(
+      forkPiHeader(options.parentState.header, {
+        childSessionId: child.sessionId,
+        cwd: options.cwd,
+        timestamp: forkedAt,
+      }),
+      [...branch],
+    );
+  } finally {
+    await writer.release();
+  }
+  return {
+    sessionId: child.sessionId,
+    parentSessionId: options.parent.sessionId,
+    parentLastSeq,
+    parentStateCoversSeq,
+    parentEvents: options.parent.allEvents.length,
+    forkEntries: branch.length,
   };
 }
 

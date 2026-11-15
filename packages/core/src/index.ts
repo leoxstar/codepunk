@@ -300,6 +300,7 @@ export {
 export {
   exportSession,
   forkSession,
+  forkLiveSession,
   formatSessionList,
   latestSession,
   listProjectSessions,

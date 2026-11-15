@@ -88,6 +88,149 @@ test("session titles are bounded, single-line, and redacted", () => {
   );
 });
 
+test("a live writer can fork its settled branch without reacquiring the parent lock", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const parent = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectRoot: "/workspace",
+      projectId: "project-live-fork",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const writer = await parent.acquireWriter();
+    const branch = [
+      {
+        id: "entry-1",
+        parentId: null,
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+      },
+    ];
+    await parent.saveAgentState(
+      {
+        type: "session",
+        id: "pi-parent",
+        cwd: "/workspace",
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      branch,
+    );
+    const parentState = await parent.readAgentState();
+    assert.ok(parentState);
+    const forked = await core.forkLiveSession({
+      parent,
+      parentState,
+      rootDir,
+      cwd: "/workspace",
+      projectRoot: "/workspace",
+      projectId: parent.header.project_id,
+    });
+    assert.equal(forked.parentSessionId, parent.sessionId);
+    assert.equal(forked.parentLastSeq, 0);
+    assert.equal(forked.forkEntries, 1);
+    const child = await core.SessionStore.open({
+      rootDir,
+      cwd: "/workspace",
+      projectId: parent.header.project_id,
+      sessionId: forked.sessionId,
+    });
+    assert.equal(child.header.parent_session_id, parent.sessionId);
+    assert.equal(child.header.fork_entry_id, "entry-1");
+    assert.equal(child.allEvents[0].kind, "session/forked");
+    assert.equal(child.allEvents[0].data.mode, "live");
+    const childState = await child.readAgentState();
+    assert.deepEqual(childState.branch, branch);
+    await writer.release();
+  });
+});
+
+test("a live fork refuses a branch or state that does not match the log", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const parent = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectRoot: "/workspace",
+      projectId: "project-live-fork-negative",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const writer = await parent.acquireWriter();
+    const branch = [
+      {
+        id: "entry-1",
+        parentId: null,
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+      },
+    ];
+    await parent.saveAgentState(
+      {
+        type: "session",
+        id: "pi-parent-negative",
+        cwd: "/workspace",
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      branch,
+    );
+    const parentState = await parent.readAgentState();
+    assert.ok(parentState);
+    await parent.append("user/input", { run_id: "run-1", text: "after state" });
+    await assert.rejects(
+      () =>
+        core.forkLiveSession({
+          parent,
+          parentState,
+          rootDir,
+          cwd: "/workspace",
+          projectRoot: "/workspace",
+          projectId: parent.header.project_id,
+        }),
+      /beyond its saved agent state/u,
+    );
+    const empty = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectRoot: "/workspace",
+      projectId: "project-live-fork-negative",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const emptyWriter = await empty.acquireWriter();
+    await empty.saveAgentState(
+      {
+        type: "session",
+        id: "pi-empty",
+        cwd: "/workspace",
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      [],
+    );
+    const emptyState = await empty.readAgentState();
+    assert.ok(emptyState);
+    await assert.rejects(
+      () =>
+        core.forkLiveSession({
+          parent: empty,
+          parentState: emptyState,
+          rootDir,
+          cwd: "/workspace",
+          projectRoot: "/workspace",
+          projectId: empty.header.project_id,
+        }),
+      /no agent branch to fork/u,
+    );
+    await emptyWriter.release();
+    await writer.release();
+  });
+});
+
 test("heartbeat updates the lock without consuming an event seq", async () => {
   await withTempDirectory(async (rootDir) => {
     const store = await createStore(rootDir);
