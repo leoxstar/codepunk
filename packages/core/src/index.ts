@@ -461,6 +461,7 @@ export {
   type RuntimeOptions,
   type RuntimeSignResult,
   type SkillReloadResult,
+  type PluginReloadResult,
   type AgentSession,
   type AgentSessionServices,
   type SessionManager,

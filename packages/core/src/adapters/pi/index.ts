@@ -147,6 +147,12 @@ export interface PiHost {
     tools: readonly ToolDefinition<any, any, any>[],
   ): Promise<void>;
   /**
+   * Replace the user-plugin extension paths used by Pi's resource loader.
+   * `session.reload()` then re-discovers and rebinds those extensions without
+   * replacing the Codepunk session or its evidence chain.
+   */
+  replaceExtensionPaths(paths: readonly string[]): void;
+  /**
    * Replace the product-owned append-system-prompt block. Pi keeps a
    * reference to the array passed to its resource loader, so a later
    * `session.reload()` rebuilds the prompt from the new text without
@@ -1414,6 +1420,11 @@ export async function createPiHost(
     ) {
       appendSystemPrompt.push(options.extraInstruction);
     }
+    const allowedExtensionPaths = [
+      ...(options.extensionPaths ?? []).map((candidate) =>
+        normalizeAbsolute(candidate),
+      ),
+    ];
     services = await createAgentSessionServices({
       cwd,
       agentDir: codepunkHome,
@@ -1434,9 +1445,8 @@ export async function createPiHost(
           productExtension,
           ...(options.additionalExtensionFactories ?? []),
         ],
-        ...(options.extensionPaths !== undefined &&
-        options.extensionPaths.length > 0
-          ? { additionalExtensionPaths: [...options.extensionPaths] }
+        ...(allowedExtensionPaths.length > 0
+          ? { additionalExtensionPaths: [...allowedExtensionPaths] }
           : {}),
       },
     });
@@ -1673,7 +1683,7 @@ export async function createPiHost(
       if (session === null) {
         throw new HostIsolationError("Pi session is not ready");
       }
-      assertHostResources(services!, options.extensionPaths ?? []);
+      assertHostResources(services!, allowedExtensionPaths);
       return assertWrappedToolRegistry(session, wrapped);
     };
     productHookState.assertRegistry = () => {
@@ -1750,6 +1760,27 @@ export async function createPiHost(
         appendSystemPrompt.push(text);
       }
     };
+    const replaceExtensionPaths = (paths: readonly string[]): void => {
+      const normalized = paths.map((candidate) => normalizeAbsolute(candidate));
+      const loader = services!.resourceLoader as unknown as {
+        additionalExtensionPaths?: string[];
+      };
+      if (!Array.isArray(loader.additionalExtensionPaths)) {
+        throw new HostIsolationError(
+          "pinned Pi resource loader no longer exposes additionalExtensionPaths",
+        );
+      }
+      allowedExtensionPaths.splice(
+        0,
+        allowedExtensionPaths.length,
+        ...normalized,
+      );
+      loader.additionalExtensionPaths.splice(
+        0,
+        loader.additionalExtensionPaths.length,
+        ...normalized,
+      );
+    };
     return {
       session,
       services,
@@ -1765,6 +1796,7 @@ export async function createPiHost(
       },
       replaceExtraTools,
       replaceExtraInstruction,
+      replaceExtensionPaths,
       validateToolRegistry: validate,
       beginRun,
       endRun,

@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { importCore } from "./support/core.mjs";
 import {
   makeProject,
+  trustWorkspace,
   withTempDirectory,
   writeFile,
 } from "./support/helpers.mjs";
+import { TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
+const execFileAsync = promisify(execFile);
 
 async function createHost(paths, extensionPaths, sessionId, overrides = {}) {
   const ledger = await core.EvidenceLedger.open(
@@ -252,5 +257,106 @@ test("plugin installation validates files and replacement", async () => {
       () => core.removeUserPlugin({ extensionDir, name: "../outside.js" }),
       /name is invalid/u,
     );
+  });
+});
+
+test("runtime plugin reload replaces the extension surface in place", async () => {
+  await withTempDirectory("codepunk-plugin-reload-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await trustWorkspace(home, project);
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const extensionDir = path.join(home, "extensions");
+    const first = path.join(extensionDir, "first.mjs");
+    await writeFile(
+      first,
+      [
+        "export default function (pi) {",
+        '  pi.registerCommand("plugin-first", {',
+        '    description: "first plugin",',
+        "    handler: async () => {},",
+        "  });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      model: TEST_MODEL,
+      allowPlugins: true,
+    });
+    try {
+      assert.deepEqual(runtime.plugins.paths, [first]);
+      assert.ok(
+        runtime.host.session.extensionRunner
+          .getRegisteredCommands()
+          .some((command) => command.name === "plugin-first"),
+      );
+
+      await fs.unlink(first);
+      const second = path.join(extensionDir, "second.mjs");
+      await writeFile(
+        second,
+        [
+          "export default function (pi) {",
+          '  pi.registerCommand("plugin-second", {',
+          '    description: "second plugin",',
+          "    handler: async () => {},",
+          "  });",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      const reloaded = await runtime.reloadPlugins();
+      assert.equal(reloaded.error, null);
+      assert.deepEqual(runtime.plugins.paths, [second]);
+      const commands = runtime.host.session.extensionRunner
+        .getRegisteredCommands()
+        .map((command) => command.name);
+      assert.ok(commands.includes("plugin-second"));
+      assert.equal(commands.includes("plugin-first"), false);
+
+      const rogue = path.join(extensionDir, "rogue.mjs");
+      await writeFile(
+        rogue,
+        [
+          "export default function (pi) {",
+          "  pi.registerTool({",
+          '    name: "rogue",',
+          '    label: "Rogue",',
+          '    description: "unwrapped plugin tool",',
+          "    parameters: {",
+          '      type: "object",',
+          "      properties: {},",
+          "      additionalProperties: false,",
+          "    },",
+          "    async execute() {",
+          '      return { content: [{ type: "text", text: "rogue" }], details: {} };',
+          "    },",
+          "  });",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      const rejected = await runtime.reloadPlugins();
+      assert.match(
+        rejected.error ?? "",
+        /registered tool "rogue" is not wrapped/u,
+      );
+      assert.deepEqual(runtime.plugins.paths, [second]);
+      assert.ok(
+        runtime.host.session.extensionRunner
+          .getRegisteredCommands()
+          .some((command) => command.name === "plugin-second"),
+      );
+    } finally {
+      await runtime.dispose();
+    }
   });
 });

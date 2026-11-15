@@ -75,7 +75,11 @@ import {
   type ModelUsageSummary,
 } from "../model/index.ts";
 import { isFallbackModel } from "../model/fallback.ts";
-import { loadUserPlugins, type PluginSummary } from "../plugin/index.ts";
+import {
+  loadUserPlugins,
+  type PluginLoadResult,
+  type PluginSummary,
+} from "../plugin/index.ts";
 import {
   emptyMcpBundle,
   findProjectMcpConfigs,
@@ -272,6 +276,12 @@ export interface CodepunkRuntime {
    * registry in place.
    */
   reloadSkills(): Promise<SkillReloadResult>;
+  /**
+   * Re-scan `$CODEPUNK_HOME/extensions`, replace Pi's extension path set, and
+   * rebuild the extension/tool registry without recreating the session.
+   * Disabled, read-only, and headless sessions keep plugins off.
+   */
+  reloadPlugins(): Promise<PluginReloadResult>;
   dispose(): Promise<void>;
 }
 
@@ -292,6 +302,12 @@ export interface SkillReloadResult {
   skills: readonly SkillSource[];
   blockSha256: string;
   warnings: readonly string[];
+  error: string | null;
+}
+
+export interface PluginReloadResult {
+  skipped: "disabled" | "read-only" | "headless" | null;
+  plugins: PluginSummary;
   error: string | null;
 }
 
@@ -657,14 +673,16 @@ export async function createRuntime(
       "plugins cannot be enabled in read-only mode; choose standard or pass a different autonomy profile",
     );
   }
+  const pluginsAllowed =
+    !disablePlugins &&
+    !readOnly &&
+    options.headless !== true &&
+    (options.allowPlugins === true || config.plugins.enabled === true);
   const plugins = await loadUserPlugins({
-    allowed:
-      !disablePlugins &&
-      !readOnly &&
-      options.headless !== true &&
-      (options.allowPlugins === true || config.plugins.enabled === true),
+    allowed: pluginsAllowed,
     extensionDir: path.join(paths.home, "extensions"),
   });
+  const pluginState: { current: PluginLoadResult } = { current: plugins };
   if (readOnly && config.plugins.enabled) {
     loadedConfig.warnings.push(
       "read-only autonomy does not load user plugins because plugin code runs outside the tool policy",
@@ -1104,7 +1122,9 @@ export async function createRuntime(
     config,
     loadedConfig,
     policy,
-    plugins: plugins.summary,
+    get plugins() {
+      return pluginState.current.summary;
+    },
     get skills() {
       return skillState.current.skills;
     },
@@ -1292,6 +1312,69 @@ export async function createRuntime(
         warnings: next.warnings,
         error,
       };
+    },
+    async reloadPlugins() {
+      if (host.session.isStreaming) {
+        throw new Error(
+          "Wait for the current response to finish before reloading.",
+        );
+      }
+      if (host.session.isCompacting) {
+        throw new Error("Wait for compaction to finish before reloading.");
+      }
+      const skipped: PluginReloadResult["skipped"] = disablePlugins
+        ? "disabled"
+        : readOnly
+          ? "read-only"
+          : options.headless === true
+            ? "headless"
+            : null;
+      if (skipped !== null) {
+        const disabled = await loadUserPlugins({
+          allowed: false,
+          extensionDir: path.join(paths.home, "extensions"),
+        });
+        pluginState.current = disabled;
+        host.replaceExtensionPaths([]);
+        await host.session.reload();
+        host.validateToolRegistry();
+        return { skipped, plugins: disabled.summary, error: null };
+      }
+
+      const previous = pluginState.current;
+      let next: PluginLoadResult;
+      try {
+        next = await loadUserPlugins({
+          allowed: true,
+          extensionDir: path.join(paths.home, "extensions"),
+        });
+        host.replaceExtensionPaths(next.paths);
+        await host.session.reload();
+        host.validateToolRegistry();
+      } catch (error) {
+        host.replaceExtensionPaths(previous.paths);
+        await host.session.reload().catch(() => undefined);
+        try {
+          host.validateToolRegistry();
+        } catch {
+          // Preserve the reload error; the next model turn will fail closed if
+          // the previous registry could not be restored.
+        }
+        return {
+          skipped: null,
+          plugins: previous.summary,
+          error: `plugin reload failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+
+      pluginState.current = next;
+      const error =
+        next.summary.errors.length === 0
+          ? null
+          : next.summary.errors.join("; ");
+      return { skipped: null, plugins: next.summary, error };
     },
     async reloadMcp() {
       if (host.session.isStreaming) {
