@@ -200,6 +200,67 @@ test("runtime records loaded skills without granting authority", async () => {
   });
 });
 
+test("runtime skill reload swaps the injected block and policy paths", async () => {
+  await withTempDirectory("codepunk-skills-reload-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(home, "skills", "alpha", "SKILL.md"),
+      skill("alpha", "alpha body"),
+    );
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+    });
+    try {
+      assert.deepEqual(
+        runtime.skills.map((item) => item.name),
+        ["alpha"],
+      );
+      const initialPrompt = runtime.host.services.resourceLoader
+        .getAppendSystemPrompt()
+        .join("\n");
+      assert.match(initialPrompt, /<name>alpha<\/name>/u);
+
+      await fs.rm(path.join(home, "skills", "alpha"), { recursive: true });
+      await writeFile(
+        path.join(home, "skills", "beta", "SKILL.md"),
+        skill("beta", "beta body"),
+      );
+      const result = await runtime.reloadSkills();
+      assert.equal(result.error, null);
+      assert.equal(result.skipped, null);
+      assert.deepEqual(
+        result.skills.map((item) => item.name),
+        ["beta"],
+      );
+      assert.deepEqual(
+        runtime.skills.map((item) => item.name),
+        ["beta"],
+      );
+      const reloadedPrompt = runtime.host.services.resourceLoader
+        .getAppendSystemPrompt()
+        .join("\n");
+      assert.match(reloadedPrompt, /<name>beta<\/name>/u);
+      assert.doesNotMatch(reloadedPrompt, /<name>alpha<\/name>/u);
+      const loaded = runtime.session.allEvents.filter(
+        (event) => event.kind === "skill/loaded",
+      );
+      assert.equal(loaded.length, 2);
+      assert.deepEqual(
+        loaded.at(-1).data.skills.map((item) => item.name),
+        ["beta"],
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
 test("skill frontmatter uses the Pi parser and honors explicit invocation", async () => {
   await withTempDirectory("codepunk-skills-frontmatter-", async (root) => {
     const project = await makeRepo(root);

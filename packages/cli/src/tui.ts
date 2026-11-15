@@ -66,6 +66,7 @@ import {
   type FilesystemMode,
   type McpReloadResult,
   type PermissionProfile,
+  type SkillReloadResult,
   type SubagentHostResult,
 } from "@codepunk/core";
 import type {
@@ -330,7 +331,7 @@ export function codepunkHelp(): string {
     "  /remember, /memory         write, search, archive, or delete memory",
     "  /doctor, /policy           run diagnostics or print effective policy",
     "  /compact                   ask Pi to compact the current context",
-    "  /reload                    reload Pi resources and user MCP servers",
+    "  /reload                    reload Pi resources, skills, and user MCP servers",
     "  /help                      show this command list",
     "  /quit                      exit",
     "",
@@ -496,6 +497,21 @@ function formatMcpReload(result: McpReloadResult): string {
     lines.push(warning);
   }
   return lines.join("\n");
+}
+
+function formatSkillReload(result: SkillReloadResult): string {
+  if (result.error !== null) {
+    return `Skill reload failed: ${result.error}`;
+  }
+  if (result.skipped === "disabled") {
+    return "Skills are disabled for this session.";
+  }
+  if (result.skills.length === 0) {
+    return "Skills reloaded: none discovered.";
+  }
+  return `Skills reloaded: ${result.skills
+    .map((skill) => `${skill.name} (${skill.scope})`)
+    .join(", ")}`;
 }
 
 function sessionSummary(runtime: CodepunkRuntime): string {
@@ -2662,10 +2678,11 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
             return true;
           }
           try {
+            const skills = await runtime.reloadSkills();
             const result = await runtime.reloadMcp();
             state.context?.ui.notify(
-              formatMcpReload(result),
-              result.error === null ? "info" : "error",
+              `${formatSkillReload(skills)}\n${formatMcpReload(result)}`,
+              result.error === null && skills.error === null ? "info" : "error",
             );
           } catch (error) {
             context.ui.notify(

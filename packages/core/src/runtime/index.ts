@@ -83,7 +83,11 @@ import {
   type McpServerFailure,
   type McpServerStart,
 } from "../mcp/index.ts";
-import { loadSkills, type SkillSource } from "../skills/index.ts";
+import {
+  loadSkills,
+  type SkillBundle,
+  type SkillSource,
+} from "../skills/index.ts";
 import {
   SrtSandbox,
   UnsandboxedShell,
@@ -260,6 +264,12 @@ export interface CodepunkRuntime {
    * does not recreate the Codepunk session or its evidence chain.
    */
   reloadMcp(): Promise<McpReloadResult>;
+  /**
+   * Re-discover user and trusted project skills, replace the injected skill
+   * block and the readable-skill policy exception, then rebuild Pi's prompt
+   * registry in place.
+   */
+  reloadSkills(): Promise<SkillReloadResult>;
   dispose(): Promise<void>;
 }
 
@@ -271,6 +281,14 @@ export interface McpReloadResult {
   toolCounts: Readonly<Record<string, number>>;
   resourceServers: readonly string[];
   failures: readonly McpServerFailure[];
+  warnings: readonly string[];
+  error: string | null;
+}
+
+export interface SkillReloadResult {
+  skipped: "disabled" | null;
+  skills: readonly SkillSource[];
+  blockSha256: string;
   warnings: readonly string[];
   error: string | null;
 }
@@ -657,6 +675,8 @@ export async function createRuntime(
         codepunkHome: paths.home,
         projectTrusted: workspaceTrust.trusted,
       });
+  const readableSkillFiles = skills.skills.map((skill) => skill.path);
+  const skillState: { current: SkillBundle } = { current: skills };
   const writeSet =
     headlessPolicy?.write ??
     (policy.writeSet.length > 0 ? policy.writeSet : [paths.cwd]);
@@ -952,7 +972,7 @@ export async function createRuntime(
       sessionId: session.sessionId,
       runId: initialRunId,
       writeSet: writeSetWithAdditionalRoots,
-      readableSkillFiles: skills.skills.map((skill) => skill.path),
+      readableSkillFiles,
       filesystem: config.filesystem.mode,
       userRules: [...policy.userRules, ...(headlessPolicy?.rules ?? [])],
       projectRules: policy.projectRules,
@@ -1076,7 +1096,9 @@ export async function createRuntime(
     loadedConfig,
     policy,
     plugins: plugins.summary,
-    skills: skills.skills,
+    get skills() {
+      return skillState.current.skills;
+    },
     isolation: {
       bare,
       context: disableContext,
@@ -1175,6 +1197,91 @@ export async function createRuntime(
         source_refs: [...input.sourceRefs],
         reason: input.reason,
       });
+    },
+    async reloadSkills() {
+      if (host.session.isStreaming) {
+        throw new Error(
+          "Wait for the current response to finish before reloading.",
+        );
+      }
+      if (host.session.isCompacting) {
+        throw new Error("Wait for compaction to finish before reloading.");
+      }
+      const previous = skillState.current;
+      let next: SkillBundle;
+      try {
+        next = disableSkills
+          ? { skills: [], block: "", warnings: [] }
+          : await loadSkills({
+              deliveryRoot: paths.deliveryRoot,
+              codepunkHome: paths.home,
+              projectTrusted: workspaceTrust.trusted,
+            });
+      } catch (error) {
+        return {
+          skipped: disableSkills ? ("disabled" as const) : null,
+          skills: previous.skills,
+          blockSha256: sha256Text(previous.block),
+          warnings: previous.warnings,
+          error: `skill discovery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+      const previousReadable = [...readableSkillFiles];
+      try {
+        host.replaceExtraInstruction(next.block);
+        readableSkillFiles.splice(
+          0,
+          readableSkillFiles.length,
+          ...next.skills.map((skill) => skill.path),
+        );
+        await host.session.reload();
+      } catch (error) {
+        host.replaceExtraInstruction(previous.block);
+        readableSkillFiles.splice(
+          0,
+          readableSkillFiles.length,
+          ...previousReadable,
+        );
+        await host.session.reload().catch(() => undefined);
+        return {
+          skipped: disableSkills ? ("disabled" as const) : null,
+          skills: previous.skills,
+          blockSha256: sha256Text(previous.block),
+          warnings: previous.warnings,
+          error: `Pi skill reload failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+      skillState.current = next;
+      const blockSha256 = sha256Text(next.block);
+      let error: string | null = null;
+      try {
+        await host.recordEvent("skill/loaded", {
+          skills: next.skills.map((skill) => ({
+            name: skill.name,
+            scope: skill.scope,
+            sha256: skill.sha256,
+            bytes: skill.bytes,
+          })),
+          block_sha256: blockSha256,
+        });
+      } catch (recordError) {
+        error = `skill/loaded event failed: ${
+          recordError instanceof Error
+            ? recordError.message
+            : String(recordError)
+        }`;
+      }
+      return {
+        skipped: disableSkills ? ("disabled" as const) : null,
+        skills: next.skills,
+        blockSha256,
+        warnings: next.warnings,
+        error,
+      };
     },
     async reloadMcp() {
       if (host.session.isStreaming) {

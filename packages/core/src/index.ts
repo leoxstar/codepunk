@@ -97,6 +97,7 @@ export {
   sha256Value,
 } from "./platform/hash.ts";
 export {
+  PI_INSTRUCTION_FILE_NAMES,
   isInsidePath,
   isInstructionFile,
   isSensitivePath,
@@ -434,6 +435,7 @@ export {
   RunLedger,
   type RuntimeOptions,
   type RuntimeSignResult,
+  type SkillReloadResult,
   type AgentSession,
   type AgentSessionServices,
   type SessionManager,

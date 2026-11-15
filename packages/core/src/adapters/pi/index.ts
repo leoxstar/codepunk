@@ -146,6 +146,13 @@ export interface PiHost {
   replaceExtraTools(
     tools: readonly ToolDefinition<any, any, any>[],
   ): Promise<void>;
+  /**
+   * Replace the product-owned append-system-prompt block. Pi keeps a
+   * reference to the array passed to its resource loader, so a later
+   * `session.reload()` rebuilds the prompt from the new text without
+   * replacing the session or its evidence chain.
+   */
+  replaceExtraInstruction(text: string): void;
   validateToolRegistry(): ToolRegistrySnapshot;
   beginRun(): Promise<void>;
   endRun(
@@ -1396,6 +1403,17 @@ export async function createPiHost(
       });
     }
 
+    const appendSystemPrompt: string[] = [];
+    if (context.instructionBlock.length > 0) {
+      appendSystemPrompt.push(context.instructionBlock);
+    }
+    const extraInstructionIndex = appendSystemPrompt.length;
+    if (
+      options.extraInstruction !== undefined &&
+      options.extraInstruction.length > 0
+    ) {
+      appendSystemPrompt.push(options.extraInstruction);
+    }
     services = await createAgentSessionServices({
       cwd,
       agentDir: codepunkHome,
@@ -1411,15 +1429,7 @@ export async function createPiHost(
         noContextFiles: true,
         disabledBuiltinExtensions: ["mcp", "codemode", "tool-search"],
         systemPrompt: "",
-        appendSystemPrompt: [
-          ...(context.instructionBlock.length > 0
-            ? [context.instructionBlock]
-            : []),
-          ...(options.extraInstruction !== undefined &&
-          options.extraInstruction.length > 0
-            ? [options.extraInstruction]
-            : []),
-        ],
+        appendSystemPrompt,
         extensionFactories: [
           productExtension,
           ...(options.additionalExtensionFactories ?? []),
@@ -1727,6 +1737,19 @@ export async function createPiHost(
         ...wrapped.map((definition) => definition.name),
       );
     };
+    const replaceExtraInstruction = (text: string): void => {
+      if (appendSystemPrompt.length > extraInstructionIndex) {
+        if (text.length === 0) {
+          appendSystemPrompt.splice(extraInstructionIndex);
+        } else {
+          appendSystemPrompt[extraInstructionIndex] = text;
+        }
+        return;
+      }
+      if (text.length > 0) {
+        appendSystemPrompt.push(text);
+      }
+    };
     return {
       session,
       services,
@@ -1741,6 +1764,7 @@ export async function createPiHost(
         return currentRunId;
       },
       replaceExtraTools,
+      replaceExtraInstruction,
       validateToolRegistry: validate,
       beginRun,
       endRun,
