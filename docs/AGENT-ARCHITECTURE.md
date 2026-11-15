@@ -568,6 +568,11 @@ would leave the next process with a route that has not been registered yet.
 | Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, fallback event, and `model/retry_start`/`model/retry_end` evidence for Pi's automatic retries. No second request loop.                                                                                                                                                                                                                                                                      |
 | Cost budget                      | Keep in Codepunk, implemented        | `config.budget.max_tokens` / `max_cost_usd` combine assistant and compaction usage with Pi's `getSessionStats()` totals, then add direct summary calls separately by `model/usage.source`. A larger Pi total can no longer hide summary tokens. The host aborts and blocks further input with a `budget/exceeded` event. This is product policy over the host's accounting, not a second retry loop.                                                                                          |
 
+The status line, `/status`, `/session`, and `/budget` read the last
+`budget/exceeded` event, show the exhausted token or USD limit, and point to
+`/new`. The same snapshot keeps the pre-stop usage visible instead of letting a
+later counter hide why the session stopped.
+
 ## What other agents do
 
 The useful comparison is not the number of slash commands. It is where each
@@ -857,8 +862,6 @@ The next work should follow the trust boundary, not the feature count:
    output, then a bidirectional protocol and out-of-terminal status signals.
    The complete transcript artifact, worktree review, human sign-off, merge
    handoff, and discard are already exposed through `/agents`.
-3. Surface the existing session budget stop more clearly in the status line
-   and session summary.
 
 ## Local evidence
 
@@ -866,7 +869,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 575 tests, 575 pass
+# 576 tests, 576 pass
 # repository check: 506 files, 3 packages
 ```
 

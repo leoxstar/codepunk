@@ -113,7 +113,7 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. The TUI also covers `/init` guard and model-prompt
 injection, `/status`, skill hot reload, and the Pi-native trust selector.
-On 2026-11-16, the local suite reported 575 tests and the repository check
+On 2026-11-16, the local suite reported 576 tests and the repository check
 reported 506 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
@@ -383,12 +383,10 @@ Ordered by expected value for the next iteration:
 
 1. A full-screen transcript browser and live streaming of complete tool
    output for profile-driven `/subagent` sessions.
-2. Surface the existing session budget stop more clearly in the status line
-   and session summary. The budget guard and virtual-model fallback are done.
-3. Session fork/clone with explicit parent-child evidence links, and one
+2. Session fork/clone with explicit parent-child evidence links, and one
    visible session command surface.
-4. Product-branded out-of-terminal run state and notifications.
-5. Windows ConPTY and sandbox verification before any support claim.
+3. Product-branded out-of-terminal run state and notifications.
+4. Windows ConPTY and sandbox verification before any support claim.
 
 ## Limits
 
