@@ -357,6 +357,8 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
+  assert.match(help, /\/diff\s+show staged and unstaged/u);
+  assert.match(help, /\/commit \[message\]\s+review and create/u);
   assert.match(help, /\/mcp \[list\|add \[name\]\|remove/u);
   assert.match(help, /\/status\s+show model, session, permissions/u);
   assert.match(help, /\/help\s+show this command list/u);
@@ -877,6 +879,63 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
   });
 });
 
+test("a real pty shows the working tree diff", async () => {
+  await withTempDirectory("codepunk-tui-diff-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["config", "user.name", "Test"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "one\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd: project });
+    await execFileAsync("git", ["commit", "-q", "-m", "initial"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "two\n");
+    await fs.writeFile(path.join(project, "new.txt"), "new\n");
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/diff", "Working tree diff");
+      const output = session.output();
+      assert.match(output, /M tracked\.txt/u);
+      assert.match(output, /\?\? new\.txt/u);
+      assert.match(output, /\+two/u);
+      assert.match(output, /-one/u);
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
 test("a real pty undoes and redoes Codepunk file changes", async () => {
   await withTempDirectory("codepunk-tui-undo-", async (root) => {
     const project = path.join(root, "project");
@@ -989,6 +1048,106 @@ test("a real pty undoes and redoes Codepunk file changes", async () => {
     } finally {
       await stopPty(session);
       model.server.close();
+    }
+  });
+});
+
+test("a real pty creates a human-confirmed commit and records it", async () => {
+  await withTempDirectory("codepunk-tui-commit-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["config", "user.name", "Test"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "one\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd: project });
+    await execFileAsync("git", ["commit", "-q", "-m", "initial"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "two\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(
+        session,
+        "/commit update tracked file",
+        "Commit scope",
+      );
+      const scopeMark = session.output().length;
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        scopeMark,
+        "Create this commit?",
+        "commit confirmation",
+      );
+      const confirmMark = session.output().length;
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        confirmMark,
+        "commit created:",
+        "commit result",
+      );
+      const log = await execFileAsync("git", ["log", "-1", "--pretty=%s"], {
+        cwd: project,
+      });
+      assert.equal(log.stdout.trim(), "update tracked file");
+
+      const evidence = await readEvidence(home);
+      const commitRecord = evidence.find((record) => record.tool === "commit");
+      assert.ok(commitRecord);
+      assert.equal(commitRecord.decision, "allow");
+      assert.equal(commitRecord.outcome, "completed");
+      assert.equal(commitRecord.executor, "codepunk-commit");
+      assert.match(commitRecord.vcs.commit, /^[0-9a-f]{40,64}$/u);
+
+      const eventFiles = (await fs.readdir(home, { recursive: true })).filter(
+        (entry) => entry.endsWith("session.jsonl"),
+      );
+      assert.equal(eventFiles.length, 1);
+      const events = (await fs.readFile(path.join(home, eventFiles[0]), "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      const commitEvent = events.find(
+        (entry) => entry.kind === "commit/created",
+      );
+      assert.ok(commitEvent);
+      assert.equal(commitEvent.data.files.length, 1);
+      assert.equal(commitEvent.data.files[0], "tracked.txt");
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
     }
   });
 });
