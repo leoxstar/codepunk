@@ -352,6 +352,9 @@ test("the Codepunk help lists the real command surface", async () => {
   const { codepunkHelp } = await importSource("packages/cli/src/tui.ts");
   const help = codepunkHelp();
   assert.match(help, /\/model \[query\]/u);
+  assert.match(help, /\/models\s+pick from recent or favorite models/u);
+  assert.match(help, /\/favorite\s+toggle the current model in favorites/u);
+  assert.match(help, /F2 cycles through recent models/u);
   assert.match(help, /\/permissions why -- <cmd>/u);
   assert.match(help, /\/plan\s+show the current plan/u);
   assert.doesNotMatch(help, /\/cp-plan/u);
@@ -2976,6 +2979,147 @@ test("a real pty scopes the model picker to physical fallback members", async ()
       assert.match(config, /provider = "test"/u);
       assert.match(config, /id = "other"/u);
       assert.doesNotMatch(config, /id = "auto"/u);
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("a real pty selects recent and favorite models without replacing Pi search", async () => {
+  await withTempDirectory("codepunk-tui-model-history-", async (root) => {
+    const project = path.join(root, "project");
+    await fs.mkdir(project);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const home = path.join(root, "home");
+    await fs.mkdir(home);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          test: {
+            name: "Test",
+            baseUrl: "http://127.0.0.1:1/v1",
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "fake",
+                name: "Fake model",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+              {
+                id: "other",
+                name: "Other Choice",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "No default model configured.", "startup");
+      await runCommandAfter(
+        session,
+        "/model test/fake",
+        "model set to test/fake",
+      );
+      await runCommandAfter(
+        session,
+        "/favorite",
+        "Added to favorites: test/fake",
+      );
+      await runCommandAfter(
+        session,
+        "/model test/other",
+        "model set to test/other",
+      );
+
+      const menuMark = session.output().length;
+      session.child.stdin.write("/models\r");
+      await waitForOutputAfter(
+        session,
+        menuMark,
+        "★ test/fake",
+        "favorite model menu",
+      );
+      await waitForOutputAfter(
+        session,
+        menuMark,
+        "↺ test/other (current)",
+        "recent model menu",
+      );
+      await waitForOutputAfter(
+        session,
+        menuMark,
+        "Search all models (Pi)",
+        "Pi search escape hatch",
+      );
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        menuMark,
+        "model set to test/fake",
+        "favorite model selection",
+      );
+      await runCommandAfter(
+        session,
+        "/favorite",
+        "Removed from favorites: test/fake",
+      );
+      const history = JSON.parse(
+        await fs.readFile(path.join(home, "model-history.json"), "utf8"),
+      );
+      assert.deepEqual(history.favorites, []);
+      assert.equal(history.recent[0], "test/fake");
+      assert.equal(history.recent[1], "test/other");
+
+      const cycleMark = session.output().length;
+      session.child.stdin.write("\u001bOQ");
+      await waitForOutputAfter(
+        session,
+        cycleMark,
+        "model set to test/other",
+        "F2 recent model cycle",
+      );
+
+      const searchMark = session.output().length;
+      session.child.stdin.write("/model\r");
+      await waitForOutputAfter(
+        session,
+        searchMark,
+        "Other Choice",
+        "Pi search still works after Codepunk history",
+      );
+      session.child.stdin.write("\u001b");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      session.child.stdin.write("/quit\r");
+      const exited = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(exited, { code: 0, signal: null });
     } finally {
       await stopPty(session);
     }
