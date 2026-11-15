@@ -397,6 +397,48 @@ export const ModelFallbackEventSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const ModelRetryStartEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("model/retry_start"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        model: Type.Union([NonEmptyStringSchema, Type.Null()]),
+        attempt: Type.Integer({ minimum: 1 }),
+        max_attempts: Type.Integer({ minimum: 1 }),
+        delay_ms: Type.Integer({ minimum: 0 }),
+        error_sha256: Sha256Schema,
+        error_preview: Type.String({ maxLength: 512 }),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const ModelRetryEndEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("model/retry_end"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        model: Type.Union([NonEmptyStringSchema, Type.Null()]),
+        attempt: Type.Integer({ minimum: 1 }),
+        success: Type.Boolean(),
+        final_error_sha256: Type.Union([Sha256Schema, Type.Null()]),
+        final_error_preview: Type.Union([
+          Type.String({ maxLength: 512 }),
+          Type.Null(),
+        ]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const BudgetExceededEventSchema = Type.Object(
   {
     ...EventBase,
@@ -629,6 +671,8 @@ export const SessionEventSchema = Type.Union([
   ModelChangeEventSchema,
   ModelUsageEventSchema,
   ModelFallbackEventSchema,
+  ModelRetryStartEventSchema,
+  ModelRetryEndEventSchema,
   BudgetExceededEventSchema,
   McpServerStartEventSchema,
   SkillLoadedEventSchema,
@@ -658,6 +702,8 @@ export type MemoryRetrieveEvent = Static<typeof MemoryRetrieveEventSchema>;
 export type ModelChangeEvent = Static<typeof ModelChangeEventSchema>;
 export type ModelUsageEvent = Static<typeof ModelUsageEventSchema>;
 export type ModelFallbackEvent = Static<typeof ModelFallbackEventSchema>;
+export type ModelRetryStartEvent = Static<typeof ModelRetryStartEventSchema>;
+export type ModelRetryEndEvent = Static<typeof ModelRetryEndEventSchema>;
 export type BudgetExceededEvent = Static<typeof BudgetExceededEventSchema>;
 export type McpServerStartEvent = Static<typeof McpServerStartEventSchema>;
 export type SkillLoadedEvent = Static<typeof SkillLoadedEventSchema>;
