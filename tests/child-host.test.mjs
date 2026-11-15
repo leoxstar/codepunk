@@ -14,6 +14,9 @@ async function startChildModelServer({
   toolCallRounds = 1,
   delayMs = 0,
   readPath = "subagent-input.txt",
+  toolName = "read",
+  toolArguments = null,
+  finalText = "child says hello",
 } = {}) {
   const requests = [];
   const sockets = new Set();
@@ -62,13 +65,15 @@ async function startChildModelServer({
                   tool_calls: [
                     {
                       index: 0,
-                      id: `call-read-${toolResults}`,
+                      id: `call-${toolName}-${toolResults}`,
                       type: "function",
                       function: {
-                        name: "read",
-                        arguments: JSON.stringify({
-                          path: readPath,
-                        }),
+                        name: toolName,
+                        arguments: JSON.stringify(
+                          toolArguments ?? {
+                            path: readPath,
+                          },
+                        ),
                       },
                     },
                   ],
@@ -93,7 +98,7 @@ async function startChildModelServer({
             choices: [
               {
                 index: 0,
-                delta: { role: "assistant", content: "child says hello" },
+                delta: { role: "assistant", content: finalText },
                 finish_reason: null,
               },
             ],
@@ -142,7 +147,7 @@ function initGitRepository(project) {
     cwd: project,
   });
   execFileSync("git", ["config", "user.name", "Child Test"], { cwd: project });
-  execFileSync("git", ["add", "subagent-input.txt"], { cwd: project });
+  execFileSync("git", ["add", "."], { cwd: project });
   execFileSync("git", ["commit", "-qm", "test fixture"], { cwd: project });
 }
 
@@ -704,6 +709,215 @@ test("child host rejects a working directory outside git", async () => {
       (error) =>
         error instanceof core.ChildHostError &&
         error.code === "subagent.not_git",
+    );
+  });
+});
+
+test("a mutating profile runs in a detached worktree and keeps the parent clean", async () => {
+  await withTempDirectory("codepunk-child-worktree-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    initGitRepository(project);
+    const modelServer = await startChildModelServer({
+      toolName: "write",
+      toolArguments: {
+        path: "child-output.txt",
+        content: "written by child\n",
+      },
+      finalText: "WROTE_CHILD_FILE",
+    });
+    await writeModelHome(home, modelServer.baseUrl);
+    let worktree = null;
+    try {
+      const cli = await ensureBuilt();
+      const result = await core.runSubagentHost({
+        hostArgv: [process.execPath, cli],
+        cwd: project,
+        parentSessionId: "parent-session",
+        childSessionId: "child-mutable",
+        prompt: "create the child output file",
+        isolation: "worktree",
+        model: "local/local-test",
+        profile: {
+          name: "worker",
+          sha256: `sha256:${"a".repeat(64)}`,
+          tools: {
+            read: true,
+            write: true,
+            edit: false,
+            shell: false,
+            search: true,
+            memory_search: false,
+          },
+          systemPrompt: "You are a bounded worker.",
+          model: "local/local-test",
+          fallback: [],
+          thinking: "low",
+        },
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          NO_COLOR: "1",
+        },
+      });
+      worktree = result.worktree;
+      assert.equal(result.isolation, "worktree");
+      assert.equal(result.profile, "worker");
+      assert.equal(result.summary, "WROTE_CHILD_FILE");
+      assert.equal(result.exit_code, 0);
+      assert.ok(worktree);
+      assert.ok((result.changed_files ?? 0) >= 1);
+      assert.match(result.evidence_head, /^sha256:[a-f0-9]{64}$/u);
+
+      await assert.rejects(
+        () => fs.readFile(path.join(project, "child-output.txt"), "utf8"),
+        /ENOENT/u,
+      );
+      assert.equal(
+        await fs.readFile(path.join(worktree, "child-output.txt"), "utf8"),
+        "written by child\n",
+      );
+      const records = (await fs.readFile(result.child_evidence_path, "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      assert.equal(records.at(-1)?.tool, "write");
+    } finally {
+      if (worktree !== null) {
+        execFileSync("git", ["worktree", "remove", "--force", worktree], {
+          cwd: project,
+        });
+        await fs.rm(path.dirname(worktree), { recursive: true, force: true });
+      }
+      modelServer.server.closeAllConnections?.();
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
+test("an edit-only profile can mutate its worktree", async () => {
+  await withTempDirectory("codepunk-child-edit-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    await fs.writeFile(path.join(project, "edit-target.txt"), "before\n");
+    initGitRepository(project);
+    const modelServer = await startChildModelServer({
+      toolName: "edit",
+      toolArguments: {
+        path: "edit-target.txt",
+        edits: [{ oldText: "before", newText: "after" }],
+      },
+      finalText: "EDITED_CHILD_FILE",
+    });
+    await writeModelHome(home, modelServer.baseUrl);
+    let worktree = null;
+    try {
+      const cli = await ensureBuilt();
+      const result = await core.runSubagentHost({
+        hostArgv: [process.execPath, cli],
+        cwd: project,
+        parentSessionId: "parent-session",
+        childSessionId: "child-edit",
+        prompt: "edit the child output file",
+        isolation: "worktree",
+        model: "local/local-test",
+        profile: {
+          name: "editor",
+          sha256: `sha256:${"b".repeat(64)}`,
+          tools: {
+            read: true,
+            write: false,
+            edit: true,
+            shell: false,
+            search: true,
+            memory_search: false,
+          },
+          systemPrompt: "You are a bounded editor.",
+          model: "local/local-test",
+          fallback: [],
+          thinking: "low",
+        },
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          NO_COLOR: "1",
+        },
+      });
+      worktree = result.worktree;
+      assert.equal(result.exit_code, 0);
+      assert.equal(result.summary, "EDITED_CHILD_FILE");
+      assert.ok((result.changed_files ?? 0) >= 1);
+      assert.equal(
+        await fs.readFile(path.join(project, "edit-target.txt"), "utf8"),
+        "before\n",
+      );
+      assert.equal(
+        await fs.readFile(path.join(worktree, "edit-target.txt"), "utf8"),
+        "after\n",
+      );
+    } finally {
+      if (worktree !== null) {
+        execFileSync("git", ["worktree", "remove", "--force", worktree], {
+          cwd: project,
+        });
+        await fs.rm(path.dirname(worktree), { recursive: true, force: true });
+      }
+      modelServer.server.closeAllConnections?.();
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
+test("a mutating profile cannot run in the shared checkout", async () => {
+  await withTempDirectory("codepunk-child-shared-", async (root) => {
+    const project = path.join(root, "project");
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    initGitRepository(project);
+    const cli = await ensureBuilt();
+    await assert.rejects(
+      () =>
+        core.runSubagentHost({
+          hostArgv: [process.execPath, cli],
+          cwd: project,
+          parentSessionId: "parent-session",
+          childSessionId: "child-shared-mutation",
+          prompt: "try to mutate the parent checkout",
+          isolation: "shared",
+          model: "local/local-test",
+          profile: {
+            name: "worker",
+            sha256: `sha256:${"c".repeat(64)}`,
+            tools: {
+              read: true,
+              write: true,
+              edit: false,
+              shell: false,
+              search: true,
+              memory_search: false,
+            },
+            systemPrompt: "You are a bounded worker.",
+            model: "local/local-test",
+            fallback: [],
+            thinking: "low",
+          },
+        }),
+      /requires a detached worktree/u,
     );
   });
 });

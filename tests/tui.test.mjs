@@ -2684,6 +2684,19 @@ test("a real pty runs /subagent as a read-only child session", async () => {
     const home = path.join(root, "home");
     await fs.mkdir(project);
     await fs.mkdir(home);
+    await fs.mkdir(path.join(home, "agents"), { recursive: true });
+    await fs.writeFile(
+      path.join(home, "agents", "reviewer.md"),
+      [
+        "---",
+        "name: reviewer",
+        "description: Review a bounded change set",
+        "tools: read, search",
+        "---",
+        "Review the requested change.",
+        "",
+      ].join("\n"),
+    );
     await fs.writeFile(path.join(project, "hello.txt"), "hello\n");
     await execFileAsync("git", ["init", "-q"], { cwd: project });
     await execFileAsync(
@@ -2759,13 +2772,22 @@ test("a real pty runs /subagent as a read-only child session", async () => {
     );
     try {
       await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/agents profiles", "reviewer (user)");
       const mark = session.output().length;
-      session.child.stdin.write("/subagent reply with exactly CHILD_OK\r");
+      session.child.stdin.write(
+        "/subagent --profile reviewer reply with exactly CHILD_OK\r",
+      );
       await waitForOutputAfter(
         session,
         mark,
         "subagent started:",
         "/subagent start",
+      );
+      await waitForOutputAfter(
+        session,
+        mark,
+        "profile: reviewer (user)",
+        "/subagent profile",
       );
       const childSessionId = session
         .output()
@@ -2810,8 +2832,12 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       assert.equal(linked.event.data.depth, 1);
       assert.equal(linked.event.data.isolation, "shared");
       assert.equal(linked.event.data.model, "local/local-test");
+      assert.equal(linked.event.data.profile, "reviewer");
+      assert.match(linked.event.data.profile_sha256, /^sha256:[a-f0-9]{64}$/u);
       assert.equal(linked.event.data.summary, "CHILD_OK");
       assert.equal(linked.event.data.evidence_head, null);
+      assert.equal(linked.event.data.worktree, null);
+      assert.equal(linked.event.data.changed_files, 0);
       assert.ok(
         logs.some(({ entry }) =>
           entry.endsWith(

@@ -390,14 +390,16 @@ export async function loadHeadlessPolicy(
       decision: "allow",
     });
   }
-  if (tools.includes("write")) {
+  if (tools.includes("write") || tools.includes("edit")) {
     for (const entry of write) {
-      rules.push({
-        id: `headless.write.${path.basename(entry)}`,
-        tool: "write",
-        decision: "allow",
-        path: entry,
-      });
+      if (tools.includes("write")) {
+        rules.push({
+          id: `headless.write.${path.basename(entry)}`,
+          tool: "write",
+          decision: "allow",
+          path: entry,
+        });
+      }
       rules.push({
         id: `headless.edit.${path.basename(entry)}`,
         tool: "edit",

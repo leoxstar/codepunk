@@ -22,6 +22,7 @@ import {
   forkLiveSession,
   formatCapabilities,
   formatDoctor,
+  formatAgentProfiles,
   formatPlan,
   formatPermissionExplanation,
   formatTodos,
@@ -32,6 +33,7 @@ import {
   isPermissionProfile,
   listUserPluginFiles,
   listProjectSessions,
+  loadAgentProfiles,
   loadScopedRules,
   LOCK_LEASE_MS,
   normalizeNetworkAllow,
@@ -48,7 +50,7 @@ import {
   readSavedWorkspaceTrust,
   SessionStore,
   createUlid,
-  runReadOnlySubagent,
+  runSubagentHost,
   runDoctor,
   resolveConfiguredModel,
   resolveModelSelection,
@@ -59,10 +61,11 @@ import {
   writeUserPermissionSelection,
   writeUserThinkingSelection,
   type ApprovalChannel,
+  type AgentProfile,
   type CodepunkRuntime,
   type FilesystemMode,
   type PermissionProfile,
-  type ReadOnlySubagentResult,
+  type SubagentHostResult,
 } from "@codepunk/core";
 import type {
   ApprovalAnswer,
@@ -186,9 +189,11 @@ function isSlashCommand(text: string, name: string): boolean {
 export interface BackgroundSubagent {
   childSessionId: string;
   prompt: string;
+  profile: string | null;
+  isolation: "shared" | "worktree";
   startedAt: number;
   status: "running" | "completed" | "failed" | "stopped";
-  result: ReadOnlySubagentResult | null;
+  result: SubagentHostResult | null;
   error: string | null;
   controller: AbortController;
   promise: Promise<void>;
@@ -301,8 +306,10 @@ export function codepunkHelp(): string {
     "  /permissions why -- <cmd>  explain a policy decision without running it",
     "  /trust [status|grant|revoke] show or save workspace trust for future sessions",
     "  !<command>                 run a shell command through the same policy gate",
-    "  /subagent <task>           start a read-only child session",
-    "  /agents [result|stop <id>] list, collect, or stop child sessions",
+    "  /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
+    "                             start a child session from a discovered profile",
+    "  /agents [profiles|result|wait|stop <id>]",
+    "                             list profiles or manage child sessions",
     "  /plan                      show the current plan",
     "  /todos                     show the current todo list",
     "",
@@ -1887,14 +1894,106 @@ async function notify(
   context.ui.notify(message, "info");
 }
 
+interface SubagentInvocation {
+  task: string;
+  profileName?: string;
+  model?: string;
+  worktree: boolean;
+  shared: boolean;
+}
+
+function parseSubagentInvocation(args: string): SubagentInvocation {
+  const tokens = args.trim().split(/\s+/u).filter(Boolean);
+  let profileName: string | undefined;
+  let model: string | undefined;
+  let worktree = false;
+  let shared = false;
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index]!;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (!token.startsWith("--")) {
+      break;
+    }
+    if (token === "--worktree") {
+      worktree = true;
+      index += 1;
+      continue;
+    }
+    if (token === "--shared") {
+      shared = true;
+      index += 1;
+      continue;
+    }
+    if (token !== "--profile" && token !== "--model") {
+      throw new Error(
+        "usage: /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
+      );
+    }
+    const value = tokens[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error(`/subagent ${token} requires a value`);
+    }
+    if (token === "--profile") {
+      profileName = value;
+    } else {
+      model = value;
+    }
+    index += 2;
+  }
+  const task = tokens.slice(index).join(" ").trim();
+  if (task.length === 0) {
+    throw new Error(
+      "usage: /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
+    );
+  }
+  if (worktree && shared) {
+    throw new Error("--worktree and --shared are mutually exclusive");
+  }
+  return {
+    task,
+    ...(profileName !== undefined ? { profileName } : {}),
+    ...(model !== undefined ? { model } : {}),
+    worktree,
+    shared,
+  };
+}
+
+function profilePool(profile: AgentProfile): string[] {
+  return profile.model === null
+    ? []
+    : [
+        profile.model,
+        ...profile.fallback.filter((entry) => entry !== profile.model),
+      ];
+}
+
+function profileTools(profile: AgentProfile | undefined): string[] {
+  if (profile === undefined) {
+    return ["read", "search"];
+  }
+  return Object.entries(profile.tools)
+    .filter(([name, enabled]) => name !== "memory_search" && enabled)
+    .map(([name]) => name);
+}
+
 async function runSubagent(
   state: TuiState,
   runtime: CodepunkRuntime,
   context: ExtensionCommandContext,
   args: string,
 ): Promise<void> {
-  if (args.length === 0) {
-    context.ui.notify("usage: /subagent <read-only analysis task>", "warning");
+  let invocation: SubagentInvocation;
+  try {
+    invocation = parseSubagentInvocation(args);
+  } catch (error) {
+    context.ui.notify(
+      error instanceof Error ? error.message : String(error),
+      "warning",
+    );
     return;
   }
   if (state.childHostArgv.length === 0) {
@@ -1904,6 +2003,51 @@ async function runSubagent(
     );
     return;
   }
+  const bundle = await loadAgentProfiles(runtime.paths, {
+    projectTrusted: runtime.workspaceTrust.trusted,
+  });
+  if (bundle.warnings.length > 0) {
+    context.ui.notify(bundle.warnings.join("\n"), "warning");
+  }
+  const profile =
+    invocation.profileName === undefined
+      ? undefined
+      : bundle.profiles.find(
+          (candidate) => candidate.name === invocation.profileName,
+        );
+  if (invocation.profileName !== undefined && profile === undefined) {
+    context.ui.notify(
+      `agent profile ${invocation.profileName} was not found${
+        bundle.profiles.length === 0
+          ? ""
+          : `; available: ${bundle.profiles.map((entry) => entry.name).join(", ")}`
+      }`,
+      "error",
+    );
+    return;
+  }
+  const pool = profile === undefined ? [] : profilePool(profile);
+  if (invocation.model !== undefined && pool.length > 0) {
+    if (!pool.includes(invocation.model)) {
+      context.ui.notify(
+        `model ${invocation.model} is outside profile ${profile!.name}'s pool: ${pool.join(", ")}`,
+        "error",
+      );
+      return;
+    }
+  }
+  const mutating =
+    profile !== undefined &&
+    (profile.tools.write || profile.tools.edit || profile.tools.shell);
+  if (invocation.shared && mutating) {
+    context.ui.notify(
+      `profile ${profile!.name} can mutate files and requires a worktree; remove --shared`,
+      "error",
+    );
+    return;
+  }
+  const isolation: "shared" | "worktree" =
+    mutating || invocation.worktree ? "worktree" : "shared";
   const registry = (state.subagents ??= new Map());
   const running = [...registry.values()].filter(
     (record) => record.status === "running",
@@ -1926,11 +2070,37 @@ async function runSubagent(
           runtime.config.model.id !== null
         ? `${runtime.config.model.provider}/${runtime.config.model.id}`
         : undefined;
+  const primaryModel =
+    invocation.model ?? profile?.model ?? configuredModel ?? undefined;
+  const profileFallbacks =
+    pool.length === 0
+      ? []
+      : [
+          ...new Set(
+            pool.filter((entry) => entry !== (primaryModel ?? undefined)),
+          ),
+        ];
+  const fallbackModels =
+    profileFallbacks.length === 0 ? undefined : profileFallbacks;
   const activeThinking = runtime.host.session.thinkingLevel;
+  const thinking = profile?.thinking ?? activeThinking;
+  const workspaceTrustOverride =
+    isolation === "worktree"
+      ? runtime.workspaceTrust.trusted
+        ? ("trust" as const)
+        : ("no-trust" as const)
+      : runtime.workspaceTrust.source === "saved" ||
+          runtime.workspaceTrust.source === "no-resources"
+        ? undefined
+        : runtime.workspaceTrust.trusted
+          ? ("trust" as const)
+          : ("no-trust" as const);
   const controller = new AbortController();
   const record: BackgroundSubagent = {
     childSessionId,
-    prompt: args,
+    prompt: invocation.task,
+    profile: profile?.name ?? null,
+    isolation,
     startedAt: Date.now(),
     status: "running",
     result: null,
@@ -1943,16 +2113,27 @@ async function runSubagent(
   context.ui.notify(
     [
       `subagent started: ${childSessionId}`,
-      "mode: read-only child Pi session",
-      `model: ${configuredModel ?? "inherited"}`,
+      `profile: ${profile === undefined ? "built-in read-only" : `${profile.name} (${profile.source})`}`,
+      `isolation: ${isolation}`,
+      `tools: ${profileTools(profile).join(", ")}`,
+      `model: ${
+        primaryModel === undefined
+          ? "inherited"
+          : `${primaryModel}${
+              fallbackModels === undefined || fallbackModels.length === 0
+                ? ""
+                : ` (+${fallbackModels.join(",")})`
+            }`
+      }`,
       "background: use /agents, /agents result <id>, or /agents stop <id>",
     ].join("\n"),
     "info",
   );
   record.promise = (async () => {
     let stopped = false;
+    let failureWorktree: string | null = null;
     try {
-      record.result = await runReadOnlySubagent({
+      record.result = await runSubagentHost({
         hostArgv: state.childHostArgv,
         cwd: runtime.paths.cwd,
         ...(runtime.paths.additionalRoots.length === 0
@@ -1960,26 +2141,42 @@ async function runSubagent(
           : { additionalDirs: runtime.paths.additionalRoots }),
         parentSessionId,
         childSessionId,
-        prompt: args,
-        ...(runtime.workspaceTrust.source === "saved" ||
-        runtime.workspaceTrust.source === "no-resources"
+        prompt: invocation.task,
+        isolation,
+        ...(profile === undefined
           ? {}
           : {
-              workspaceTrustOverride: runtime.workspaceTrust.trusted
-                ? ("trust" as const)
-                : ("no-trust" as const),
+              profile: {
+                name: profile.name,
+                sha256: profile.sha256,
+                tools: profile.tools,
+                systemPrompt: profile.systemPrompt,
+                model: profile.model,
+                fallback: profile.fallback,
+                thinking: profile.thinking,
+              },
             }),
-        ...(configuredModel !== undefined ? { model: configuredModel } : {}),
-        thinking: activeThinking,
+        ...(workspaceTrustOverride === undefined
+          ? {}
+          : { workspaceTrustOverride }),
+        ...(primaryModel !== undefined ? { model: primaryModel } : {}),
+        ...(fallbackModels !== undefined
+          ? {
+              fallbackModels,
+              fallbackAllowCrossProvider: true,
+            }
+          : {}),
+        thinking,
         bare: runtime.isolation.bare,
         noSkills: runtime.isolation.skills,
-        noPlugins: runtime.isolation.plugins,
-        noMcp: runtime.isolation.mcp,
         signal: controller.signal,
       });
       record.status = "completed";
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error);
+      if (error instanceof ChildHostError && error.worktree !== null) {
+        failureWorktree = error.worktree;
+      }
       stopped =
         error instanceof ChildHostError && error.code === "subagent.stopped";
       record.status = stopped ? "stopped" : "failed";
@@ -1989,14 +2186,18 @@ async function runSubagent(
       parent_session_id: parentSessionId,
       child_session_id: childSessionId,
       depth: 1,
-      isolation: "shared" as const,
-      model: record.result?.model ?? configuredModel ?? null,
+      isolation: record.result?.isolation ?? isolation,
+      model: record.result?.model ?? primaryModel ?? null,
       status: record.status,
       summary: record.result?.summary ?? "",
       evidence_head: record.result?.evidence_head ?? null,
       child_run_id: record.result?.child_run_id ?? null,
       exit_code: record.result?.exit_code ?? null,
       error: record.error,
+      profile: record.result?.profile ?? profile?.name ?? null,
+      profile_sha256: record.result?.profile_sha256 ?? profile?.sha256 ?? null,
+      worktree: record.result?.worktree ?? failureWorktree,
+      changed_files: record.result?.changed_files ?? null,
     };
     try {
       await runtime.host.recordEvent("subagent/result", eventData);
@@ -2011,14 +2212,24 @@ async function runSubagent(
     updateSubagentStatus(state);
     if (record.status === "completed") {
       state.context?.ui.notify(
-        `subagent ${childSessionId} completed; use /agents result ${childSessionId}`,
+        [
+          `subagent ${childSessionId} completed; use /agents result ${childSessionId}`,
+          ...(record.result?.worktree === null ||
+          record.result?.worktree === undefined
+            ? []
+            : [`worktree: ${record.result.worktree}`]),
+        ].join("\n"),
         "info",
       );
     } else {
+      const worktreeNotice =
+        failureWorktree === null || record.error?.includes(failureWorktree)
+          ? ""
+          : `\nworktree: ${failureWorktree}`;
       state.context?.ui.notify(
         `subagent ${childSessionId} ${record.status}${
           record.error === null ? "" : `: ${record.error}`
-        }`,
+        }${worktreeNotice}`,
         record.status === "stopped" ? "warning" : "error",
       );
     }
@@ -2028,7 +2239,7 @@ async function runSubagent(
 function formatSubagents(state: TuiState): string {
   const records = [...(state.subagents?.values() ?? [])];
   if (records.length === 0) {
-    return "No subagents. Start one with /subagent <read-only task>.";
+    return "No subagents. Start one with /subagent [--profile <name>] <task>.";
   }
   return records
     .map((record) => {
@@ -2037,7 +2248,9 @@ function formatSubagents(state: TuiState): string {
         Math.floor((Date.now() - record.startedAt) / 1_000),
       );
       const prompt = record.prompt.replace(/\s+/gu, " ").slice(0, 100);
-      return `${record.childSessionId}  ${record.status}  ${elapsed}s  ${prompt}`;
+      return `${record.childSessionId}  ${record.status}  ${elapsed}s  ${
+        record.profile ?? "built-in"
+      }  ${record.isolation}  ${prompt}`;
     })
     .join("\n");
 }
@@ -2062,6 +2275,7 @@ function updateSubagentStatus(state: TuiState): void {
 
 async function manageSubagents(
   state: TuiState,
+  runtime: CodepunkRuntime,
   context: ExtensionCommandContext,
   args: string,
 ): Promise<void> {
@@ -2070,15 +2284,28 @@ async function manageSubagents(
     context.ui.notify(formatSubagents(state), "info");
     return;
   }
+  if (action === "profiles") {
+    const bundle = await loadAgentProfiles(runtime.paths, {
+      projectTrusted: runtime.workspaceTrust.trusted,
+    });
+    context.ui.notify(
+      [formatAgentProfiles(bundle.profiles), ...bundle.warnings].join("\n"),
+      bundle.warnings.length > 0 ? "warning" : "info",
+    );
+    return;
+  }
   if (action !== "result" && action !== "wait" && action !== "stop") {
     context.ui.notify(
-      "usage: /agents [result|wait|stop] <child-session-id>",
+      "usage: /agents [profiles|result|wait|stop] [child-session-id]",
       "warning",
     );
     return;
   }
   if (childSessionId === undefined) {
-    context.ui.notify("usage: /agents [result|wait|stop] <id>", "warning");
+    context.ui.notify(
+      "usage: /agents [profiles|result|wait|stop] [id]",
+      "warning",
+    );
     return;
   }
   const record = state.subagents?.get(childSessionId);
@@ -2835,15 +3062,15 @@ export function createTuiExtension(
         }),
       });
       pi.registerCommand("subagent", {
-        description: "Start a background read-only child Pi session",
+        description: "Start a background child Pi session",
         handler: commandContext(state, async (runtime, context, args) => {
           await runSubagent(state, runtime, context, args);
         }),
       });
       pi.registerCommand("agents", {
-        description: "List, stop, or collect background subagents",
-        handler: commandContext(state, async (_runtime, context, args) => {
-          await manageSubagents(state, context, args);
+        description: "List profiles, stop, or collect background subagents",
+        handler: commandContext(state, async (runtime, context, args) => {
+          await manageSubagents(state, runtime, context, args);
         }),
       });
       pi.registerCommand("sign", {

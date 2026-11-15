@@ -647,6 +647,14 @@ export const SubagentResultEventSchema = Type.Object(
         child_run_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
         exit_code: Type.Union([Type.Integer(), Type.Null()]),
         error: Type.Union([Type.String(), Type.Null()]),
+        profile: Type.Optional(Type.Union([NonEmptyStringSchema, Type.Null()])),
+        profile_sha256: Type.Optional(Type.Union([Sha256Schema, Type.Null()])),
+        worktree: Type.Optional(
+          Type.Union([NonEmptyStringSchema, Type.Null()]),
+        ),
+        changed_files: Type.Optional(
+          Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+        ),
       },
       { additionalProperties: false },
     ),

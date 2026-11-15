@@ -50,6 +50,9 @@ export {
 export {
   ChildHostError,
   runReadOnlySubagent,
+  runSubagentHost,
   type ReadOnlySubagentOptions,
   type ReadOnlySubagentResult,
+  type SubagentHostOptions,
+  type SubagentHostResult,
 } from "./child-host.ts";

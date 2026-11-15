@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import { createTaskSpec } from "../delivery/spec.ts";
 import { gitText } from "../delivery/git.ts";
+import { createDetachedWorktree } from "../delivery/worktree.ts";
 import { createUlid } from "../platform/hash.ts";
 import {
   findDeliveryRoot,
@@ -14,7 +15,12 @@ import {
   resolveCodepunkHome,
 } from "../platform/paths.ts";
 import { spawnGuardedHost } from "./sandbox.ts";
-import { Subagent, type SubagentToolMask } from "./subagent.ts";
+import {
+  Subagent,
+  SubagentError,
+  type SubagentPermissionMode,
+  type SubagentToolMask,
+} from "./subagent.ts";
 
 const READ_ONLY_MASK: SubagentToolMask = {
   read: true,
@@ -26,14 +32,17 @@ const READ_ONLY_MASK: SubagentToolMask = {
 };
 
 const CHILD_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/u;
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 
 export class ChildHostError extends Error {
   readonly code: string;
+  readonly worktree: string | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, worktree: string | null = null) {
     super(message);
     this.name = "ChildHostError";
     this.code = code;
+    this.worktree = worktree;
   }
 }
 
@@ -62,8 +71,6 @@ export interface ReadOnlySubagentOptions {
   workspaceTrustOverride?: "trust" | "no-trust";
   bare?: boolean;
   noSkills?: boolean;
-  noPlugins?: boolean;
-  noMcp?: boolean;
   budget?: {
     max_tool_calls?: number;
     max_wall_ms?: number;
@@ -72,7 +79,26 @@ export interface ReadOnlySubagentOptions {
   signal?: AbortSignal;
 }
 
-export interface ReadOnlySubagentResult {
+export interface SubagentHostOptions extends ReadOnlySubagentOptions {
+  fallbackModels?: readonly string[];
+  fallbackAllowCrossProvider?: boolean;
+  /**
+   * Agent profile declaration. The profile supplies a bounded tool mask, an
+   * optional model pool, and system-prompt text. It does not bypass policy.
+   */
+  profile?: {
+    name: string;
+    sha256: string;
+    tools: SubagentToolMask;
+    systemPrompt: string;
+    model: string | null;
+    fallback: readonly string[];
+    thinking: string | null;
+  };
+  isolation?: "shared" | "worktree";
+}
+
+export interface SubagentHostResult {
   parent_session_id: string;
   child_session_id: string;
   depth: number;
@@ -83,7 +109,14 @@ export interface ReadOnlySubagentResult {
   child_run_id: string | null;
   exit_code: number;
   child_evidence_path: string | null;
+  profile: string | null;
+  profile_sha256: string | null;
+  worktree: string | null;
+  changed_files: number | null;
 }
+
+/** @deprecated Use SubagentHostResult; the host also supports mutable profiles. */
+export type ReadOnlySubagentResult = SubagentHostResult;
 
 interface ChildAssistantMessage {
   role?: unknown;
@@ -129,13 +162,55 @@ function childSessionId(value: string | undefined): string {
   return value;
 }
 
-async function writeReadOnlyPolicy(directory: string): Promise<string> {
+function enabledTools(mask: SubagentToolMask): string[] {
+  const tools: string[] = [];
+  if (mask.read) {
+    tools.push("read");
+  }
+  if (mask.search) {
+    tools.push("search");
+  }
+  if (mask.write) {
+    tools.push("write");
+  }
+  if (mask.edit) {
+    tools.push("edit");
+  }
+  if (mask.shell) {
+    throw new ChildHostError(
+      "subagent.shell_unsupported",
+      "subagent profiles cannot enable shell without an exact command allowlist",
+    );
+  }
+  if (tools.length === 0) {
+    throw new ChildHostError(
+      "subagent.empty_tools",
+      "subagent profile enables no tools",
+    );
+  }
+  return tools;
+}
+
+async function writeChildPolicy(
+  directory: string,
+  mask: SubagentToolMask,
+): Promise<string> {
   const filePath = path.join(directory, "headless.toml");
-  await fs.writeFile(
-    filePath,
-    ["version = 1", "[allow]", 'tools = ["read", "search"]', ""].join("\n"),
-    { encoding: "utf8", mode: 0o600 },
-  );
+  const tools = enabledTools(mask);
+  const lines = [
+    "version = 1",
+    "[allow]",
+    `tools = [${tools.map((tool) => JSON.stringify(tool)).join(", ")}]`,
+  ];
+  if (mask.write || mask.edit) {
+    // A write tool without a write set is denied by the policy. Keep the
+    // grant relative so the child can only write in its own checkout.
+    lines.push('write = ["."]');
+  }
+  await fs.writeFile(filePath, `${lines.join("\n")}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return filePath;
 }
 
@@ -196,8 +271,7 @@ function waitForClose(
 }
 
 async function readChildEvidence(
-  codepunkHome: string,
-  cwd: string,
+  paths: ReturnType<typeof projectPaths>,
   childSessionIdValue: string,
   sawToolExecution: boolean,
 ): Promise<{
@@ -205,8 +279,6 @@ async function readChildEvidence(
   runId: string | null;
   evidencePath: string | null;
 }> {
-  const project = await findDeliveryRoot(cwd);
-  const paths = projectPaths(project, codepunkHome);
   const sessionDir = path.join(paths.evidenceDir, childSessionIdValue);
   let files: string[];
   try {
@@ -287,8 +359,19 @@ async function assertChildSessionUnused(
   );
 }
 
+function hasMutatingTools(mask: SubagentToolMask): boolean {
+  return mask.write || mask.edit || mask.shell;
+}
+
+function childWorktreeId(childSessionIdValue: string): string {
+  return `subagent-${createHash("sha256")
+    .update(childSessionIdValue)
+    .digest("hex")
+    .slice(0, 24)}`;
+}
+
 async function runChild(
-  options: ReadOnlySubagentOptions,
+  options: SubagentHostOptions,
   childSessionIdValue: string,
   signal: AbortSignal | undefined,
 ): Promise<{
@@ -297,22 +380,22 @@ async function runChild(
   child_run_id: string | null;
   exit_code: number;
   child_evidence_path: string | null;
+  worktree: string | null;
+  changed_files: number | null;
 }> {
   if (options.hostArgv.length === 0) {
     throw new ChildHostError(
       "subagent.host",
-      "read-only subagent requires the child host argv",
+      "subagent requires the child host argv",
     );
   }
   const environment = options.env ?? process.env;
   const codepunkHome = resolveCodepunkHome(environment);
-  const project = await findDeliveryRoot(options.cwd);
-  const paths = projectPaths(project, codepunkHome);
-  await assertChildSessionUnused(paths, childSessionIdValue);
-  if (!project.isGitRepository) {
+  const parentProject = await findDeliveryRoot(options.cwd);
+  if (!parentProject.isGitRepository) {
     throw new ChildHostError(
       "subagent.not_git",
-      "read-only subagents require a git repository",
+      "subagents require a git repository",
     );
   }
   let baseCommit: string;
@@ -323,11 +406,45 @@ async function runChild(
   } catch (error) {
     throw new ChildHostError(
       "subagent.not_git",
-      `read-only subagents require a git repository with a commit: ${
+      `subagents require a git repository with a commit: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
   }
+  const toolMask = options.profile?.tools ?? READ_ONLY_MASK;
+  const permissionMode: SubagentPermissionMode = hasMutatingTools(toolMask)
+    ? "ask"
+    : "read-only";
+  const isolation =
+    options.isolation ??
+    (options.profile !== undefined && hasMutatingTools(toolMask)
+      ? "worktree"
+      : "shared");
+  if (isolation === "shared" && hasMutatingTools(toolMask)) {
+    throw new ChildHostError(
+      "subagent.shared_mutation",
+      "a mutating subagent profile requires a detached worktree",
+    );
+  }
+  let worktree = options.cwd;
+  let worktreePath: string | null = null;
+  if (isolation === "worktree") {
+    const created = await createDetachedWorktree({
+      deliveryRoot: parentProject.deliveryRoot,
+      projectId: parentProject.projectId,
+      workerId: childWorktreeId(childSessionIdValue),
+      baseCommit,
+    });
+    worktree = created.path;
+    worktreePath = created.path;
+  }
+  const childProject = await findDeliveryRoot(worktree);
+  const paths = projectPaths(
+    childProject,
+    codepunkHome,
+    options.additionalDirs ?? [],
+  );
+  await assertChildSessionUnused(paths, childSessionIdValue);
   const taskBudget =
     options.budget === undefined
       ? undefined
@@ -338,32 +455,40 @@ async function runChild(
         };
   const task = createTaskSpec({
     taskId: `subagent-${childSessionIdValue}`,
-    title: "Read-only subagent",
+    title: options.profile?.name ?? "Subagent",
     objective: options.prompt,
     baseCommit,
     writeSet: ["."],
     acceptance: ["summary and evidence head"],
-    isolation: "shared",
+    isolation,
     ...(taskBudget !== undefined ? { budget: taskBudget } : {}),
   });
+  const model = options.model ?? options.profile?.model ?? undefined;
+  const fallback =
+    options.fallbackModels ?? options.profile?.fallback ?? undefined;
+  const thinking = options.thinking ?? options.profile?.thinking ?? undefined;
   const captured: {
     value: {
       child_run_id: string | null;
       exit_code: number;
       child_evidence_path: string | null;
       evidence_head: string | null;
+      changed_files: number | null;
     } | null;
   } = { value: null };
   const subagent = new Subagent({
     parent_session_id: options.parentSessionId,
     child_session_id: childSessionIdValue,
     task,
-    isolation: "shared",
-    tool_mask: READ_ONLY_MASK,
-    permission_mode: "read-only",
+    isolation,
+    tool_mask: toolMask,
+    permission_mode: permissionMode,
     depth: 0,
-    worktree: options.cwd,
+    worktree,
     parent_worktree: options.cwd,
+    ...(isolation === "worktree"
+      ? { parent_root: parentProject.deliveryRoot }
+      : {}),
     write_set: ["."],
     ...(options.budget !== undefined ? { budget: options.budget } : {}),
     async run(context) {
@@ -371,7 +496,7 @@ async function runChild(
         path.join(os.tmpdir(), "codepunk-subagent-"),
       );
       try {
-        const policyPath = await writeReadOnlyPolicy(temporaryRoot);
+        const policyPath = await writeChildPolicy(temporaryRoot, toolMask);
         const token = randomBytes(16).toString("hex");
         const argv = [
           ...options.hostArgv,
@@ -385,38 +510,46 @@ async function runChild(
           "--headless-policy",
           policyPath,
           "--approval",
-          "deny",
-          // A read-only child must not inherit a wider persisted posture.
-          // Without these, a parent started with full-access or an uncovered
-          // sandbox would hand the child the same filesystem reach while the
-          // child record still says "read-only".
+          permissionMode === "read-only" ? "deny" : "allow",
           "--sandbox",
           "required",
           "--filesystem",
           "workspace",
           "--autonomy",
-          "read-only",
+          permissionMode === "read-only" ? "read-only" : "ask",
+          "--tools",
+          enabledTools(toolMask).join(","),
+          "--memory",
+          "false",
+          "--no-mcp",
+          "--no-plugins",
           ...(options.additionalDirs ?? []).flatMap((directory) => [
             "--add-dir",
             directory,
           ]),
           ...(options.bare === true ? ["--bare"] : []),
           ...(options.noSkills === true ? ["--no-skills"] : []),
-          ...(options.noPlugins === true ? ["--no-plugins"] : []),
-          ...(options.noMcp === true ? ["--no-mcp"] : []),
           ...(options.workspaceTrustOverride === "trust" ? ["--trust"] : []),
           ...(options.workspaceTrustOverride === "no-trust"
             ? ["--no-trust"]
             : []),
-          ...(options.model !== undefined ? ["--model", options.model] : []),
-          ...(options.thinking !== undefined
-            ? ["--thinking", options.thinking]
+          ...(model !== undefined ? ["--model", model] : []),
+          ...(thinking !== undefined ? ["--thinking", thinking] : []),
+          ...(fallback !== undefined && fallback.length > 0
+            ? ["--model-fallback", fallback.join(",")]
+            : []),
+          ...(options.fallbackAllowCrossProvider === true ||
+          (fallback !== undefined && fallback.length > 0)
+            ? ["--fallback-allow-cross-provider"]
+            : []),
+          ...(options.profile?.systemPrompt !== undefined
+            ? ["--append-system-prompt", options.profile.systemPrompt]
             : []),
           "-p",
         ];
         const child = spawnGuardedHost({
           argv,
-          cwd: options.cwd,
+          cwd: worktree,
           token,
           stdin: options.prompt,
           env: {
@@ -498,16 +631,31 @@ async function runChild(
           );
         }
         const evidence = await readChildEvidence(
-          paths.home,
-          options.cwd,
+          paths,
           childSessionIdValue,
           sawToolExecution,
         );
+        let changedFiles: number | null = isolation === "shared" ? 0 : null;
+        if (worktreePath !== null) {
+          try {
+            const status = await gitText(worktreePath, [
+              "status",
+              "--porcelain=v1",
+              "--untracked-files=all",
+            ]);
+            changedFiles = status
+              .split("\n")
+              .filter((line) => line.trim().length > 0).length;
+          } catch {
+            changedFiles = null;
+          }
+        }
         captured.value = {
           child_run_id: evidence.runId,
           exit_code: exitCode,
           child_evidence_path: evidence.evidencePath,
           evidence_head: evidence.evidenceHead,
+          changed_files: changedFiles,
         };
         return {
           summary,
@@ -515,13 +663,31 @@ async function runChild(
           child_run_id: evidence.runId,
           exit_code: exitCode,
           child_evidence_path: evidence.evidencePath,
+          worktree: worktreePath,
+          changed_files: changedFiles,
         };
       } finally {
         await fs.rm(temporaryRoot, { recursive: true, force: true });
       }
     },
   });
-  const result = await subagent.run();
+  let result;
+  try {
+    result = await subagent.run();
+  } catch (error) {
+    if (worktreePath !== null) {
+      const code =
+        error instanceof ChildHostError || error instanceof SubagentError
+          ? error.code
+          : "subagent.failed";
+      throw new ChildHostError(
+        code,
+        `${error instanceof Error ? error.message : String(error)}; worktree: ${worktreePath}`,
+        worktreePath,
+      );
+    }
+    throw error;
+  }
   if (captured.value === null) {
     throw new ChildHostError(
       "subagent.child_output",
@@ -534,24 +700,52 @@ async function runChild(
     child_run_id: captured.value.child_run_id,
     exit_code: captured.value.exit_code,
     child_evidence_path: captured.value.child_evidence_path,
+    worktree: worktreePath,
+    changed_files: captured.value.changed_files,
   };
 }
 
-export async function runReadOnlySubagent(
-  options: ReadOnlySubagentOptions,
-): Promise<ReadOnlySubagentResult> {
+export async function runSubagentHost(
+  options: SubagentHostOptions,
+): Promise<SubagentHostResult> {
   const childSessionIdValue = childSessionId(options.childSessionId);
+  enabledTools(options.profile?.tools ?? READ_ONLY_MASK);
+  if (
+    options.profile !== undefined &&
+    (!PROFILE_NAME_RE.test(options.profile.name) ||
+      !/^sha256:[0-9a-f]{64}$/u.test(options.profile.sha256))
+  ) {
+    throw new ChildHostError(
+      "subagent.profile",
+      "subagent profile needs a lowercase name and sha256 digest",
+    );
+  }
+  const isolation =
+    options.isolation ??
+    (options.profile !== undefined && hasMutatingTools(options.profile.tools)
+      ? "worktree"
+      : "shared");
   const result = await runChild(options, childSessionIdValue, options.signal);
   return {
     parent_session_id: options.parentSessionId,
     child_session_id: childSessionIdValue,
     depth: 1,
-    isolation: "shared",
+    isolation,
     summary: result.summary,
     evidence_head: result.evidence_head,
-    model: options.model ?? null,
+    model: options.model ?? options.profile?.model ?? null,
     child_run_id: result.child_run_id,
     exit_code: result.exit_code,
     child_evidence_path: result.child_evidence_path,
+    profile: options.profile?.name ?? null,
+    profile_sha256: options.profile?.sha256 ?? null,
+    worktree: result.worktree,
+    changed_files: result.changed_files,
   };
+}
+
+export async function runReadOnlySubagent(
+  options: ReadOnlySubagentOptions,
+): Promise<SubagentHostResult> {
+  return runSubagentHost({ ...options, isolation: "shared" });
 }
