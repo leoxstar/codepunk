@@ -1,0 +1,2140 @@
+#!/usr/bin/env node
+
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+import {
+  createScanner,
+  LanguageVariant,
+  SyntaxKind,
+} from "typescript/unstable/ast";
+
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
+
+const ROOT_ENTRIES = new Set([
+  ".github",
+  ".gitignore",
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "docs",
+  "package.json",
+  "packages",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "scripts",
+  "tests",
+  "tsconfig.json",
+]);
+
+// pnpm creates and removes this directory in the repository root while
+// packing a workspace. It is not product content, but a directory with the
+// same shape that persists is still an unreviewed root entry.
+const TRANSIENT_ROOT_ENTRY = /^_tmp_\d+_[a-z0-9]{8}$/u;
+const TRANSIENT_ROOT_SETTLE_MS = 1_000;
+
+const REQUIRED_PRODUCT_FILES = [
+  "README.md",
+  "LICENSE",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "AGENTS.md",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "tsconfig.json",
+  ".gitignore",
+  ".github/workflows/ci.yml",
+  "docs/ARCHITECTURE.md",
+  "docs/DEVELOPMENT.md",
+  "packages/protocol/README.md",
+  "packages/core/README.md",
+  "packages/cli/README.md",
+  "tests/repository.test.mjs",
+];
+
+const PACKAGE_SPECS = [
+  {
+    dir: "packages/protocol",
+    name: "@codepunk/protocol",
+    layer: 0,
+    typecheckPaths: {},
+    external: {
+      typebox: "1.3.27",
+    },
+    internal: {},
+  },
+  {
+    dir: "packages/core",
+    name: "@codepunk/core",
+    layer: 1,
+    typecheckPaths: {
+      "@codepunk/protocol": ["../protocol/src/index.ts"],
+    },
+    external: {
+      "@anthropic-ai/sandbox-runtime": "0.0.82",
+      "@earendil-works/pi-ai": "1.5.2",
+      "@earendil-works/pi-coding-agent": "1.5.2",
+      "@earendil-works/pi-mcp": "1.5.2",
+    },
+    internal: {
+      "@codepunk/protocol": "0.0.0",
+    },
+  },
+  {
+    dir: "packages/cli",
+    name: "@codepunk/cli",
+    layer: 2,
+    typecheckPaths: {
+      "@codepunk/protocol": ["../protocol/src/index.ts"],
+      "@codepunk/core": ["../core/src/index.ts"],
+    },
+    external: {
+      "@earendil-works/pi-coding-agent": "1.5.2",
+    },
+    internal: {
+      "@codepunk/core": "0.0.0",
+      "@codepunk/protocol": "0.0.0",
+    },
+  },
+];
+
+const PACKAGE_BY_NAME = new Map(PACKAGE_SPECS.map((spec) => [spec.name, spec]));
+
+const ROOT_DEV_DEPENDENCIES = {
+  "@earendil-works/pi-ai": "1.5.2",
+  "@earendil-works/pi-coding-agent": "1.5.2",
+  "@types/node": "22.19.1",
+  prettier: "3.10.1",
+  typescript: "7.0.2",
+};
+
+const REVIEWED_EXTERNAL_VERSIONS = new Map([
+  ...PACKAGE_SPECS.flatMap((spec) => Object.entries(spec.external)),
+  ...Object.entries(ROOT_DEV_DEPENDENCIES),
+]);
+
+const REVIEWED_INSTALL_SCRIPTS = new Map([
+  ["@google/genai@2.21.0", "no-op preinstall; install scripts remain disabled"],
+  ["koffi@3.3.8", "native prebuild/build; install scripts remain disabled"],
+  ["node-pty@1.1.0", "native prebuild/build; install scripts remain disabled"],
+  ["protobufjs@7.6.6", "postinstall script; install scripts remain disabled"],
+]);
+
+const REVIEWED_COMPUTED_IMPORTS = new Map([
+  [
+    "packages/cli/src/tui.ts",
+    {
+      argument: /^moduleUrl$/u,
+      anchors: [
+        /\bgetPackageDir\b/u,
+        /const modulePath = path\.join\(\s*getPackageDir\(\),\s*"dist",\s*"core",\s*"slash-commands\.js",?\s*\);/u,
+        /const moduleUrl = pathToFileURL\(modulePath\)\.href;/u,
+      ],
+      reason:
+        "loads Pi's installed builtin slash table because the package root does not export it",
+    },
+  ],
+  [
+    "packages/cli/dist/tui.js",
+    {
+      argument: /^__rewriteRelativeImportExtension\(moduleUrl$/u,
+      anchors: [
+        /\bgetPackageDir\b/u,
+        /const modulePath = path\.join\(\s*getPackageDir\(\),\s*"dist",\s*"core",\s*"slash-commands\.js",?\s*\);/u,
+        /const moduleUrl = pathToFileURL\(modulePath\)\.href;/u,
+      ],
+      reason:
+        "TypeScript wraps the reviewed Pi slash-table import with its relative-extension helper",
+    },
+  ],
+]);
+
+const EXPECTED_LOCKFILE_SHA256 =
+  "20103d8481cb4e1ea96b75fe2ce7a066956f3ed4afb0add1cf9ce57f9e070797";
+
+const EXPECTED_CI_SHA256 =
+  "fa4e1b35a0a4bceeedd626e56a4e32202295521bbb411a936c8a6187eddb8b3b";
+
+const EXPECTED_CONTROL_CORPUS_SHA256 =
+  "b0c648d40d93533cd1c97e0f6123fd5c14e22108924bf9494cafbe5e95df0efb";
+
+const EXPECTED_ROOT_SCRIPTS = {
+  build:
+    "pnpm --filter @codepunk/protocol build && pnpm --filter @codepunk/core build && pnpm --filter @codepunk/cli build",
+  check: "node scripts/check-repo.mjs",
+  format: "prettier --write . --ignore-path .gitignore",
+  "format:check": "prettier --check . --ignore-path .gitignore",
+  test: "node --test tests/*.test.mjs",
+  typecheck:
+    "pnpm --filter @codepunk/protocol typecheck && pnpm --filter @codepunk/core typecheck && pnpm --filter @codepunk/cli typecheck",
+  verify:
+    "pnpm run format:check && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built",
+};
+
+const PROHIBITED_LIFECYCLE_SCRIPTS = new Set([
+  "install",
+  "postinstall",
+  "preinstall",
+  "prepare",
+  "prepublish",
+  "prepublishOnly",
+]);
+
+const PROHIBITED_ROOT_KEYS = new Set([
+  "bundleDependencies",
+  "bundledDependencies",
+  "overrides",
+  "resolutions",
+]);
+
+const CI_RUN_COMMANDS = [
+  "pnpm install --frozen-lockfile --ignore-scripts",
+  "pnpm run format:check",
+  "pnpm run check",
+  "pnpm run typecheck",
+  "pnpm test",
+  "pnpm run build",
+  "node scripts/check-repo.mjs --require-built",
+];
+
+const LOCAL_STATE_DIRECTORIES = new Set([
+  ".codepunk",
+  ".idea",
+  ".nyc_output",
+  ".pi",
+  ".vscode",
+]);
+
+const IGNORED_PRODUCT_STATE_DIRECTORIES = new Set([".codepunk"]);
+
+const RUNTIME_STATE_DIRECTORIES = new Set([
+  "artifacts",
+  "cache",
+  "evidence",
+  "logs",
+  "sessions",
+]);
+
+const RESEARCH_ARTIFACT_DIRECTORIES = new Set([
+  "archive",
+  "demo",
+  "probe",
+  "research",
+  "screenshots",
+  "spike",
+  "verify",
+]);
+
+const GENERATED_DIRECTORIES = new Set([
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "tmp",
+]);
+
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const NODE_ENGINE = ">=22.19.0";
+const EXPECTED_PACKAGE_MANAGER = "pnpm@12.18.0";
+const EXPECTED_WORKSPACE_GLOB = "packages/*";
+
+function toPosix(value) {
+  return value.split(path.sep).join("/");
+}
+
+function projectPath(root, absolutePath) {
+  return toPosix(path.relative(root, absolutePath));
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
+function isExactVersion(value) {
+  return typeof value === "string" && EXACT_VERSION.test(value);
+}
+
+function ownKeys(value) {
+  return value && typeof value === "object" ? Object.keys(value) : [];
+}
+
+function sorted(value) {
+  return [...value].sort((left, right) => left.localeCompare(right));
+}
+
+function sameSet(left, right) {
+  const leftSorted = sorted(left);
+  const rightSorted = sorted(right);
+  return (
+    leftSorted.length === rightSorted.length &&
+    leftSorted.every((value, index) => value === rightSorted[index])
+  );
+}
+
+function sameStringArrayMap(actual, expected) {
+  const actualNames = sorted(ownKeys(actual));
+  const expectedNames = sorted(ownKeys(expected));
+  if (!sameSet(actualNames, expectedNames)) {
+    return false;
+  }
+  return expectedNames.every((name) => {
+    const actualValues = actual[name];
+    const expectedValues = expected[name];
+    return (
+      Array.isArray(actualValues) &&
+      Array.isArray(expectedValues) &&
+      actualValues.length === expectedValues.length &&
+      actualValues.every((value, index) => value === expectedValues[index])
+    );
+  });
+}
+
+async function readJson(root, relativePath, add) {
+  const absolutePath = path.join(root, relativePath);
+  try {
+    return JSON.parse(await readFile(absolutePath, "utf8"));
+  } catch (error) {
+    add("repo.internal", relativePath, `cannot read JSON: ${error.message}`);
+    return undefined;
+  }
+}
+
+function gitFiles(root, args) {
+  const output = execFileSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return output.split("\0").filter(Boolean);
+}
+
+function isGitRepository(root) {
+  return existsSync(path.join(root, ".git"));
+}
+
+function isGitIgnored(root, relativePath) {
+  if (!isGitRepository(root)) {
+    return false;
+  }
+  const result = spawnSync(
+    "git",
+    ["-C", root, "check-ignore", "-q", "--", relativePath],
+    { stdio: "ignore" },
+  );
+  return result.status === 0;
+}
+
+async function walkFiles(root) {
+  const files = [];
+
+  async function walk(directory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+      if (directory === root && TRANSIENT_ROOT_ENTRY.test(entry.name)) {
+        continue;
+      }
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+      } else if (entry.isFile()) {
+        files.push(projectPath(root, absolutePath));
+      }
+    }
+  }
+
+  await walk(root);
+  return files;
+}
+
+async function listFiles(root) {
+  const tracked = isGitRepository(root)
+    ? gitFiles(root, ["ls-files", "--cached", "-z"])
+    : [];
+  return {
+    tracked,
+    scanned: await walkFiles(root),
+  };
+}
+
+function hasForbiddenSegment(relativePath) {
+  const packageSource = isPackageSourcePath(relativePath);
+  const productPackage = isProductPackagePath(relativePath);
+  for (const rawSegment of relativePath.split("/")) {
+    const segment = rawSegment.toLowerCase();
+    if (
+      (RESEARCH_ARTIFACT_DIRECTORIES.has(segment) && !productPackage) ||
+      LOCAL_STATE_DIRECTORIES.has(segment) ||
+      (!packageSource &&
+        (RUNTIME_STATE_DIRECTORIES.has(segment) ||
+          GENERATED_DIRECTORIES.has(segment)))
+    ) {
+      return segment;
+    }
+  }
+  return undefined;
+}
+
+function isPackageSourcePath(relativePath) {
+  const segments = relativePath.toLowerCase().split("/");
+  return segments[0] === "packages" && segments[2] === "src";
+}
+
+function isProductPackagePath(relativePath) {
+  return relativePath.toLowerCase().split("/")[0] === "packages";
+}
+
+function isForbiddenDirectory(relativePath, name) {
+  const normalizedName = name.toLowerCase();
+  if (
+    (RESEARCH_ARTIFACT_DIRECTORIES.has(normalizedName) &&
+      !isProductPackagePath(relativePath)) ||
+    LOCAL_STATE_DIRECTORIES.has(normalizedName)
+  ) {
+    return true;
+  }
+  if (isPackageSourcePath(relativePath)) {
+    return false;
+  }
+  return (
+    RUNTIME_STATE_DIRECTORIES.has(normalizedName) ||
+    GENERATED_DIRECTORIES.has(normalizedName)
+  );
+}
+
+function classifyForbiddenFile(name) {
+  const normalizedName = name.toLowerCase();
+  if (
+    normalizedName === ".envrc" ||
+    (normalizedName.startsWith(".env.") &&
+      normalizedName !== ".env.example" &&
+      normalizedName !== ".env.template") ||
+    normalizedName === ".env"
+  ) {
+    return ["hygiene.env", "local environment file"];
+  }
+  if (
+    normalizedName === ".npmrc" ||
+    normalizedName === ".netrc" ||
+    normalizedName === "auth.json" ||
+    normalizedName === "credentials.json" ||
+    normalizedName.endsWith(".local") ||
+    normalizedName.endsWith(".local.toml")
+  ) {
+    return ["hygiene.env", "local configuration or credential file"];
+  }
+  if (
+    normalizedName === ".ds_store" ||
+    normalizedName === "thumbs.db" ||
+    normalizedName.endsWith(".bak") ||
+    normalizedName.endsWith(".log") ||
+    normalizedName.endsWith(".tgz") ||
+    normalizedName.endsWith(".tmp") ||
+    normalizedName.endsWith(".tsbuildinfo")
+  ) {
+    return ["hygiene.forbidden", "generated, log, or local editor artifact"];
+  }
+  return undefined;
+}
+
+async function scanWorkingTreeHygiene(root, add) {
+  async function walk(directory, relativeDirectory, insideGenerated = false) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      const absolutePath = path.join(directory, entry.name);
+
+      const normalizedName = entry.name.toLowerCase();
+      if (normalizedName === ".git" || normalizedName === "node_modules") {
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        add(
+          "hygiene.forbidden",
+          relativePath,
+          "symbolic links are not permitted in the product tree",
+        );
+        continue;
+      }
+      if (
+        !relativeDirectory &&
+        entry.isDirectory() &&
+        TRANSIENT_ROOT_ENTRY.test(entry.name)
+      ) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (
+          !insideGenerated &&
+          isForbiddenDirectory(relativePath, entry.name)
+        ) {
+          if (
+            (GENERATED_DIRECTORIES.has(normalizedName) ||
+              IGNORED_PRODUCT_STATE_DIRECTORIES.has(normalizedName)) &&
+            isGitIgnored(root, relativePath)
+          ) {
+            await walk(absolutePath, relativePath, true);
+            continue;
+          }
+          add(
+            "hygiene.forbidden",
+            relativePath,
+            `forbidden directory "${entry.name}"`,
+          );
+          continue;
+        }
+        await walk(absolutePath, relativePath, insideGenerated);
+        continue;
+      }
+      if (entry.isFile()) {
+        const classification = classifyForbiddenFile(entry.name);
+        if (classification) {
+          add(classification[0], relativePath, classification[1]);
+        }
+      }
+    }
+  }
+
+  await walk(root, "");
+}
+
+async function settleTransientRootEntries(root) {
+  const deadline = Date.now() + TRANSIENT_ROOT_SETTLE_MS;
+  do {
+    const entries = await readdir(root);
+    if (!entries.some((entry) => TRANSIENT_ROOT_ENTRY.test(entry))) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+}
+
+async function checkRootEntries(root, add) {
+  await settleTransientRootEntries(root);
+  const entries = (await readdir(root, { withFileTypes: true })).map(
+    (entry) => entry.name,
+  );
+
+  for (const entry of entries) {
+    if (entry === ".git") {
+      continue;
+    }
+    if (ROOT_ENTRIES.has(entry)) {
+      continue;
+    }
+    if (
+      (GENERATED_DIRECTORIES.has(entry) ||
+        IGNORED_PRODUCT_STATE_DIRECTORIES.has(entry)) &&
+      isGitIgnored(root, entry)
+    ) {
+      continue;
+    }
+    add("repo.root", entry, "root entry is outside the reviewed allowlist");
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const POSIX_USER_ROOTS = [
+  ["", "Users", ""].join("/"),
+  ["", "home", ""].join("/"),
+];
+const REGEX_BACKSLASH = String.fromCharCode(92).repeat(2);
+const ABSOLUTE_USER_PATTERNS = [
+  ...POSIX_USER_ROOTS.map(
+    (rootPath) =>
+      new RegExp(`${escapeRegExp(rootPath)}[A-Za-z0-9._-]+(?:[/\\\\]|$)`, "u"),
+  ),
+  new RegExp(
+    `[A-Za-z]:${REGEX_BACKSLASH}Users${REGEX_BACKSLASH}[^${REGEX_BACKSLASH}s]+`,
+    "u",
+  ),
+];
+
+const SECRET_PATTERNS = [
+  {
+    name: "AWS access key",
+    pattern: new RegExp(["AKIA", "[0-9A-Z]{16}"].join(""), "u"),
+  },
+  {
+    name: "GitHub token",
+    pattern: new RegExp(["gh", "[pousr]_[A-Za-z0-9]{30,}"].join(""), "u"),
+  },
+  {
+    name: "private key block",
+    pattern: new RegExp(`${["-----BEGIN ", "PRIVATE KEY-----"].join("")}`, "u"),
+  },
+  {
+    name: "OpenAI-style key",
+    pattern: new RegExp(["sk", "-[A-Za-z0-9_-]{20,}"].join(""), "u"),
+  },
+  {
+    name: "JWT",
+    pattern: new RegExp(
+      ["eyJ[A-Za-z0-9_-]{8,}", "\\.eyJ[A-Za-z0-9_-]{8,}"].join("") +
+        "\\.[A-Za-z0-9_-]{16,}",
+      "u",
+    ),
+  },
+  {
+    name: "secret assignment",
+    pattern: new RegExp(
+      [
+        "\\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|password|secret)\\b",
+        "\\s*[:=]\\s*[\"']?[A-Za-z0-9+/_=-]{16,}[\"']?",
+      ].join(""),
+      "iu",
+    ),
+  },
+];
+
+async function scanFileContents(root, files, add) {
+  for (const relativePath of files) {
+    let buffer;
+    try {
+      buffer = await readFile(path.join(root, relativePath));
+    } catch (error) {
+      add(
+        "repo.internal",
+        relativePath,
+        `cannot read source file: ${error.message}`,
+      );
+      continue;
+    }
+    if (buffer.includes(0)) {
+      add(
+        "hygiene.binary",
+        relativePath,
+        "binary or NUL-containing files are not permitted in the product tree",
+      );
+      continue;
+    }
+    const content = buffer.toString("utf8");
+
+    for (const pattern of ABSOLUTE_USER_PATTERNS) {
+      if (pattern.test(content)) {
+        add(
+          "security.absolute-path",
+          relativePath,
+          "contains a local personal absolute path",
+        );
+        break;
+      }
+    }
+
+    for (const secret of SECRET_PATTERNS) {
+      if (secret.pattern.test(content)) {
+        add(
+          "security.credential",
+          relativePath,
+          `contains a credential-shaped value (${secret.name})`,
+        );
+      }
+    }
+  }
+}
+
+function checkRequiredDocs(root, add) {
+  for (const relativePath of REQUIRED_PRODUCT_FILES) {
+    if (!existsSync(path.join(root, relativePath))) {
+      add("repo.docs", relativePath, "required product file is missing");
+    }
+  }
+}
+
+async function checkCiContract(root, files, add) {
+  const relativeCi = ".github/workflows/ci.yml";
+  const absoluteCi = path.join(root, relativeCi);
+  for (const relativePath of files) {
+    if (relativePath.startsWith(".github/") && relativePath !== relativeCi) {
+      add(
+        "ci.contract",
+        relativePath,
+        "only the reviewed CI workflow is permitted",
+      );
+    }
+  }
+  if (!existsSync(absoluteCi)) {
+    return;
+  }
+
+  const content = await readFile(absoluteCi, "utf8");
+  const digest = createHash("sha256").update(content).digest("hex");
+  if (digest !== EXPECTED_CI_SHA256) {
+    add(
+      "ci.contract",
+      relativeCi,
+      "workflow digest differs from the reviewed CI contract",
+    );
+  }
+  const runCommands = [...content.matchAll(/^\s*run:\s*(.+?)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  if (!sameSet(runCommands, CI_RUN_COMMANDS)) {
+    add(
+      "ci.contract",
+      relativeCi,
+      "CI run commands differ from the reviewed gate sequence",
+    );
+  }
+
+  const matrixMatch = content.match(
+    /\n[ \t]+os:[ \t]*\n((?:[ \t]+-[ \t]+\S+[ \t]*\n?)+)/u,
+  );
+  const runners = matrixMatch?.[1]
+    ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
+    : [];
+  if (!sameSet(runners, ["ubuntu-latest", "macos-latest"])) {
+    add(
+      "ci.contract",
+      relativeCi,
+      "CI matrix must require ubuntu-latest and macos-latest",
+    );
+  }
+
+  for (const required of [
+    "permissions:\n  contents: read",
+    "runs-on: ${{ matrix.os }}",
+    "node-version: 22.19.0",
+    "uses: actions/checkout@v4",
+    "uses: pnpm/action-setup@v4",
+    "uses: actions/setup-node@v4",
+    "cache: pnpm",
+    "version: 12.18.0",
+  ]) {
+    if (!content.includes(required)) {
+      add("ci.contract", relativeCi, `missing CI contract: ${required}`);
+    }
+  }
+  const uses = [...content.matchAll(/^\s*uses:\s*(\S+)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  if (
+    uses.length !== 3 ||
+    uses[0] !== "actions/checkout@v4" ||
+    uses[1] !== "pnpm/action-setup@v4" ||
+    uses[2] !== "actions/setup-node@v4"
+  ) {
+    add(
+      "ci.contract",
+      relativeCi,
+      "CI may use only the reviewed checkout, pnpm setup, and setup-node actions",
+    );
+  }
+  for (const forbidden of [
+    /\bcontinue-on-error\s*:/iu,
+    /^\s*(?:if|shell|defaults|env)\s*:/gmu,
+    /\bworkflow_dispatch\b/iu,
+  ]) {
+    if (forbidden.test(content)) {
+      add(
+        "ci.contract",
+        relativeCi,
+        "CI contains a condition, shell override, environment block, or alternate trigger",
+      );
+    }
+  }
+  if (/\bwindows-(?:latest|\d+)\b/iu.test(content)) {
+    add("ci.contract", relativeCi, "Windows is not a supported CI runner");
+  }
+}
+
+async function checkDocumentationContract(root, add) {
+  const relativeDevelopment = "docs/DEVELOPMENT.md";
+  if (!existsSync(path.join(root, relativeDevelopment))) {
+    return;
+  }
+  const development = await readFile(
+    path.join(root, relativeDevelopment),
+    "utf8",
+  );
+  for (const requiredValue of [
+    "`>=22.19.0`",
+    "`12.18.0`",
+    "`1.5.2`",
+    "`0.0.82`",
+    "`1.3.27`",
+    "`22.19.1`",
+    "`3.10.1`",
+    "`7.0.2`",
+  ]) {
+    if (!development.includes(requiredValue)) {
+      add(
+        "docs.contract",
+        relativeDevelopment,
+        `missing reviewed value ${requiredValue}`,
+      );
+    }
+  }
+  for (const requiredCommand of [
+    "pnpm install --frozen-lockfile --ignore-scripts",
+    "pnpm run format:check",
+    "pnpm run check",
+    "pnpm run typecheck",
+    "pnpm test",
+    "pnpm run build",
+    "node scripts/check-repo.mjs --require-built",
+    "pnpm run verify",
+  ]) {
+    if (!development.includes(requiredCommand)) {
+      add(
+        "docs.contract",
+        relativeDevelopment,
+        `missing command ${requiredCommand}`,
+      );
+    }
+  }
+  for (const requiredStatement of [
+    "### Dependency review snapshot",
+    "GHSA-mrhx-c7xc-m3w5",
+    "accepted-for-development review item",
+    "The dependency audit is not clean",
+    "## Repository checks",
+  ]) {
+    if (!development.includes(requiredStatement)) {
+      add(
+        "docs.contract",
+        relativeDevelopment,
+        `missing reviewed statement ${requiredStatement}`,
+      );
+    }
+  }
+
+  for (const relativePath of ["README.md", "CONTRIBUTING.md"]) {
+    if (!existsSync(path.join(root, relativePath))) {
+      continue;
+    }
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    for (const requiredText of ["Node.js `>=22.19.0`", "pnpm `12.18.0`"]) {
+      if (!content.includes(requiredText)) {
+        add(
+          "docs.contract",
+          relativePath,
+          `missing toolchain statement ${requiredText}`,
+        );
+      }
+    }
+  }
+}
+
+function stripMarkdownCode(content) {
+  return content
+    .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[ \t]*$/gmu, "")
+    .replace(/^(?: {4}|\t).*$/gmu, "")
+    .replace(/`[^`\n]*`/gu, "");
+}
+
+function normalizeMarkdownTarget(rawTarget) {
+  const trimmed = rawTarget.trim();
+  if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+    return trimmed.slice(1, -1);
+  }
+  const titledTarget = trimmed.match(
+    /^(\S+)\s+(?:"[^"]*"|'[^']*'|\([^)]*\))$/u,
+  );
+  return titledTarget?.[1] ?? trimmed;
+}
+
+function extractMarkdownTargets(content) {
+  const targets = [];
+  const searchable = stripMarkdownCode(content);
+  const inlineLink = /!?\[[^\]]*\]\(([^)\n]*)\)/gu;
+  const referenceLink = /^\s*\[[^\]]+\]:\s*(\S+)\s*$/gmu;
+  for (const pattern of [inlineLink, referenceLink]) {
+    for (const match of searchable.matchAll(pattern)) {
+      if (match[1]) {
+        targets.push(normalizeMarkdownTarget(match[1]));
+      }
+    }
+  }
+  return targets;
+}
+
+async function checkMarkdownLinks(root, files, add) {
+  for (const relativePath of files) {
+    if (path.extname(relativePath).toLowerCase() !== ".md") {
+      continue;
+    }
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    for (const rawTarget of extractMarkdownTargets(content)) {
+      if (
+        rawTarget.startsWith("#") ||
+        /^https?:\/\//iu.test(rawTarget) ||
+        /^mailto:/iu.test(rawTarget)
+      ) {
+        continue;
+      }
+      if (
+        rawTarget.startsWith("/") ||
+        /^[A-Za-z]:[\\/]/u.test(rawTarget) ||
+        rawTarget.startsWith("file:")
+      ) {
+        add(
+          "docs.absolute",
+          relativePath,
+          `absolute Markdown target: ${rawTarget}`,
+        );
+        continue;
+      }
+      if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(rawTarget)) {
+        continue;
+      }
+
+      const withoutFragment = rawTarget.split("#", 1)[0].split("?", 1)[0];
+      if (!withoutFragment) {
+        continue;
+      }
+      let decodedTarget;
+      try {
+        decodedTarget = decodeURIComponent(withoutFragment);
+      } catch {
+        add(
+          "docs.link",
+          relativePath,
+          `invalid percent encoding: ${rawTarget}`,
+        );
+        continue;
+      }
+      const targetPath = path.resolve(
+        path.dirname(path.join(root, relativePath)),
+        decodedTarget,
+      );
+      if (!isInside(root, targetPath)) {
+        add(
+          "docs.link",
+          relativePath,
+          `link escapes the repository: ${rawTarget}`,
+        );
+        continue;
+      }
+      if (!existsSync(targetPath)) {
+        add("docs.link", relativePath, `broken local link: ${rawTarget}`);
+      }
+    }
+  }
+}
+
+function checkExports(root, spec, manifest, add) {
+  const relativeManifest = `${spec.dir}/package.json`;
+  const exportsValue = manifest.exports;
+  if (!exportsValue || typeof exportsValue !== "object") {
+    add("pkg.exports", relativeManifest, "missing exports map");
+    return;
+  }
+  const exportKeys = ownKeys(exportsValue);
+  if (!sameSet(exportKeys, ["."])) {
+    add(
+      "pkg.exports",
+      relativeManifest,
+      "only the package root export is permitted",
+    );
+  }
+  const rootExport = exportsValue["."];
+  if (
+    !rootExport ||
+    typeof rootExport !== "object" ||
+    !sameSet(ownKeys(rootExport), ["import", "types"])
+  ) {
+    add(
+      "pkg.exports",
+      relativeManifest,
+      "root export must declare exactly import and types",
+    );
+    return;
+  }
+
+  const importTarget = rootExport.import;
+  const typesTarget = rootExport.types;
+  if (
+    typeof importTarget !== "string" ||
+    !importTarget.startsWith("./dist/") ||
+    !importTarget.endsWith(".js") ||
+    importTarget.includes("*") ||
+    importTarget.split("/").includes("..")
+  ) {
+    add("pkg.exports", relativeManifest, "invalid ESM import target");
+  }
+  if (
+    typeof typesTarget !== "string" ||
+    !typesTarget.startsWith("./dist/") ||
+    !typesTarget.endsWith(".d.ts") ||
+    typesTarget.includes("*") ||
+    typesTarget.split("/").includes("..")
+  ) {
+    add(
+      "pkg.exports",
+      relativeManifest,
+      "invalid TypeScript declaration target",
+    );
+  }
+
+  const sourceEntry = path.join(root, spec.dir, "src", "index.ts");
+  if (!existsSync(sourceEntry)) {
+    add("pkg.exports", relativeManifest, "missing src/index.ts entry source");
+  }
+}
+
+function checkPackageManifest(root, spec, manifest, add) {
+  const relativeManifest = `${spec.dir}/package.json`;
+  if (manifest.name !== spec.name) {
+    add("pkg.manifest", relativeManifest, `expected package name ${spec.name}`);
+  }
+  if (manifest.version !== "0.0.0") {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "initial package version must be 0.0.0",
+    );
+  }
+  if (manifest.license !== "MIT") {
+    add("pkg.manifest", relativeManifest, "package license must be MIT");
+  }
+  if (manifest.type !== "module") {
+    add("pkg.manifest", relativeManifest, "package must be ESM");
+  }
+  if (manifest.private === true) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "product package must be publishable",
+    );
+  }
+  if (manifest.engines?.node !== NODE_ENGINE) {
+    add("pkg.manifest", relativeManifest, `Node engine must be ${NODE_ENGINE}`);
+  }
+  if (manifest.scripts?.build !== "tsc -p tsconfig.json") {
+    add("pkg.manifest", relativeManifest, "missing canonical build script");
+  }
+  if (
+    manifest.scripts?.typecheck !== "tsc -p tsconfig.typecheck.json --noEmit"
+  ) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "missing clean-tree typecheck script",
+    );
+  }
+  if (!sameSet(ownKeys(manifest.scripts), ["build", "typecheck"])) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "package scripts must be exactly build and typecheck",
+    );
+  }
+  if (
+    !Array.isArray(manifest.files) ||
+    !manifest.files.includes("dist") ||
+    !manifest.files.includes("README.md")
+  ) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "published files must include dist and README.md",
+    );
+  }
+
+  const relativeTypecheck = `${spec.dir}/tsconfig.typecheck.json`;
+  const typecheckPath = path.join(root, relativeTypecheck);
+  if (!existsSync(typecheckPath)) {
+    add(
+      "pkg.manifest",
+      relativeTypecheck,
+      "missing clean-tree typecheck config",
+    );
+  } else {
+    try {
+      const config = JSON.parse(readFileSync(typecheckPath, "utf8"));
+      if (config.extends !== "./tsconfig.json") {
+        add(
+          "pkg.manifest",
+          relativeTypecheck,
+          "typecheck config must extend the build config",
+        );
+      }
+      if (config.compilerOptions?.noEmit !== true) {
+        add(
+          "pkg.manifest",
+          relativeTypecheck,
+          "typecheck config must disable emit",
+        );
+      }
+      if (
+        !sameStringArrayMap(
+          config.compilerOptions?.paths ?? {},
+          spec.typecheckPaths,
+        )
+      ) {
+        add(
+          "pkg.manifest",
+          relativeTypecheck,
+          "typecheck paths must resolve internal packages to source",
+        );
+      }
+    } catch (error) {
+      add(
+        "pkg.manifest",
+        relativeTypecheck,
+        `cannot read typecheck config: ${error.message}`,
+      );
+    }
+  }
+
+  checkExports(root, spec, manifest, add);
+
+  const dependencies = manifest.dependencies ?? {};
+  const expectedDependencies = {
+    ...spec.external,
+    ...spec.internal,
+  };
+  const expectedNames = Object.keys(expectedDependencies);
+  const actualNames = Object.keys(dependencies);
+  const internalNames = Object.keys(spec.internal);
+  const internalPrefix = "@codepunk/";
+
+  for (const name of actualNames) {
+    if (!(name in expectedDependencies)) {
+      if (name.startsWith(internalPrefix)) {
+        add(
+          "deps.direction",
+          relativeManifest,
+          `internal dependency ${name} is not allowed for ${spec.name}`,
+        );
+      } else {
+        add(
+          "deps.review",
+          relativeManifest,
+          `unreviewed runtime dependency ${name}`,
+        );
+      }
+    }
+  }
+
+  for (const name of expectedNames) {
+    if (!(name in dependencies)) {
+      add("deps.pin", relativeManifest, `missing reviewed dependency ${name}`);
+      continue;
+    }
+    const actualVersion = dependencies[name];
+    if (!isExactVersion(actualVersion)) {
+      add("deps.pin", relativeManifest, `${name} must use an exact version`);
+    }
+    if (actualVersion !== expectedDependencies[name]) {
+      add(
+        "deps.pin",
+        relativeManifest,
+        `${name} must be pinned to ${expectedDependencies[name]}`,
+      );
+    }
+  }
+
+  for (const name of internalNames) {
+    if (!(name in dependencies)) {
+      add(
+        "deps.direction",
+        relativeManifest,
+        `missing internal dependency ${name}`,
+      );
+    }
+  }
+
+  for (const section of [
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]) {
+    if (ownKeys(manifest[section]).length > 0) {
+      add(
+        "deps.review",
+        relativeManifest,
+        `${section} is not approved for product packages`,
+      );
+    }
+  }
+
+  for (const prohibitedKey of PROHIBITED_ROOT_KEYS) {
+    if (manifest[prohibitedKey] !== undefined) {
+      add(
+        "deps.review",
+        relativeManifest,
+        `manifest field ${prohibitedKey} is not approved`,
+      );
+    }
+  }
+}
+
+function packageNameForSpecifier(specifier) {
+  if (specifier.startsWith("@")) {
+    return specifier.split("/").slice(0, 2).join("/");
+  }
+  return specifier.split("/")[0];
+}
+
+function sourceFilesForPackage(files, packageDirectory) {
+  return files.filter(
+    (relativePath) =>
+      relativePath.startsWith(`${packageDirectory}/`) &&
+      [".cjs", ".cts", ".js", ".mjs", ".mts", ".ts"].includes(
+        path.extname(relativePath),
+      ),
+  );
+}
+
+const NON_CODE_TOKEN_KINDS = new Set([
+  SyntaxKind.SingleLineCommentTrivia,
+  SyntaxKind.MultiLineCommentTrivia,
+  SyntaxKind.StringLiteral,
+  SyntaxKind.NoSubstitutionTemplateLiteral,
+  SyntaxKind.TemplateHead,
+  SyntaxKind.TemplateMiddle,
+  SyntaxKind.TemplateTail,
+]);
+
+const EXPRESSION_END_TOKEN_KINDS = new Set([
+  SyntaxKind.Identifier,
+  SyntaxKind.PrivateIdentifier,
+  SyntaxKind.NumericLiteral,
+  SyntaxKind.BigIntLiteral,
+  SyntaxKind.StringLiteral,
+  SyntaxKind.NoSubstitutionTemplateLiteral,
+  SyntaxKind.RegularExpressionLiteral,
+  SyntaxKind.TemplateTail,
+  SyntaxKind.CloseParenToken,
+  SyntaxKind.CloseBracketToken,
+  SyntaxKind.CloseBraceToken,
+  SyntaxKind.ThisKeyword,
+  SyntaxKind.SuperKeyword,
+  SyntaxKind.TrueKeyword,
+  SyntaxKind.FalseKeyword,
+  SyntaxKind.NullKeyword,
+  SyntaxKind.PlusPlusToken,
+  SyntaxKind.MinusMinusToken,
+]);
+
+function nonCodeRanges(content) {
+  const ranges = [];
+  const scanner = createScanner(false, LanguageVariant.Standard, content);
+  let previousToken;
+  const templateBraceDepths = [];
+  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFile;) {
+    if (token === SyntaxKind.TemplateHead) {
+      templateBraceDepths.push(0);
+    } else if (templateBraceDepths.length > 0) {
+      const frame = templateBraceDepths.length - 1;
+      if (token === SyntaxKind.OpenBraceToken) {
+        templateBraceDepths[frame] += 1;
+      } else if (token === SyntaxKind.CloseBraceToken) {
+        if (templateBraceDepths[frame] === 0) {
+          token = scanner.reScanTemplateToken();
+          if (token === SyntaxKind.TemplateTail) {
+            templateBraceDepths.pop();
+          }
+        } else {
+          templateBraceDepths[frame] -= 1;
+        }
+      }
+    }
+    if (
+      token === SyntaxKind.SlashToken &&
+      (previousToken === undefined ||
+        !EXPRESSION_END_TOKEN_KINDS.has(previousToken))
+    ) {
+      token = scanner.reScanSlashToken();
+    }
+    if (NON_CODE_TOKEN_KINDS.has(token)) {
+      ranges.push([scanner.getTokenStart(), scanner.getTokenEnd()]);
+    }
+    if (
+      token !== SyntaxKind.EndOfFile &&
+      scanner.getTokenEnd() <= scanner.getTokenStart()
+    ) {
+      throw new Error(
+        `TypeScript scanner made no progress at offset ${scanner.getTokenStart()}`,
+      );
+    }
+    previousToken = token;
+    token = scanner.scan();
+  }
+  return ranges;
+}
+
+function startsInNonCodeRange(match, ranges) {
+  if (typeof match.index !== "number") {
+    return false;
+  }
+  return ranges.some(
+    ([start, end]) => match.index >= start && match.index < end,
+  );
+}
+
+function extractImportSpecifiers(content, ranges) {
+  const specifiers = new Set();
+  const patterns = [
+    /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']([^"']+)["']/gu,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu,
+    /\bimport\s*\(\s*`([^`$]*)`\s*\)/gu,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      if (match[1] && !startsInNonCodeRange(match, ranges)) {
+        specifiers.add(match[1]);
+      }
+    }
+  }
+  return specifiers;
+}
+
+function hasComputedModuleCall(content, ranges, reviewed = null) {
+  const argumentsList = [];
+  for (const pattern of [
+    /\bimport\s*\(\s*([\s\S]*?)\s*\)/gu,
+    /\brequire\s*\(\s*([\s\S]*?)\s*\)/gu,
+  ]) {
+    for (const match of content.matchAll(pattern)) {
+      if (startsInNonCodeRange(match, ranges)) {
+        continue;
+      }
+      const argument = match[1].trim();
+      const literal =
+        /^(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\$])*`)$/u.test(
+          argument,
+        );
+      if (literal) {
+        continue;
+      }
+      argumentsList.push(argument.replace(/,\s*$/u, ""));
+    }
+  }
+  const createRequire = [...content.matchAll(/\bcreateRequire\s*\(/gu)].some(
+    (match) => !startsInNonCodeRange(match, ranges),
+  );
+  if (createRequire) {
+    return true;
+  }
+  if (argumentsList.length === 0) {
+    return false;
+  }
+  if (reviewed === null) {
+    return true;
+  }
+  return (
+    !reviewed.anchors.every((anchor) => anchor.test(content)) ||
+    argumentsList.some((argument) => !reviewed.argument.test(argument))
+  );
+}
+
+async function checkSourceImports(root, files, add) {
+  for (const spec of PACKAGE_SPECS) {
+    const packageRoot = path.join(root, spec.dir);
+    const allowedInternal = new Set(Object.keys(spec.internal));
+    const declaredDependencies = new Set([
+      ...Object.keys(spec.external),
+      ...Object.keys(spec.internal),
+    ]);
+
+    for (const relativePath of sourceFilesForPackage(files, spec.dir)) {
+      const content = await readFile(path.join(root, relativePath), "utf8");
+      const ranges = nonCodeRanges(content);
+      if (
+        hasComputedModuleCall(
+          content,
+          ranges,
+          REVIEWED_COMPUTED_IMPORTS.get(relativePath) ?? null,
+        )
+      ) {
+        add(
+          "source.import",
+          relativePath,
+          "computed import/require specifiers cannot be boundary-verified",
+        );
+      }
+      for (const specifier of extractImportSpecifiers(content, ranges)) {
+        if (specifier.startsWith("node:")) {
+          continue;
+        }
+        if (specifier.includes("verify/")) {
+          add(
+            "security.research-import",
+            relativePath,
+            `imports research material: ${specifier}`,
+          );
+          continue;
+        }
+        if (specifier.startsWith(".")) {
+          const resolved = path.resolve(
+            path.dirname(path.join(root, relativePath)),
+            specifier,
+          );
+          if (!isInside(packageRoot, resolved)) {
+            add(
+              "source.import",
+              relativePath,
+              `relative import escapes ${spec.name}: ${specifier}`,
+            );
+          }
+          continue;
+        }
+
+        const packageName = packageNameForSpecifier(specifier);
+        if (packageName?.startsWith("@codepunk/")) {
+          const packageSegments =
+            packageName.startsWith("@") && packageName.includes("/")
+              ? specifier.split("/").length
+              : 1;
+          if (packageSegments > 2) {
+            add(
+              "source.import",
+              relativePath,
+              `deep internal import is forbidden: ${specifier}`,
+            );
+          }
+          if (!PACKAGE_BY_NAME.has(packageName)) {
+            add(
+              "source.import",
+              relativePath,
+              `unknown internal package: ${packageName}`,
+            );
+          } else if (!allowedInternal.has(packageName)) {
+            add(
+              "deps.direction",
+              relativePath,
+              `${spec.name} cannot import ${packageName}`,
+            );
+          }
+          continue;
+        }
+
+        if (packageName && !declaredDependencies.has(packageName)) {
+          add(
+            "deps.review",
+            relativePath,
+            `source imports undeclared dependency ${packageName}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+async function checkControlCorpus(root, add) {
+  const relativePath = "tests/repository.test.mjs";
+  try {
+    const digest = createHash("sha256")
+      .update(await readFile(path.join(root, relativePath)))
+      .digest("hex");
+    if (digest !== EXPECTED_CONTROL_CORPUS_SHA256) {
+      add(
+        "repo.controls",
+        relativePath,
+        "negative-control corpus differs from the reviewed snapshot",
+      );
+    }
+  } catch (error) {
+    add(
+      "repo.controls",
+      relativePath,
+      `cannot read negative-control corpus: ${error.message}`,
+    );
+  }
+}
+
+function yamlScalar(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replaceAll("''", "'");
+  }
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
+}
+
+function parsePackageIdentity(value) {
+  const key = yamlScalar(value.endsWith(":") ? value.slice(0, -1) : value);
+  const withoutPeers = key.replace(/\([^)]*\)$/u, "");
+  const separator = withoutPeers.lastIndexOf("@");
+  if (separator <= 0) {
+    return undefined;
+  }
+  const name = withoutPeers.slice(0, separator);
+  const version = withoutPeers.slice(separator + 1);
+  return isExactVersion(version) ? { name, version } : undefined;
+}
+
+function parsePnpmLock(content) {
+  const documents = content.split(/\n---\r?\n/u);
+  const lines = documents.at(-1).split(/\r?\n/u);
+  const importers = new Map();
+  const packages = new Map();
+  const dependencySections = new Set([
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+  ]);
+  let lockfileVersion;
+  let section;
+  let importerPath;
+  let importer;
+  let dependencySection;
+  let dependencyName;
+  let packageEntry;
+
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) {
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    const trimmed = line.trim();
+
+    if (indent === 0) {
+      const separator = trimmed.indexOf(":");
+      if (separator === -1) {
+        continue;
+      }
+      const key = trimmed.slice(0, separator);
+      const value = trimmed.slice(separator + 1).trim();
+      if (key === "lockfileVersion") {
+        lockfileVersion = yamlScalar(value);
+      }
+      section = value === "" ? key : undefined;
+      importerPath = undefined;
+      importer = undefined;
+      dependencySection = undefined;
+      dependencyName = undefined;
+      packageEntry = undefined;
+      continue;
+    }
+
+    if (section === "importers") {
+      if (indent === 2 && trimmed.endsWith(":")) {
+        importerPath = yamlScalar(trimmed.slice(0, -1));
+        importer = {
+          dependencies: {},
+          devDependencies: {},
+          optionalDependencies: {},
+        };
+        importers.set(importerPath, importer);
+        dependencySection = undefined;
+        dependencyName = undefined;
+        continue;
+      }
+      if (!importer) {
+        continue;
+      }
+      if (indent === 4 && trimmed.endsWith(":")) {
+        const key = yamlScalar(trimmed.slice(0, -1));
+        dependencySection = dependencySections.has(key) ? key : undefined;
+        dependencyName = undefined;
+        continue;
+      }
+      if (indent === 6 && trimmed.endsWith(":") && dependencySection) {
+        dependencyName = yamlScalar(trimmed.slice(0, -1));
+        importer[dependencySection][dependencyName] = {};
+        continue;
+      }
+      if (indent === 8 && dependencyName && dependencySection) {
+        const separator = trimmed.indexOf(":");
+        if (separator !== -1) {
+          const key = trimmed.slice(0, separator);
+          importer[dependencySection][dependencyName][key] = yamlScalar(
+            trimmed.slice(separator + 1),
+          );
+        }
+      }
+      continue;
+    }
+
+    if (section === "packages") {
+      if (indent === 2 && trimmed.endsWith(":")) {
+        const identity = parsePackageIdentity(trimmed);
+        if (!identity) {
+          packageEntry = undefined;
+          continue;
+        }
+        packageEntry = { ...identity, integrity: undefined };
+        if (!packages.has(identity.name)) {
+          packages.set(identity.name, new Map());
+        }
+        packages.get(identity.name).set(identity.version, packageEntry);
+        continue;
+      }
+      if (indent >= 4 && packageEntry) {
+        const inline = trimmed.match(
+          /^resolution:.*\bintegrity:\s*([^,}\s]+)/u,
+        );
+        const multiline = trimmed.match(/^integrity:\s*([^,}\s]+)/u);
+        const integrity = inline?.[1] ?? multiline?.[1];
+        if (integrity) {
+          packageEntry.integrity = integrity;
+        }
+      }
+    }
+  }
+
+  return { lockfileVersion, importers, packages };
+}
+
+function lockedDependency(lock, importerPath, section, packageName) {
+  return lock.importers.get(importerPath)?.[section]?.[packageName];
+}
+
+function relativeWorkspaceLink(fromDirectory, toDirectory) {
+  return `link:${path.posix.relative(fromDirectory, toDirectory)}`;
+}
+
+function checkLockfile(lock, lockfileDigest, add) {
+  const relativeLock = "pnpm-lock.yaml";
+  if (lock.lockfileVersion !== "9.0") {
+    add("deps.lock", relativeLock, "lockfileVersion must be 9.0");
+  }
+  if (lockfileDigest !== EXPECTED_LOCKFILE_SHA256) {
+    add(
+      "deps.lock",
+      relativeLock,
+      "lockfile digest differs from the reviewed snapshot",
+    );
+  }
+
+  for (const [name, version] of Object.entries(ROOT_DEV_DEPENDENCIES)) {
+    const dependency = lockedDependency(lock, ".", "devDependencies", name);
+    if (!dependency) {
+      add("deps.lock", relativeLock, `missing root dependency ${name}`);
+      continue;
+    }
+    if (
+      dependency.specifier !== version ||
+      (dependency.version !== version &&
+        !dependency.version.startsWith(`${version}(`))
+    ) {
+      add(
+        "deps.lock",
+        relativeLock,
+        `${name} root lock entry does not match ${version}`,
+      );
+    }
+  }
+
+  for (const spec of PACKAGE_SPECS) {
+    const importer = lock.importers.get(spec.dir);
+    if (!importer) {
+      add("deps.lock", relativeLock, `missing lock entry for ${spec.dir}`);
+      continue;
+    }
+    for (const [name, version] of Object.entries(spec.external)) {
+      const dependency = lockedDependency(lock, spec.dir, "dependencies", name);
+      if (!dependency) {
+        add(
+          "deps.lock",
+          relativeLock,
+          `missing locked dependency ${name} for ${spec.dir}`,
+        );
+        continue;
+      }
+      if (
+        dependency.specifier !== version ||
+        (dependency.version !== version &&
+          !dependency.version.startsWith(`${version}(`))
+      ) {
+        add(
+          "deps.lock",
+          relativeLock,
+          `${name} lock entry for ${spec.dir} does not match ${version}`,
+        );
+      }
+    }
+    for (const [name, version] of Object.entries(spec.internal)) {
+      const internalSpec = PACKAGE_BY_NAME.get(name);
+      if (!internalSpec) {
+        continue;
+      }
+      const dependency = lockedDependency(lock, spec.dir, "dependencies", name);
+      const expectedLink = relativeWorkspaceLink(spec.dir, internalSpec.dir);
+      if (!dependency) {
+        add(
+          "deps.lock",
+          relativeLock,
+          `missing workspace dependency ${name} for ${spec.dir}`,
+        );
+        continue;
+      }
+      if (
+        dependency.specifier !== version ||
+        dependency.version !== expectedLink
+      ) {
+        add(
+          "deps.lock",
+          relativeLock,
+          `${name} must link through ${expectedLink} for ${spec.dir}`,
+        );
+      }
+    }
+  }
+
+  for (const [name, expectedVersion] of REVIEWED_EXTERNAL_VERSIONS) {
+    const installed = lock.packages.get(name)?.get(expectedVersion);
+    if (!installed) {
+      add(
+        "deps.lock",
+        relativeLock,
+        `missing locked package ${name}@${expectedVersion}`,
+      );
+      continue;
+    }
+    if (
+      typeof installed.integrity !== "string" ||
+      !installed.integrity.startsWith("sha512-")
+    ) {
+      add(
+        "deps.lock",
+        relativeLock,
+        `${name} is missing a SHA-512 integrity value`,
+      );
+    }
+  }
+
+  for (const identity of REVIEWED_INSTALL_SCRIPTS.keys()) {
+    const parsed = parsePackageIdentity(identity);
+    if (!parsed || !lock.packages.get(parsed.name)?.has(parsed.version)) {
+      add(
+        "deps.review",
+        relativeLock,
+        `reviewed install-script package ${identity} is missing`,
+      );
+    }
+  }
+}
+
+function checkRootManifest(manifest, add) {
+  if (manifest.name !== "codepunk") {
+    add("pkg.manifest", "package.json", "root package name must be codepunk");
+  }
+  if (manifest.private !== true) {
+    add("pkg.manifest", "package.json", "root package must be private");
+  }
+  if (manifest.type !== "module") {
+    add("pkg.manifest", "package.json", "root package must be ESM");
+  }
+  if (manifest.engines?.node !== NODE_ENGINE) {
+    add("pkg.manifest", "package.json", `Node engine must be ${NODE_ENGINE}`);
+  }
+  if (manifest.packageManager !== EXPECTED_PACKAGE_MANAGER) {
+    add(
+      "pkg.manifest",
+      "package.json",
+      `package manager must be ${EXPECTED_PACKAGE_MANAGER}`,
+    );
+  }
+  if (manifest.workspaces !== undefined) {
+    add(
+      "pkg.manifest",
+      "package.json",
+      "workspace definitions belong in pnpm-workspace.yaml",
+    );
+  }
+  const scripts = manifest.scripts ?? {};
+  if (!sameSet(ownKeys(scripts), Object.keys(EXPECTED_ROOT_SCRIPTS))) {
+    add(
+      "pkg.manifest",
+      "package.json",
+      "root script set is not the approved gate set",
+    );
+  }
+  for (const [script, command] of Object.entries(EXPECTED_ROOT_SCRIPTS)) {
+    if (scripts[script] !== command) {
+      add(
+        "pkg.manifest",
+        "package.json",
+        `script ${script} must be exactly: ${command}`,
+      );
+    }
+  }
+
+  for (const section of [
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]) {
+    if (ownKeys(manifest[section]).length > 0) {
+      add("deps.review", "package.json", `root ${section} is not allowed`);
+    }
+  }
+
+  const devDependencies = manifest.devDependencies ?? {};
+  if (
+    !sameSet(Object.keys(devDependencies), Object.keys(ROOT_DEV_DEPENDENCIES))
+  ) {
+    add(
+      "deps.review",
+      "package.json",
+      "root development dependency set is not approved",
+    );
+  }
+  for (const [name, expectedVersion] of Object.entries(ROOT_DEV_DEPENDENCIES)) {
+    if (!isExactVersion(devDependencies[name])) {
+      add("deps.pin", "package.json", `${name} must use an exact version`);
+    }
+    if (devDependencies[name] !== expectedVersion) {
+      add(
+        "deps.pin",
+        "package.json",
+        `${name} must be pinned to ${expectedVersion}`,
+      );
+    }
+  }
+
+  for (const prohibitedKey of PROHIBITED_ROOT_KEYS) {
+    if (manifest[prohibitedKey] !== undefined) {
+      add(
+        "deps.review",
+        "package.json",
+        `root manifest field ${prohibitedKey} is not approved`,
+      );
+    }
+  }
+
+  for (const script of Object.keys(scripts)) {
+    if (PROHIBITED_LIFECYCLE_SCRIPTS.has(script)) {
+      add(
+        "deps.review",
+        "package.json",
+        `lifecycle script ${script} is not approved`,
+      );
+    }
+  }
+}
+
+async function checkPnpmWorkspace(root, add) {
+  const relativePath = "pnpm-workspace.yaml";
+  let content;
+  try {
+    content = await readFile(path.join(root, relativePath), "utf8");
+  } catch (error) {
+    add(
+      "pkg.manifest",
+      relativePath,
+      `cannot read pnpm workspace: ${error.message}`,
+    );
+    return;
+  }
+  const listValues = (key) => {
+    const block = new RegExp(
+      `^${key}:[^\\n]*\\n((?:[ \\t]+-[^\\n]*(?:\\n|$))+)`,
+      "mu",
+    ).exec(content)?.[1];
+    return block === undefined
+      ? []
+      : [
+          ...block.matchAll(
+            /^[ \t]+-\s+["']?([^"'\s#]+)["']?[ \t]*(?:#.*)?$/gmu,
+          ),
+        ].map((match) => match[1]);
+  };
+  const packagePatterns = listValues("packages");
+  if (
+    packagePatterns.length !== 1 ||
+    packagePatterns[0] !== EXPECTED_WORKSPACE_GLOB
+  ) {
+    add(
+      "pkg.manifest",
+      relativePath,
+      `workspace glob must be ${EXPECTED_WORKSPACE_GLOB}`,
+    );
+  }
+  if (!/^linkWorkspacePackages:\s*true\s*$/mu.test(content)) {
+    add(
+      "pkg.manifest",
+      relativePath,
+      "workspace packages must be linked locally",
+    );
+  }
+  if (
+    listValues("ignoredBuiltDependencies").join("\n") !==
+    ["@google/genai", "koffi", "node-pty", "protobufjs"].join("\n")
+  ) {
+    add(
+      "pkg.manifest",
+      relativePath,
+      "ignored dependency build scripts differ from the reviewed set",
+    );
+  }
+  if (!/^strictDepBuilds:\s*false\s*$/mu.test(content)) {
+    add(
+      "pkg.manifest",
+      relativePath,
+      "strict dependency build checks must stay disabled with explicit denials",
+    );
+  }
+}
+
+async function checkBuiltEntries(root, files, add) {
+  for (const spec of PACKAGE_SPECS) {
+    const manifestPath = path.join(root, spec.dir, "package.json");
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    } catch {
+      continue;
+    }
+    const rootExport = manifest.exports?.["."];
+    if (!rootExport || typeof rootExport !== "object") {
+      continue;
+    }
+    const sourceCandidates = files.filter(
+      (relativePath) =>
+        relativePath.startsWith(`${spec.dir}/src/`) ||
+        relativePath === `${spec.dir}/package.json` ||
+        relativePath === `${spec.dir}/tsconfig.json`,
+    );
+    const sourceTimes = await Promise.all(
+      sourceCandidates.map(async (relativePath) => {
+        return (await stat(path.join(root, relativePath))).mtimeMs;
+      }),
+    );
+    const newestSourceTime = Math.max(0, ...sourceTimes);
+    for (const field of ["types", "import"]) {
+      const target = rootExport[field];
+      if (typeof target !== "string") {
+        continue;
+      }
+      const absoluteTarget = path.resolve(path.dirname(manifestPath), target);
+      if (!isInside(path.join(root, spec.dir), absoluteTarget)) {
+        add(
+          "pkg.built",
+          `${spec.dir}/package.json`,
+          `${field} target escapes the package`,
+        );
+      } else if (!existsSync(absoluteTarget)) {
+        add(
+          "pkg.built",
+          projectPath(root, absoluteTarget),
+          `${field} target is missing; run pnpm run build`,
+        );
+      } else if ((await stat(absoluteTarget)).mtimeMs < newestSourceTime) {
+        add(
+          "pkg.built",
+          projectPath(root, absoluteTarget),
+          `${field} target is older than its source; run pnpm run build`,
+        );
+      }
+    }
+  }
+}
+
+export async function checkRepository({
+  root = SCRIPT_ROOT,
+  requireBuilt = false,
+} = {}) {
+  const normalizedRoot = path.resolve(root);
+  const errors = [];
+  const seen = new Set();
+  const add = (rule, relativePath, message) => {
+    const key = `${rule}\0${relativePath}\0${message}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      errors.push({ rule, path: relativePath, message });
+    }
+  };
+
+  if (!existsSync(normalizedRoot)) {
+    add("repo.internal", ".", "repository root does not exist");
+    return { root: normalizedRoot, errors, fileCount: 0 };
+  }
+
+  await checkRootEntries(normalizedRoot, add);
+  checkRequiredDocs(normalizedRoot, add);
+
+  const { tracked, scanned } = await listFiles(normalizedRoot);
+  for (const relativePath of tracked) {
+    const forbiddenSegment = hasForbiddenSegment(relativePath);
+    if (forbiddenSegment) {
+      add(
+        "hygiene.forbidden",
+        relativePath,
+        `tracked forbidden path segment "${forbiddenSegment}"`,
+      );
+    }
+    const name = path.basename(relativePath);
+    const classification = classifyForbiddenFile(name);
+    if (classification) {
+      add(classification[0], relativePath, classification[1]);
+    }
+  }
+
+  await scanWorkingTreeHygiene(normalizedRoot, add);
+  await scanFileContents(normalizedRoot, scanned, add);
+  await checkMarkdownLinks(normalizedRoot, scanned, add);
+  await checkCiContract(normalizedRoot, scanned, add);
+  await checkDocumentationContract(normalizedRoot, add);
+  await checkControlCorpus(normalizedRoot, add);
+  // A pack started after the first root scan can still disappear before this
+  // point. Ignore it during the scans above, but require it to be gone here;
+  // a persistent entry is reported by both root checks.
+  await checkRootEntries(normalizedRoot, add);
+
+  const rootManifest = await readJson(normalizedRoot, "package.json", add);
+  if (rootManifest) {
+    checkRootManifest(rootManifest, add);
+  }
+  await checkPnpmWorkspace(normalizedRoot, add);
+
+  const packagesPath = path.join(normalizedRoot, "packages");
+  if (existsSync(packagesPath)) {
+    const packageEntries = (
+      await readdir(packagesPath, {
+        withFileTypes: true,
+      })
+    )
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    const expectedDirectories = PACKAGE_SPECS.map((spec) =>
+      path.basename(spec.dir),
+    );
+    if (!sameSet(packageEntries, expectedDirectories)) {
+      add(
+        "pkg.layout",
+        "packages",
+        `expected only ${expectedDirectories.join(", ")}`,
+      );
+    }
+  }
+
+  for (const spec of PACKAGE_SPECS) {
+    const manifest = await readJson(
+      normalizedRoot,
+      `${spec.dir}/package.json`,
+      add,
+    );
+    if (manifest) {
+      checkPackageManifest(normalizedRoot, spec, manifest, add);
+    }
+  }
+
+  const relativeLockfile = "pnpm-lock.yaml";
+  let lockfileContent;
+  let lockfileDigest;
+  try {
+    lockfileContent = await readFile(
+      path.join(normalizedRoot, relativeLockfile),
+      "utf8",
+    );
+    lockfileDigest = createHash("sha256").update(lockfileContent).digest("hex");
+  } catch (error) {
+    add(
+      "deps.lock",
+      relativeLockfile,
+      `cannot read pnpm lockfile: ${error.message}`,
+    );
+    lockfileContent = undefined;
+    lockfileDigest = undefined;
+  }
+  if (lockfileContent) {
+    checkLockfile(parsePnpmLock(lockfileContent), lockfileDigest, add);
+  }
+
+  await checkSourceImports(normalizedRoot, scanned, add);
+
+  if (requireBuilt) {
+    await checkBuiltEntries(normalizedRoot, scanned, add);
+  }
+
+  return {
+    root: normalizedRoot,
+    errors,
+    fileCount: scanned.length,
+  };
+}
+
+function parseArguments(argv) {
+  let root = SCRIPT_ROOT;
+  let requireBuilt = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--root") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error("--root requires a path");
+      }
+      root = path.resolve(value);
+      index += 1;
+      continue;
+    }
+    if (argument === "--require-built") {
+      requireBuilt = true;
+      continue;
+    }
+    throw new Error(`unknown argument: ${argument}`);
+  }
+  return { root, requireBuilt };
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`[check.usage] ${error.message}\n`);
+    process.exitCode = 2;
+    return;
+  }
+
+  try {
+    const result = await checkRepository(options);
+    if (result.errors.length > 0) {
+      process.stderr.write(
+        `Repository check failed with ${result.errors.length} finding(s):\n`,
+      );
+      for (const error of result.errors) {
+        process.stderr.write(
+          `[${error.rule}] ${error.path}: ${error.message}\n`,
+        );
+      }
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(
+      `Repository check passed: ${result.fileCount} files, ${PACKAGE_SPECS.length} packages.\n`,
+    );
+    process.exitCode = 0;
+  } catch (error) {
+    process.stderr.write(
+      `[repo.internal] unexpected failure: ${error.stack}\n`,
+    );
+    process.exitCode = 1;
+  }
+}
+
+function isSameRealPath(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
+const isDirectInvocation =
+  process.argv[1] && isSameRealPath(process.argv[1], SCRIPT_PATH);
+
+if (isDirectInvocation) {
+  await main();
+}
