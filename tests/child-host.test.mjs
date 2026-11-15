@@ -230,6 +230,7 @@ test("read-only child runs as an independent session with evidence", async () =>
       assert.equal(result.exit_code, 0);
       assert.match(result.evidence_head, /^sha256:[a-f0-9]{64}$/u);
       assert.ok(result.child_run_id);
+      assert.ok(result.transcript_path);
 
       const evidenceText = await fs.readFile(
         result.child_evidence_path,
@@ -242,6 +243,23 @@ test("read-only child runs as an independent session with evidence", async () =>
       assert.equal(records.length, 1);
       assert.equal(records[0].tool, "read");
       assert.equal(core.evidenceRecordHash(records[0]), result.evidence_head);
+      const transcriptStat = await fs.stat(result.transcript_path);
+      assert.equal(transcriptStat.mode & 0o777, 0o600);
+      const transcriptText = await fs.readFile(result.transcript_path, "utf8");
+      const transcriptEvents = transcriptText
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      assert.ok(
+        transcriptEvents.some(
+          (event) =>
+            event.type === "tool_execution_end" &&
+            event.toolName === "read" &&
+            event.isError === false,
+        ),
+      );
+      assert.match(transcriptText, /child says hello/u);
+      assert.match(transcriptText, /subagent input/u);
       assert.ok(
         streamed.some(
           (event) =>
@@ -252,6 +270,15 @@ test("read-only child runs as an independent session with evidence", async () =>
       assert.ok(
         streamed.some(
           (event) => event.type === "tool_start" && event.tool === "read",
+        ),
+      );
+      assert.ok(
+        streamed.some(
+          (event) =>
+            event.type === "tool_end" &&
+            event.tool === "read" &&
+            event.is_error === false &&
+            event.output.includes("subagent input"),
         ),
       );
 
@@ -586,8 +613,9 @@ test("read-only child enforces its tool-call budget", async () => {
             },
           }),
         (error) =>
-          error instanceof core.SubagentError &&
-          error.code === "subagent.budget_exceeded",
+          error instanceof core.ChildHostError &&
+          error.code === "subagent.budget_exceeded" &&
+          typeof error.transcript === "string",
       );
     } finally {
       await new Promise((resolve) => modelServer.server.close(resolve));
@@ -624,9 +652,10 @@ test("read-only child wall-clock timeout kills the child process", async () => {
             },
           }),
         (error) =>
-          error instanceof core.SubagentError &&
+          error instanceof core.ChildHostError &&
           error.code === "subagent.budget_exceeded" &&
-          /wall-clock/u.test(error.message),
+          /wall-clock/u.test(error.message) &&
+          typeof error.transcript === "string",
       );
       const deadline = Date.now() + 2_500;
       while (modelServer.openConnections() > 0 && Date.now() < deadline) {

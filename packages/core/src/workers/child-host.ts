@@ -1,13 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createWriteStream, promises as fs, type WriteStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { finished } from "node:stream/promises";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import { createTaskSpec } from "../delivery/spec.ts";
 import { gitText, statusOutsideCodepunk } from "../delivery/git.ts";
 import { createDetachedWorktree } from "../delivery/worktree.ts";
+import { ensurePrivateDir } from "../platform/fs.ts";
 import { createUlid } from "../platform/hash.ts";
 import {
   findDeliveryRoot,
@@ -37,12 +39,19 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 export class ChildHostError extends Error {
   readonly code: string;
   readonly worktree: string | null;
+  readonly transcript: string | null;
 
-  constructor(code: string, message: string, worktree: string | null = null) {
+  constructor(
+    code: string,
+    message: string,
+    worktree: string | null = null,
+    transcript: string | null = null,
+  ) {
     super(message);
     this.name = "ChildHostError";
     this.code = code;
     this.worktree = worktree;
+    this.transcript = transcript;
   }
 }
 
@@ -119,12 +128,19 @@ export interface SubagentHostResult {
   profile_sha256: string | null;
   worktree: string | null;
   base_commit: string | null;
+  transcript_path: string | null;
   changed_files: number | null;
 }
 
 export type SubagentStreamEvent =
   | { type: "assistant_delta"; text: string }
-  | { type: "tool_start"; tool: string };
+  | { type: "tool_start"; tool: string }
+  | {
+      type: "tool_end";
+      tool: string;
+      is_error: boolean;
+      output: string;
+    };
 
 /** @deprecated Use SubagentHostResult; the host also supports mutable profiles. */
 export type ReadOnlySubagentResult = SubagentHostResult;
@@ -142,6 +158,10 @@ interface ChildJsonEvent {
     delta?: unknown;
   };
   toolName?: unknown;
+  isError?: unknown;
+  result?: {
+    content?: unknown;
+  };
 }
 
 function emitStreamEvent(
@@ -175,6 +195,73 @@ function assistantText(event: ChildJsonEvent): string | null {
     )
     .join("");
   return text.length > 0 ? text : null;
+}
+
+function contentText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return value
+    .map((part) => {
+      if (
+        part !== null &&
+        typeof part === "object" &&
+        "text" in part &&
+        typeof part.text === "string"
+      ) {
+        return part.text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+function toolResultText(event: ChildJsonEvent): string {
+  const text = contentText(event.result?.content).trim();
+  if (text.length > 0) {
+    return text;
+  }
+  if (event.result === undefined) {
+    return "";
+  }
+  try {
+    return JSON.stringify(event.result);
+  } catch {
+    return "";
+  }
+}
+
+async function createChildTranscript(
+  paths: ReturnType<typeof projectPaths>,
+  childSessionIdValue: string,
+): Promise<{ path: string; stream: WriteStream }> {
+  const directory = path.join(
+    paths.artifactsDir,
+    "subagents",
+    childSessionIdValue,
+  );
+  await ensurePrivateDir(directory);
+  const transcriptPath = path.join(directory, "transcript.jsonl");
+  const stream = createWriteStream(transcriptPath, {
+    flags: "wx",
+    mode: 0o600,
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onOpen = () => {
+      stream.off("error", onError);
+      resolve();
+    };
+    const onError = (error: Error) => {
+      stream.off("open", onOpen);
+      reject(error);
+    };
+    stream.once("open", onOpen);
+    stream.once("error", onError);
+  });
+  return { path: transcriptPath, stream };
 }
 
 function childSessionId(value: string | undefined): string {
@@ -410,6 +497,7 @@ async function runChild(
   child_evidence_path: string | null;
   worktree: string | null;
   base_commit: string | null;
+  transcript_path: string | null;
   changed_files: number | null;
 }> {
   if (options.hostArgv.length === 0) {
@@ -502,9 +590,11 @@ async function runChild(
       exit_code: number;
       child_evidence_path: string | null;
       evidence_head: string | null;
+      transcript_path: string | null;
       changed_files: number | null;
     } | null;
   } = { value: null };
+  let transcriptPathForError: string | null = null;
   const subagent = new Subagent({
     parent_session_id: options.parentSessionId,
     child_session_id: childSessionIdValue,
@@ -576,18 +666,44 @@ async function runChild(
             : []),
           "-p",
         ];
-        const child = spawnGuardedHost({
-          argv,
-          cwd: worktree,
-          token,
-          stdin: options.prompt,
-          env: {
-            ...environment,
-            CODEPUNK_HOME: paths.home,
-            CODEPUNK_DEPTH: "1",
-            NO_COLOR: "1",
-          },
+        const transcript = await createChildTranscript(
+          paths,
+          childSessionIdValue,
+        );
+        transcriptPathForError = transcript.path;
+        let transcriptError: Error | null = null;
+        transcript.stream.on("error", (error: Error) => {
+          transcriptError = error;
         });
+        let child: ChildProcessWithoutNullStreams;
+        try {
+          child = spawnGuardedHost({
+            argv,
+            cwd: worktree,
+            token,
+            stdin: options.prompt,
+            env: {
+              ...environment,
+              CODEPUNK_HOME: paths.home,
+              CODEPUNK_DEPTH: "1",
+              NO_COLOR: "1",
+            },
+          });
+        } catch (error) {
+          transcript.stream.destroy();
+          throw error;
+        }
+        child.stdout.pipe(transcript.stream);
+        const closeTranscript = async (): Promise<void> => {
+          if (
+            !transcript.stream.destroyed &&
+            !transcript.stream.writableEnded
+          ) {
+            child.stdout.unpipe(transcript.stream);
+            transcript.stream.end();
+          }
+          await finished(transcript.stream).catch(() => undefined);
+        };
         // The wall-clock and tool-call budgets abort the Subagent controller,
         // not the caller's signal. Kill the child process for either.
         const stop = context.signal;
@@ -647,6 +763,15 @@ async function runChild(
               child.kill("SIGTERM");
             }
           }
+          if (event.type === "tool_execution_end") {
+            emitStreamEvent(options, {
+              type: "tool_end",
+              tool:
+                typeof event.toolName === "string" ? event.toolName : "tool",
+              is_error: event.isError === true,
+              output: toolResultText(event).slice(0, 2_000),
+            });
+          }
         });
         let exitCode: number;
         try {
@@ -654,10 +779,12 @@ async function runChild(
         } catch (error) {
           lineReader.close();
           await linesDone;
+          await closeTranscript();
           throw error;
         }
         lineReader.close();
         await linesDone;
+        await closeTranscript();
         if (budgetFailure !== null) {
           throw budgetFailure;
         }
@@ -700,6 +827,7 @@ async function runChild(
           exit_code: exitCode,
           child_evidence_path: evidence.evidencePath,
           evidence_head: evidence.evidenceHead,
+          transcript_path: transcriptError === null ? transcript.path : null,
           changed_files: changedFiles,
         };
         return {
@@ -710,6 +838,7 @@ async function runChild(
           child_evidence_path: evidence.evidencePath,
           worktree: worktreePath,
           base_commit: worktreePath === null ? null : baseCommit,
+          transcript_path: transcriptError === null ? transcript.path : null,
           changed_files: changedFiles,
         };
       } finally {
@@ -721,15 +850,22 @@ async function runChild(
   try {
     result = await subagent.run();
   } catch (error) {
-    if (worktreePath !== null) {
+    if (worktreePath !== null || transcriptPathForError !== null) {
       const code =
         error instanceof ChildHostError || error instanceof SubagentError
           ? error.code
           : "subagent.failed";
+      const location = [
+        ...(worktreePath === null ? [] : [`worktree: ${worktreePath}`]),
+        ...(transcriptPathForError === null
+          ? []
+          : [`transcript: ${transcriptPathForError}`]),
+      ].join("; ");
       throw new ChildHostError(
         code,
-        `${error instanceof Error ? error.message : String(error)}; worktree: ${worktreePath}`,
+        `${error instanceof Error ? error.message : String(error)}; ${location}`,
         worktreePath,
+        transcriptPathForError,
       );
     }
     throw error;
@@ -748,6 +884,7 @@ async function runChild(
     child_evidence_path: captured.value.child_evidence_path,
     worktree: worktreePath,
     base_commit: worktreePath === null ? null : baseCommit,
+    transcript_path: captured.value.transcript_path,
     changed_files: captured.value.changed_files,
   };
 }
@@ -788,6 +925,7 @@ export async function runSubagentHost(
     profile_sha256: options.profile?.sha256 ?? null,
     worktree: result.worktree,
     base_commit: result.base_commit,
+    transcript_path: result.transcript_path,
     changed_files: result.changed_files,
   };
 }
