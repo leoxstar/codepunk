@@ -1647,7 +1647,7 @@ async function commandSign(options: CliOptions): Promise<number> {
     tty: true,
   });
   process.stdout.write(
-    `${result.verdict} ${result.artifactPath}\n${result.issues.join("\n")}\n`,
+    `${result.verdict.verdict} ${result.artifactPath}\n${result.issues.join("\n")}\n`,
   );
   return 0;
 }
