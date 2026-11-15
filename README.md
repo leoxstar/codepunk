@@ -25,6 +25,9 @@ explicit policy boundary around file and shell actions.
   Pi title changes are mirrored, and `pin <id> [--unpin]` controls retention.
 - Project context from `AGENTS.md`, local memory, skills, and gated MCP
   servers, including resource listing and reads through Pi's MCP tools.
+- `/init` bootstraps `AGENTS.md` from repository evidence through a normal
+  model turn, and `/status` summarizes the model, session, permissions, trust,
+  capabilities, evidence, and token usage.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
   yet. The local daemon is read-only.
@@ -99,6 +102,26 @@ write set; the active autonomy and approval modes still decide whether a read
 or write is allowed. The `srt` profile protects every root's `.codepunk` and
 Git control paths. `codepunk permissions` and `permissions why` show the same
 extra roots, and a path outside every root remains denied.
+
+## Project instructions
+
+`/init` asks the selected model to inspect the repository and create
+`AGENTS.md` at the delivery root. The prompt requires verified commands and
+repository-specific conventions; Codepunk does not ship a fixed project
+template. The model's write goes through the same approval, sandbox, and
+evidence gate as any other write. The new file applies when the next session
+starts; the current session keeps the instruction block it loaded at startup.
+
+`/init` requires a trusted workspace, a non-read-only autonomy profile, and a
+selected model. It refuses to overwrite an existing root instruction file
+(`AGENTS.md`, `AGENTS.override.md`, or `CLAUDE.md`) unless `--update` is
+given. It also refuses to write through an instruction-file symlink.
+
+```text
+/init
+/init --update
+/status
+```
 
 ## Permissions
 
@@ -438,10 +461,10 @@ servers, and `mcp test` performs a real initialize/tools-list connection.
 Session startup is tolerant of one broken server: it records a configuration
 warning and keeps the other servers, while `mcp test` remains the fail-closed
 check for the broken entry.
-In the TUI, `/reload` re-reads `mcp.toml`, starts the new server set, stops the
-old processes, and rebuilds the wrapped tool surface without replacing the
-Codepunk session. Codepunk config, skills, and plugin inventory still require a
-restart.
+In the TUI, `/reload` re-discovers skills, re-reads `mcp.toml`, starts the new
+server set, stops the old processes, and rebuilds the wrapped tool surface
+without replacing the Codepunk session. Codepunk config and plugin inventory
+still require a restart.
 Transport comes from Pi's MCP client; Codepunk still approval-gates every
 server tool and records uncovered execution. `/mcp` shows the same inventory
 inside the TUI.

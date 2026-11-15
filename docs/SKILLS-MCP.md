@@ -37,6 +37,10 @@ task matches, so the prompt does not grow with every skill's full text.
 
 The runtime records `skill/loaded` with each skill's name, scope, content hash,
 and byte count. Rejected skills are reported as warnings and are not loaded.
+The TUI `/reload` re-runs discovery, replaces the injected
+`<untrusted_skills>` block, refreshes the exact-file read exception for the
+new paths, and records a fresh `skill/loaded` event without replacing the
+Codepunk session.
 
 ## MCP
 
@@ -128,8 +132,9 @@ The TUI `/mcp` command shows the same configured list and lifecycle guidance.
 In the TUI, `/reload` re-reads `$CODEPUNK_HOME/mcp.toml` without replacing the
 Codepunk session: it starts the new server set, swaps the wrapped MCP tools,
 stops the previous server processes, and asks Pi to rebuild its tool registry.
-Codepunk config, skills, and plugin inventory are still read at process start,
-so those changes still need a restart.
+It also re-discovers skills in the same reload. Codepunk config and plugin
+inventory are still read at process start, so those changes still need a
+restart.
 
 `login` is the only browser entry point. It runs Pi's sign-in flow against a
 loopback callback and stores the resulting client registration and tokens in
