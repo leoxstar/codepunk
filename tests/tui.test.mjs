@@ -793,6 +793,12 @@ test("a real pty reports status without a configured model", async () => {
         "codepunk status",
         "/status command",
       );
+      await waitForOutputAfter(
+        session,
+        mark,
+        "sessions: ",
+        "/status completion",
+      );
       const output = session.output().slice(mark);
       assert.match(output, /project: /u);
       assert.match(output, /model: not selected/u);
