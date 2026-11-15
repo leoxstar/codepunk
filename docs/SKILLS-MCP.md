@@ -122,6 +122,8 @@ file. `test` is the connection check: it starts the selected server or all
 servers, lists tools, and exits non-zero on a missing environment variable,
 startup failure, or timeout. It prints each server's result to stdout and
 writes failures to stderr. `list` is read-only and does not start servers.
+`test --json` also reports `resource_servers` and the shared `resource_tools`
+list when a connected server advertises resources.
 The TUI `/mcp` command shows the same configured list and lifecycle guidance.
 Configuration changes take effect on the next Codepunk process.
 
@@ -147,13 +149,37 @@ Project MCP files are inert and are never active configuration:
 - `<delivery-root>/.pi/mcp.json` is ignored and never spawns a server.
 
 Each server tool is exposed as `mcp__<server>__<tool>` with Pi's collision and
-length rules. Model-visible text is capped by Pi's `limitMcpContent`; Codepunk
-does not apply a second MCP output limit. The policy default for
-`mcp__*` tools is `ask`; headless and worker modes convert that to `deny`.
+length rules. When a connected server advertises the MCP `resources`
+capability, Codepunk also registers the three tools used by Codex and Pi:
+
+- `list_mcp_resources` lists resources, optionally for one server and with a
+  cursor; it returns JSON and omits MCP App resources (`ui://` or
+  `profile=mcp-app`).
+- `list_mcp_resource_templates` lists parameterized resource templates with
+  the same server/cursor shape.
+- `read_mcp_resource` reads one `server` + `uri` pair. Text becomes text,
+  images become image blocks, and other binary resources become an omitted
+  placeholder. Multiple returned contents are labelled with their URIs.
+
+The resource implementation calls `McpClient.listResources`,
+`listResourceTemplates`, and `readResource` from `@earendil-works/pi-mcp`; it
+does not add a second MCP JSON-RPC client. Model-visible text is capped by Pi's
+`limitMcpContent`; Codepunk does not apply a second MCP output limit. Resource
+tools are separate from each server's `mcp__<server>__<tool>` registry, but
+they are registered through the same Pi custom-tool path and therefore pass
+through Codepunk's policy, approval, evidence, and output-artifact wrappers.
+Pi 1.5.2 does not expose MCP prompt operations as a product tool surface, so
+Codepunk does not invent a private raw-RPC prompt command; resource access is
+the supported context surface in this build.
+
+The policy default for `mcp__*` and the three resource tools is `ask`;
+headless and worker modes convert that to `deny`.
 Blanket `approval = "allow"` does not erase this gate: MCP remains a human
 decision because the server process is outside the shell sandbox. A
 `read-only` autonomy profile does not start MCP servers at all, so their code
-cannot run before the first tool call.
+cannot run before the first tool call. Resource reads have the same
+`coverage: "uncovered"` evidence, and their approval preview binds the
+server/URI arguments by `args_sha256`.
 Approval cannot be supplied by a plugin or IM channel. Evidence records the
 MCP source, the approval decision, and `coverage: "uncovered"` because codepunk
 does not sandbox the MCP server process. For `mcp__*` calls the approval panel

@@ -329,7 +329,7 @@ and `pi-tui` at the same version transitively. The imports live in
 | `SessionManager.inMemory`                                       | Core host adapter                            | A second Pi transcript file; the Codepunk event log is authoritative                                                                                               |
 | `SettingsManager.inMemory`                                      | Core host adapter                            | A second Pi settings store; Codepunk writes its own TOML                                                                                                           |
 | `ModelRuntime` through host services                            | Model selection, auth state, catalog refresh | Provider registry, credential storage, fuzzy selector                                                                                                              |
-| `McpClient` / `StdioTransport` from `pi-mcp`                    | User-scope MCP adapter                       | JSON-RPC framing, initialize, tool listing/call, process cleanup                                                                                                   |
+| `McpClient` / `StdioTransport` from `pi-mcp`                    | User-scope MCP adapter                       | JSON-RPC framing, initialize, tool listing/call, resource listing/read, process cleanup                                                                            |
 | `limitMcpContent` from `pi-mcp`                                 | Model-visible MCP tool results               | Provider-facing MCP truncation; Codepunk does not invent a second MCP output cap                                                                                   |
 | `pi-mcp/oauth` sign-in and refresh                              | Remote MCP authentication                    | User-scope credential store, explicit `mcp login/logout/status`, no browser at session start                                                                       |
 | `generateUnifiedPatch`                                          | Tool wrap approval preview and diff hash     | Unified diff generation; Codepunk does not ship a second diff engine                                                                                               |
@@ -376,7 +376,7 @@ Everything else in Pi is already sufficient and should not be re-derived:
 `SessionManager` (JSONL entry tree, branch, `branchWithSummary`),
 `compact`/`shouldCompact`/`calculateContextTokens`,
 `loadSkills`/`formatSkillsForPrompt`, `createToolDefinition`, `McpClient` and
-both transports,
+both transports, including resource and template listing plus resource reads,
 `ExtensionRunner`, `ModelRuntime`/`ModelRegistry`/
 `registerVirtualModel`, `ProjectTrustStore`, `pi-tui`, and
 `runPrintMode`/`runRpcMode`.

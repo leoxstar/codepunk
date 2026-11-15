@@ -23,7 +23,8 @@ explicit policy boundary around file and shell actions.
   checkpoints. A checkpoint is evidence about the compaction boundary, not a
   user-visible session rewind. The first prompt seeds a redacted title, later
   Pi title changes are mirrored, and `pin <id> [--unpin]` controls retention.
-- Project context from `AGENTS.md`, local memory, skills, and gated MCP servers.
+- Project context from `AGENTS.md`, local memory, skills, and gated MCP
+  servers, including resource listing and reads through Pi's MCP tools.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
   yet. The local daemon is read-only.
