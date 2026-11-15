@@ -453,6 +453,11 @@ retry loop in Codepunk:
 5. A real switch or exhaustion appends `model/fallback` with the failed/next
    model, stop reason, attempted set, and chain hash. Credentials and upstream
    error bodies are not copied into the event.
+6. Pi's public session stream, not its extension event set, carries
+   `auto_retry_start` and `auto_retry_end`. Codepunk subscribes to that stream
+   and appends `model/retry_start` / `model/retry_end` with the current model,
+   attempt, maximum attempts, delay, and a SHA-256 plus bounded redacted error
+   preview. The retry loop stays in Pi; Codepunk only records it.
 
 The virtual model is a runtime route, not a default selection. `models list`,
 `/model <provider/model>`, and `--model` reject `codepunk/auto`; saving it
@@ -484,7 +489,7 @@ would leave the next process with a route that has not been registered yet.
 | Session fork/clone               | Codepunk state, Pi branch            | `codepunk --fork <id>` is the settled cold path: it takes the parent writer lock and refuses a live writer or `state_covers_seq != last_seq` before copying the Pi branch. In the TUI, `/fork [entry]` and `/clone` validate the live agent state, write a child product session plus `session/forked` (`mode: "live"`), and switch to it. The product header carries the parent id and state hash; Pi's `parentSession` path field is not reused as a product link.                          |
 | Session tree navigation          | Pi branch, recorded by Codepunk      | `/tree` lists the in-memory branch tree; `/tree <entry-id>` calls Pi's `navigateTree`, writes `session/tree` with the from/to entry ids and active branch length, and saves the agent-state snapshot. This is live navigation inside one session, not a second durable event tree: only the active branch is snapshotted, so sibling branches do not survive a process restart as separate product sessions.                                                                                  |
 | User-visible sub-agents          | Read-only child Pi sessions          | `/subagent` launches a separate Codepunk/Pi child with its own session, parent session id, and evidence namespace. Pi has no first-class delegation surface, so Codepunk supplies the link, not a second loop.                                                                                                                                                                                                                                                                                |
-| Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, and evidence event. No second request loop.                                                                                                                                                                                                                                                                                                                                                 |
+| Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, fallback event, and `model/retry_start`/`model/retry_end` evidence for Pi's automatic retries. No second request loop.                                                                                                                                                                                                                                                                      |
 | Cost budget                      | Keep in Codepunk, implemented        | `config.budget.max_tokens` / `max_cost_usd` combine assistant and compaction usage with Pi's `getSessionStats()` totals, then add direct summary calls separately by `model/usage.source`. A larger Pi total can no longer hide summary tokens. The host aborts and blocks further input with a `budget/exceeded` event. This is product policy over the host's accounting, not a second retry loop.                                                                                          |
 
 ## What other agents do
@@ -752,7 +757,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 517 tests, 517 pass
+# 518 tests, 518 pass
 # repository check: 468 files, 3 packages
 ```
 
@@ -785,6 +790,10 @@ a picker Enter stayed session-only, and `Ctrl+S` persisted the default.
 Fallback registration was separately checked: when no fallback is configured,
 Pi's picker does not list the virtual route, and `codepunk/auto` cannot be
 saved as the default through the exact-selection path. The
+automatic-retry path is covered in both directions: a transient failure that
+recovers and an exhausted retry. Both assert `model/retry_start` /
+`model/retry_end`, the original error hash, the redacted 512-character
+preview, and the absence of the planted secret from session events. The
 repository check also rejects loose `auth.json` and `models-store.json` files
 at the repository root; those are runtime state, not product source.
 

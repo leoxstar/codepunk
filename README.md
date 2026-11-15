@@ -352,6 +352,9 @@ swallowed and a moved module fails loudly.
 router. The primary and every fallback are validated before the first request;
 a non-overflow failure advances, overflow stays on the current model for Pi to
 compact, and exhaustion stops instead of retrying the last failed model.
+Pi's automatic retry attempts are recorded as `model/retry_start` and
+`model/retry_end` events with the model, attempt count, delay, and a bounded
+redacted error preview; the retry timing itself still belongs to Pi.
 Cross-provider or cross-endpoint fallback requires an explicit opt-in because
 it changes the data boundary.
 

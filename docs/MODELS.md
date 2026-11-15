@@ -225,6 +225,12 @@ failed model. Overflow detection also checks the pinned model's context window,
 so silent `stop` responses and zero-output `length` responses are not mistaken
 for ordinary provider failures.
 
+Pi's automatic retry loop stays in the host. Codepunk subscribes to the public
+`auto_retry_start` and `auto_retry_end` session events and records
+`model/retry_start` / `model/retry_end` with the current model, attempt,
+maximum attempts, delay, and a SHA-256 plus 512-character redacted error
+preview. A successful retry is evidence of recovery, not a failed run.
+
 The virtual model advertises the smallest context window and output limit in
 the chain, the intersection of input modalities, and the intersection of
 thinking levels reported by Pi's `getSupportedThinkingLevels`. This prevents

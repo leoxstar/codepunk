@@ -110,7 +110,7 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 `--bare` isolation, PTY tests for both read-only live-switch directions,
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. On 2026-11-15,
-the local suite reported 517 tests and the repository check reported 468 files
+the local suite reported 518 tests and the repository check reported 468 files
 across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
@@ -297,9 +297,11 @@ in the comparison.
    subsequences; exact selection and Ctrl+S defaults persist, while a
    session-only picker choice does not. Fallback is implemented as a
    pre-validated chain through Pi's virtual-model router, with context overflow
-   kept on the current model and a `model/fallback` evidence event. A session
-   token/USD ceiling is implemented over assistant usage events plus Pi's
-   session totals. Recent-model and pinned-favorite metadata are still missing.
+   kept on the current model, a `model/fallback` evidence event, and
+   `model/retry_start`/`model/retry_end` records for Pi's automatic retries.
+   A session token/USD ceiling is implemented over assistant usage events plus
+   Pi's session totals. Recent-model and pinned-favorite metadata are still
+   missing.
 8. MCP servers now have user-scope list, add, remove, real connection test,
    explicit OAuth login/logout/status, and token refresh through Pi's MCP
    client and `pi-mcp/oauth`, with `/mcp` in the TUI and both stdio and
