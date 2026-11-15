@@ -74,7 +74,24 @@ export const SessionForkedEventSchema = Type.Object(
         parent_state_covers_seq: Type.Integer({ minimum: 0 }),
         parent_state_sha256: Sha256Schema,
         fork_entry_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
-        mode: Type.Literal("clone"),
+        mode: Type.Union([Type.Literal("clone"), Type.Literal("live")]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionTreeEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("session/tree"),
+    data: Type.Object(
+      {
+        action: Type.Literal("navigate"),
+        from_entry_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
+        to_entry_id: NonEmptyStringSchema,
+        branch_entries: Type.Integer({ minimum: 0 }),
       },
       { additionalProperties: false },
     ),
@@ -599,6 +616,7 @@ export const SessionEventSchema = Type.Union([
   RunStartEventSchema,
   UserInputEventSchema,
   SessionForkedEventSchema,
+  SessionTreeEventSchema,
   ApprovalAnswerEventSchema,
   BashResultEventSchema,
   ContextLoadedEventSchema,
@@ -626,6 +644,7 @@ export type SessionEvent = Static<typeof SessionEventSchema>;
 export type RunStartEvent = Static<typeof RunStartEventSchema>;
 export type UserInputEvent = Static<typeof UserInputEventSchema>;
 export type SessionForkedEvent = Static<typeof SessionForkedEventSchema>;
+export type SessionTreeEvent = Static<typeof SessionTreeEventSchema>;
 export type ApprovalAnswerEvent = Static<typeof ApprovalAnswerEventSchema>;
 export type BashResultEvent = Static<typeof BashResultEventSchema>;
 export type ContextLoadedEvent = Static<typeof ContextLoadedEventSchema>;
