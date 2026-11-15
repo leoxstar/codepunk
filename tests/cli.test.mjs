@@ -94,6 +94,20 @@ test("the built CLI reports version and help", async () => {
   ]);
   assert.match(sessionsHelp.stdout, /codepunk sessions prune \[--apply\]/u);
   assert.doesNotMatch(sessionsHelp.stdout, /codepunk \[options\]/u);
+  const memoryHelp = await execFileAsync(process.execPath, [
+    await ensureBuilt(),
+    "memory",
+    "search",
+    "--help",
+  ]);
+  assert.match(
+    memoryHelp.stdout,
+    /codepunk memory search <query> \[--scope user\|project\]/u,
+  );
+  assert.match(
+    memoryHelp.stdout,
+    /codepunk memory edit <id> <text> \[--scope user\|project\]/u,
+  );
 });
 
 test("fork selectors cannot be combined with another session boundary", async () => {
