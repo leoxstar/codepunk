@@ -2411,7 +2411,8 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       );
       await runCommandAfter(session, "/permissions", "approvals: ask");
       await runCommandAfter(session, "/model", "No authenticated models.");
-      assert.match(session.output(), /choose a model with \/model/u);
+      assert.match(session.output(), /Add a provider first:/u);
+      assert.match(session.output(), /Then run \/model to choose a model\./u);
       await runCommandAfter(
         session,
         "/model test/fake",

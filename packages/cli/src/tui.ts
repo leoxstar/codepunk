@@ -2042,10 +2042,12 @@ export function modelOnboardingMessage(
 
 function noAuthenticatedModelsMessage(): string {
   return [
-    "No authenticated models. Add a provider, then choose a model with /model.",
-    "Use /login for a built-in provider, or import an OpenAI-compatible endpoint:",
+    "No authenticated models.",
+    "Add a provider first:",
+    "  /login                         sign in to a built-in provider",
     "  codepunk models import <base-url> --provider <id> --api openai-responses",
     "  codepunk models set <id>/<model>",
+    "Then run /model to choose a model.",
   ].join("\n");
 }
 
