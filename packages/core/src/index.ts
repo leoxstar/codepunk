@@ -357,6 +357,11 @@ export {
   type DoctorStatus,
 } from "./ops/index.ts";
 export {
+  readWorkspaceDiff,
+  type WorkspaceDiff,
+  type WorkspaceDiffOptions,
+} from "./ops/diff.ts";
+export {
   CLI_PACKAGE_NAME,
   PackageActionError,
   installPackage,
