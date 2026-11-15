@@ -70,15 +70,17 @@ codepunk trust [status|grant|revoke] [path] [--json]
 ```
 
 An interactive start asks once when project resources exist and no saved
-decision applies. Print mode cannot prompt, so it refuses to start while the
-decision is unresolved and project resources exist; pass `--trust`,
-`--no-trust`, or save a decision first. An untrusted session skips project
-config, policy, skills, and project instruction files; user-level instructions
-in Codepunk home still load. `/trust` shows the current decision, `/trust
-grant` and `/trust revoke` save a decision for future sessions; they do not
-hot-reload the current one. The trust prompt and `/trust` list each protected
-resource with its class, type, size, and a bounded SHA-256 content preview;
-symlinks are identified as symlinks rather than followed.
+decision applies. The prompt is an arrow-key selector: Up/Down moves the
+pointer, Enter confirms, and Escape cancels. It has no numbered menu. Print
+mode cannot prompt, so it refuses to start while the decision is unresolved
+and project resources exist; pass `--trust`, `--no-trust`, or save a decision
+first. An untrusted session skips project config, policy, skills, and project
+instruction files; user-level instructions in Codepunk home still load.
+`/trust` shows the current decision, `/trust grant` and `/trust revoke` save a
+decision for future sessions; they do not hot-reload the current one. The
+trust prompt and `/trust` list each protected resource with its class, type,
+size, and a bounded SHA-256 content preview; symlinks are identified as
+symlinks rather than followed.
 
 Trust is scoped to the current Git checkout. A linked worktree is a separate
 canonical root and therefore needs its own decision; a decision saved for the

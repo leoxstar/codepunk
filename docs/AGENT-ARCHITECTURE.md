@@ -168,6 +168,12 @@ SHA-256 preview before the decision. Digests are bounded to 1 MiB of content
 and 512 directory entries per resource, and symlinks are hashed as links
 rather than followed. The same detail is available through
 `codepunk trust status`, `/trust`, and the `resource_details` JSON field.
+The pre-host selector uses the same affordances as Pi's in-session
+`SelectList`: a `→` pointer, Up/Down movement, Enter to confirm, and Escape to
+cancel. It deliberately has no numbered menu. The adapter is small because
+Pi's TUI does not exist until after the trust decision; every later selection
+(resume, approvals, new-session confirmation) goes through `context.ui.select`
+instead of a second picker implementation.
 Print mode cannot prompt: it uses a saved decision or an explicit
 `--trust`/`--no-trust`, and otherwise refuses to start when project resources
 exist instead of silently running without the project layer. This is the same
