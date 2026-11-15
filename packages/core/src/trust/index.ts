@@ -409,11 +409,16 @@ export function formatWorkspaceTrustResourcePreview(
   const facts = [
     preview.type,
     preview.bytes === null ? null : `${preview.bytes} B`,
-    preview.sha256,
     preview.truncated ? "truncated" : null,
-    preview.reason ?? null,
   ].filter((fact): fact is string => fact !== null);
-  return `  [${preview.kind}] ${preview.path} (${facts.join(", ")})`;
+  const lines = [`  [${preview.kind}] ${preview.path} (${facts.join(", ")})`];
+  if (preview.sha256 !== null) {
+    lines.push(`    ${preview.sha256}`);
+  }
+  if (preview.reason !== undefined) {
+    lines.push(`    ${preview.reason}`);
+  }
+  return lines.join("\n");
 }
 
 export function workspaceTrustStorePath(home: string): string {

@@ -236,7 +236,7 @@ test("trust preview reports an unreadable resource instead of failing startup", 
           },
           previews,
         ),
-        /\[skills\] \.codepunk\/skills \(directory, unreadable\)/u,
+        /\[skills\] \.codepunk\/skills \(directory\)\n    unreadable/u,
       );
     } finally {
       await fs.chmod(locked, 0o700);
@@ -270,10 +270,10 @@ test("trust preview does not read through a symlinked resource directory", async
     const config = previews.find(
       (preview) => preview.path === ".codepunk/config.toml",
     );
-    assert.match(
-      core.formatWorkspaceTrustResourcePreview(config),
-      /\(symlink, sha256:[a-f0-9]{64}, symlink-ancestor\)/u,
-    );
+    const formatted = core.formatWorkspaceTrustResourcePreview(config);
+    assert.match(formatted, /\[config\] .* \(symlink\)/u);
+    assert.match(formatted, /\n    sha256:[a-f0-9]{64}\n/u);
+    assert.match(formatted, /\n    symlink-ancestor$/u);
   });
 });
 
@@ -724,7 +724,7 @@ test("trust CLI reports, grants, and revokes a workspace decision", async () => 
     });
     assert.match(
       textStatus.stdout,
-      /\[config\] \.codepunk\/config\.toml \(file, \d+ B, sha256:[a-f0-9]{64}\)/u,
+      /\[config\] \.codepunk\/config\.toml \(file, \d+ B\)\n    sha256:[a-f0-9]{64}/u,
     );
 
     const granted = await runCli(["trust", "grant", "--json"], {
