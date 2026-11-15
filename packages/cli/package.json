@@ -27,6 +27,7 @@
   "dependencies": {
     "@codepunk/core": "0.0.0",
     "@codepunk/protocol": "0.0.0",
-    "@earendil-works/pi-coding-agent": "1.5.2"
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2"
   }
 }

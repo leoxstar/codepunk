@@ -543,7 +543,7 @@ async function waitForOutputAfter(session, mark, marker, label) {
 function stripAnsi(value) {
   return value.replace(
     // CSI, OSC, and simple two-byte escape sequences emitted by the TUI.
-    /\u001b(?:\][^\u0007]*(?:\u0007|\u001b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])/gu,
+    /\u001b(?:\][^\u0007]*?(?:\u0007|\u001b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])/gu,
     "",
   );
 }
@@ -971,7 +971,10 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       await waitForOutput(session, "Trust this workspace?", "trust prompt");
       assert.match(session.output(), /AGENTS\.md/u);
       assert.match(session.output(), /sha256:[a-f0-9]{64}/u);
-      assert.match(session.output(), /Up\/Down to move/u);
+      assert.match(
+        stripAnsi(session.output()),
+        /\u2191\u2193 navigate  enter select  esc\/ctrl\+c cancel/u,
+      );
       assert.match(
         session.output(),
         /\u2192 Trust this workspace and remember/u,
@@ -983,12 +986,11 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       assert.doesNotMatch(session.output(), /1-3 to jump/u);
       assert.doesNotMatch(session.output(), /\[1\/2\/3\]/u);
       session.child.stdin.write("\u001b[B\u001b[B\r");
-      await waitForOutput(
-        session,
-        "selected: Do not trust and remember this decision",
-        "trust selection",
-      );
       await waitForOutput(session, "codepunk · auto/auto", "startup");
+      const saved = JSON.parse(
+        await fs.readFile(path.join(home, "trust.json"), "utf8"),
+      );
+      assert.equal(saved[await fs.realpath(project)], false);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -1043,11 +1045,6 @@ test("a real pty remembers the default trust choice", async () => {
     try {
       await waitForOutput(first, "Trust this workspace?", "first trust prompt");
       first.child.stdin.write("\r");
-      await waitForOutput(
-        first,
-        "selected: Trust this workspace and remember",
-        "default trust selection",
-      );
       await waitForOutput(first, "codepunk · auto/auto", "first startup");
       const store = JSON.parse(
         await fs.readFile(path.join(home, "trust.json"), "utf8"),
@@ -1080,6 +1077,52 @@ test("a real pty remembers the default trust choice", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(second);
+    }
+  });
+});
+
+test("a real pty cancels workspace trust without hanging", async () => {
+  await withTempDirectory("codepunk-tui-trust-cancel-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "CANCEL_TRUST_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "Trust this workspace?", "trust prompt");
+      session.child.stdin.write("\u001b");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 8_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 1, signal: null });
+      assert.match(
+        stripAnsi(session.output()),
+        /workspace trust was not decided/u,
+      );
+      await assert.rejects(
+        fs.readFile(path.join(home, "trust.json"), "utf8"),
+        /ENOENT/u,
+      );
+    } finally {
+      await stopPty(session);
     }
   });
 });

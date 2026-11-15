@@ -12,9 +12,11 @@ gateway requests were also exercised; see Local evidence. The comparison is
 not a security test of the other products.
 
 The concrete host dependency is
-`@earendil-works/pi-coding-agent@1.5.2`; `pi-agent-core` and `pi-tui` are
-transitive packages at the same version. Codepunk pins this surface rather
-than vendoring or forking the Pi execution engine.
+`@earendil-works/pi-coding-agent@1.5.2`; `pi-agent-core` is a transitive
+package at the same version. The CLI also declares
+`@earendil-works/pi-tui@1.5.2` directly because the pre-host trust prompt
+uses its exported terminal components. Codepunk pins this surface rather than
+vendoring or forking the Pi execution engine.
 
 ## The agent loop
 
@@ -77,6 +79,28 @@ guidance.
 `/subagent` reuses that same stack in a guarded child Codepunk process. The
 child gets its own product session and evidence; the parent records the link.
 This is not a second agent loop or a role prompt inside the parent context.
+
+### Interactive surface ownership
+
+The terminal UI is not a second product layer. Rendering, key parsing, focus,
+scrolling, and the slash-command editor belong to Pi. Codepunk supplies the
+questions and the policy behind them:
+
+| Concern                       | Owner                                                            | Implementation                                                                                   |
+| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Terminal renderer and editor  | Pi `InteractiveMode`, `CustomEditor`, `TuiMainScreen`            | Host components; Codepunk extends input handling instead of replacing the renderer               |
+| Pre-host workspace trust      | Codepunk question, Pi `SelectList` and `ProcessTerminal`         | `packages/cli/src/terminal-select.ts`; the host has not started yet, so this adapter is required |
+| Model picker and auth prompts | Pi `ModelSelectorComponent` and host `/login`                    | Reached through `/model` and `/login`; Codepunk only supplies startup guidance                   |
+| Approval and trust previews   | Codepunk policy and evidence; Pi `context.ui.select` and `input` | Codepunk renders the action, why, coverage, and expiry; Pi owns navigation and key handling      |
+| Session list and confirmation | Codepunk session store; Pi extension selector                    | `/resume`, `/new`, `/fork`, and `/clone` rebuild the host around a Codepunk target               |
+| Unknown or disabled commands  | Codepunk router                                                  | The router checks the installed Pi builtin inventory before Pi sees the command                  |
+| Policy, sandbox, and sign-off | Codepunk                                                         | No Pi equivalent is used as a substitute                                                         |
+
+The pre-host adapter is the only place Codepunk builds a terminal component
+directly. It renders a question, three choices, and the same footer Pi uses;
+it does not parse arrow keys, maintain a selection model, or print a numbered
+menu. Every later prompt is created from Pi's extension context, so adding a
+new Codepunk question does not add another selector implementation.
 
 ## Workspace trust
 
@@ -172,12 +196,13 @@ SHA-256 preview before the decision. Digests are bounded to 1 MiB of content
 and 512 directory entries per resource, and symlinks are hashed as links
 rather than followed. The same detail is available through
 `codepunk trust status`, `/trust`, and the `resource_details` JSON field.
-The pre-host selector uses the same affordances as Pi's in-session
-`SelectList`: a `→` pointer, Up/Down movement, Enter to confirm, and Escape to
-cancel. It deliberately has no numbered menu. The adapter is small because
-Pi's TUI does not exist until after the trust decision; every later selection
-(resume, approvals, new-session confirmation) goes through `context.ui.select`
-instead of a second picker implementation.
+The pre-host selector reuses Pi's `SelectList` and `TuiMainScreen` directly:
+a `→` pointer, Up/Down movement, Page Up/Page Down, Enter to confirm, and
+Escape or Ctrl+C to cancel. It deliberately has no numbered menu and does not
+own a second key parser or renderer. The adapter is small because Pi's
+interactive mode does not exist until after the trust decision; every later
+selection (resume, approvals, new-session confirmation) goes through
+`context.ui.select` instead of a second picker implementation.
 Print mode cannot prompt: it uses a saved decision or an explicit
 `--trust`/`--no-trust`, and otherwise refuses to start when project resources
 exist instead of silently running without the project layer. This is the same
@@ -331,10 +356,10 @@ The boundary is not an informal diagram; the product imports a small Pi
 surface and wraps it at two points:
 
 Current pin: `@earendil-works/pi-coding-agent@1.5.2`, with `pi-agent-core`
-and `pi-tui` at the same version transitively. The imports live in
-`packages/core/src/adapters/pi/index.ts`,
-`packages/core/src/model/index.ts`, `packages/cli/src/tui.ts`, and
-`packages/cli/src/index.ts`.
+at the same version transitively and `pi-tui@1.5.2` declared directly by the
+CLI. The imports live in `packages/core/src/adapters/pi/index.ts`,
+`packages/core/src/model/index.ts`, `packages/cli/src/tui.ts`,
+`packages/cli/src/terminal-select.ts`, and `packages/cli/src/index.ts`.
 
 | Pi surface                                                      | Where Codepunk uses it                       | What Codepunk does not duplicate                                                                                                                                   |
 | --------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

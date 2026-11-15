@@ -98,6 +98,7 @@ const PACKAGE_SPECS = [
     },
     external: {
       "@earendil-works/pi-coding-agent": "1.5.2",
+      "@earendil-works/pi-tui": "1.5.2",
     },
     internal: {
       "@codepunk/core": "0.0.0",
@@ -158,7 +159,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "20103d8481cb4e1ea96b75fe2ce7a066956f3ed4afb0add1cf9ce57f9e070797";
+  "fa709211c981d12fe40e570f05d3ba260026cc5731dcf9ed5001d7b9949ea1f7";
 
 const EXPECTED_CI_SHA256 =
   "fa4e1b35a0a4bceeedd626e56a4e32202295521bbb411a936c8a6187eddb8b3b";

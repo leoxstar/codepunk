@@ -46,6 +46,7 @@ The reviewed runtime set is:
 | `@earendil-works/pi-ai`           | `1.5.2`       | core      | MIT        |
 | `@earendil-works/pi-coding-agent` | `1.5.2`       | core, cli | MIT        |
 | `@earendil-works/pi-mcp`          | `1.5.2`       | core      | MIT        |
+| `@earendil-works/pi-tui`          | `1.5.2`       | cli       | MIT        |
 | `@anthropic-ai/sandbox-runtime`   | `0.0.82`      | core      | Apache-2.0 |
 | `typebox`                         | `1.3.27`      | protocol  | MIT        |
 
