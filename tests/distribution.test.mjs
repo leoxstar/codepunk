@@ -77,7 +77,10 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
       ],
       { cwd: install },
     );
-    assert.equal(version.stdout.trim(), "codepunk 0.0.0");
+    assert.match(
+      version.stdout,
+      /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+    );
     const installed = await fs.readdir(
       path.join(install, "node_modules", "@codepunk", "cli"),
     );

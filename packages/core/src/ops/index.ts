@@ -31,6 +31,16 @@ export interface DoctorOptions {
   config: CodepunkConfig;
   projectTrusted?: boolean;
   environment?: NodeJS.ProcessEnv;
+  /**
+   * Test seam for the documented Node floor. Production uses the running
+   * process version.
+   */
+  nodeVersion?: string;
+  /**
+   * Version of the installed CLI package. An unpublished 0.0.0 checkout is
+   * reported as a warning instead of claiming the npm distribution is ready.
+   */
+  packageVersion?: string;
   pluginEnabled?: boolean;
   sandboxProbe?: () => Promise<string | null>;
   modelProbe?: () => Promise<string | null>;
@@ -68,12 +78,15 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       ? { ...process.env, CODEPUNK_HOME: options.paths.home }
       : process.env);
   const checks: DoctorCheck[] = [];
-  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  const nodeVersion = options.nodeVersion ?? process.versions.node;
+  const [nodeMajor = 0, nodeMinor = 0] = nodeVersion.split(".").map(Number);
+  const nodeMeetsMinimum =
+    nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 19);
   checks.push({
     id: "node",
-    status: nodeMajor >= 22 ? "ok" : "error",
-    message: `Node.js ${process.versions.node}`,
-    hint: nodeMajor >= 22 ? null : "install Node.js >=22.19.0",
+    status: nodeMeetsMinimum ? "ok" : "error",
+    message: `Node.js ${nodeVersion}`,
+    hint: nodeMeetsMinimum ? null : "install Node.js >=22.19.0",
   });
   checks.push({
     id: "platform",
@@ -210,9 +223,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   });
   checks.push({
     id: "distribution",
-    status: "ok",
-    message: "npm dependency install; no global pi or srt binary is required",
-    hint: null,
+    status:
+      options.packageVersion === undefined || options.packageVersion === "0.0.0"
+        ? "warn"
+        : "ok",
+    message:
+      options.packageVersion === undefined
+        ? "package version was not provided to doctor"
+        : options.packageVersion === "0.0.0"
+          ? "local checkout version is 0.0.0; npm distribution is not published"
+          : `installed package version ${options.packageVersion}`,
+    hint:
+      options.packageVersion === undefined || options.packageVersion === "0.0.0"
+        ? "publish @codepunk/cli or install from the repository checkout"
+        : null,
   });
   return {
     ok: checks.every((check) => check.status !== "error"),

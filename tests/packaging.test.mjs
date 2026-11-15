@@ -120,7 +120,10 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
     const bin = path.join(prefix, "bin", "codepunk");
     await fs.access(bin);
     const version = await execFileAsync(bin, ["--version"]);
-    assert.equal(version.stdout.trim(), "codepunk 0.0.0");
+    assert.match(
+      version.stdout,
+      /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+    );
 
     const project = path.join(root, "project");
     const home = path.join(root, "home");

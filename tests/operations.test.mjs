@@ -63,6 +63,65 @@ test("doctor passes with an injected healthy environment", async () => {
     assert.match(core.formatDoctor(report), /doctor: ready/u);
   });
 });
+
+test("doctor requires Node 22.19, not just major 22", async () => {
+  await withTempDirectory("codepunk-operations-node-", async (root) => {
+    const { paths } = await makeProject(root);
+    const base = {
+      paths,
+      config: core.defaultConfig(),
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+    };
+    const old = await core.runDoctor({ ...base, nodeVersion: "22.18.0" });
+    const oldNode = old.checks.find((check) => check.id === "node");
+    assert.equal(old.ok, false);
+    assert.equal(oldNode?.status, "error");
+    assert.match(oldNode?.hint ?? "", /22\.19\.0/u);
+
+    const minimum = await core.runDoctor({
+      ...base,
+      nodeVersion: "22.19.0",
+    });
+    const minimumNode = minimum.checks.find((check) => check.id === "node");
+    assert.equal(minimum.ok, true);
+    assert.equal(minimumNode?.status, "ok");
+    assert.equal(minimumNode?.hint, null);
+  });
+});
+
+test("doctor reports an unpublished 0.0.0 package instead of claiming npm is ready", async () => {
+  await withTempDirectory("codepunk-operations-package-", async (root) => {
+    const { paths } = await makeProject(root);
+    const base = {
+      paths,
+      config: core.defaultConfig(),
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+    };
+    const unpublished = await core.runDoctor({
+      ...base,
+      packageVersion: "0.0.0",
+    });
+    const distribution = unpublished.checks.find(
+      (check) => check.id === "distribution",
+    );
+    assert.equal(distribution?.status, "warn");
+    assert.match(distribution?.message ?? "", /not published/u);
+
+    const published = await core.runDoctor({
+      ...base,
+      packageVersion: "0.1.0",
+    });
+    assert.equal(
+      published.checks.find((check) => check.id === "distribution")?.status,
+      "ok",
+    );
+  });
+});
+
 test("workspace diff separates staged and unstaged changes", async () => {
   await withTempDirectory("codepunk-diff-", async (root) => {
     await execFileAsync("git", ["init", "-q"], { cwd: root });

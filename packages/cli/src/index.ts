@@ -119,6 +119,12 @@ import {
   selectTerminalChoice,
   TerminalSelectCancelledError,
 } from "./terminal-select.ts";
+import {
+  appendBuildDoctorCheck,
+  formatBuildIdentity,
+  formatBuildLabel,
+  inspectCliBuild,
+} from "./build-info.ts";
 
 const VERSION = "0.0.0";
 
@@ -1034,24 +1040,41 @@ async function resolveRunWorkspaceTrust(
       "",
     ].join("\n"),
   );
-  const decision = await selectTerminalChoice("Trust this workspace?", [
+  const build = await inspectCliBuild();
+  if (build.stale === true) {
+    process.stderr.write(
+      `codepunk: warning: the running dist is older than the package sources; run pnpm build (entry: ${build.entryPath})\n`,
+    );
+  }
+  const decision = await selectTerminalChoice(
+    "Project trust",
+    [
+      {
+        label: "Trust this workspace and remember",
+        value: "always" as const,
+        description: "Load resources · remember",
+      },
+      {
+        label: "Trust for this session only",
+        value: "session" as const,
+        description: "Load now · ask again next start",
+      },
+      {
+        label: "Do not trust and remember this decision",
+        value: "never" as const,
+        description: "Skip resources · remember",
+      },
+      {
+        label: "Do not trust for this session only",
+        value: "never-session" as const,
+        description: "Skip now · ask again next start",
+      },
+    ],
     {
-      label: "Trust this workspace and remember",
-      value: "always" as const,
+      contextLines: ["saved decision", "  none for this exact checkout"],
+      footerNote: formatBuildLabel(build),
     },
-    {
-      label: "Trust for this session only",
-      value: "session" as const,
-    },
-    {
-      label: "Do not trust and remember this decision",
-      value: "never" as const,
-    },
-    {
-      label: "Do not trust for this session only",
-      value: "never-session" as const,
-    },
-  ]).catch((error: unknown) => {
+  ).catch((error: unknown) => {
     if (error instanceof TerminalSelectCancelledError) {
       throw new Error(
         "workspace trust was not decided; choose an option or pass --trust / --no-trust",
@@ -1824,13 +1847,20 @@ async function commandMemory(options: CliOptions): Promise<number> {
 
 async function commandDoctor(options: CliOptions): Promise<number> {
   const { paths, config, workspaceTrust } = await resolveProject(options);
-  const report = await runDoctor({
-    paths,
-    config,
-    projectTrusted: workspaceTrust.trusted,
-    pluginEnabled: options.allowPlugins,
-  });
-  process.stdout.write(`${formatDoctor(report)}\n`);
+  const build = await inspectCliBuild();
+  const report = appendBuildDoctorCheck(
+    await runDoctor({
+      paths,
+      config,
+      projectTrusted: workspaceTrust.trusted,
+      pluginEnabled: options.allowPlugins,
+      packageVersion: build.version,
+    }),
+    build,
+  );
+  process.stdout.write(
+    options.json ? `${JSON.stringify(report)}\n` : `${formatDoctor(report)}\n`,
+  );
   return report.ok ? 0 : 1;
 }
 
@@ -3237,7 +3267,7 @@ async function main(argv: string[]): Promise<number> {
     verifyGuardedHostLaunch();
   }
   if (options.version) {
-    process.stdout.write(`codepunk ${VERSION}\n`);
+    process.stdout.write(`${formatBuildIdentity(await inspectCliBuild())}\n`);
     return 0;
   }
   if (options.help) {

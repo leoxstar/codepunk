@@ -48,7 +48,10 @@ test("the built CLI reports version and help", async () => {
     await ensureBuilt(),
     "--version",
   ]);
-  assert.equal(stdout.trim(), "codepunk 0.0.0");
+  assert.match(
+    stdout,
+    /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+  );
   const help = await execFileAsync(process.execPath, [
     await ensureBuilt(),
     "--help",

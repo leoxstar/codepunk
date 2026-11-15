@@ -954,12 +954,20 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
       await waitForOutputAfter(
         session,
         promptMark,
-        "No model configured.",
+        "No model configured",
         "first-run prompt gate",
       );
       assert.match(
         session.output().slice(promptMark),
-        /codepunk models import/u,
+        /Sign in to a provider/u,
+      );
+      const setupMark = session.output().length;
+      session.child.stdin.write("\u001b[B\u001b[B\r");
+      await waitForOutputAfter(
+        session,
+        setupMark,
+        "codepunk models import",
+        "first-run setup commands",
       );
 
       session.child.stdin.write("/quit\r");
@@ -1183,9 +1191,17 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       },
     });
     try {
-      await waitForOutput(session, "Trust this workspace?", "trust prompt");
+      await waitForOutput(session, "Project trust", "trust prompt");
       assert.match(session.output(), /AGENTS\.md/u);
       assert.match(session.output(), /sha256:[a-f0-9]{64}/u);
+      assert.match(
+        stripAnsi(session.output()),
+        /saved decision\s+none for this exact checkout/u,
+      );
+      assert.match(
+        stripAnsi(session.output()),
+        /codepunk 0\.0\.0 · dist .+ · source current/u,
+      );
       assert.match(
         stripAnsi(session.output()),
         /\u2191\u2193 navigate  enter select  esc\/ctrl\+c cancel/u,
@@ -1194,6 +1210,8 @@ test("a real pty asks before a project instruction file is trusted", async () =>
         session.output(),
         /\u2192 Trust this workspace and remember/u,
       );
+      assert.match(session.output(), /Load resources · remember/u);
+      assert.match(session.output(), /Skip now · ask again next start/u);
       assert.doesNotMatch(
         session.output(),
         /1\. Trust this workspace and remember/u,
@@ -1258,7 +1276,7 @@ test("a real pty remembers the default trust choice", async () => {
     };
     const first = startPty(process.execPath, [cli], { cwd: project, env });
     try {
-      await waitForOutput(first, "Trust this workspace?", "first trust prompt");
+      await waitForOutput(first, "Project trust", "first trust prompt");
       first.child.stdin.write("\r");
       await waitForOutput(first, "codepunk · auto/auto", "first startup");
       const store = JSON.parse(
@@ -1319,7 +1337,7 @@ test("a real pty cancels workspace trust without hanging", async () => {
       },
     });
     try {
-      await waitForOutput(session, "Trust this workspace?", "trust prompt");
+      await waitForOutput(session, "Project trust", "trust prompt");
       session.child.stdin.write("\u001b");
       const result = await Promise.race([
         session.exited,
@@ -1365,7 +1383,7 @@ test("a real pty can deny workspace trust for one session without saving", async
       },
     });
     try {
-      await waitForOutput(session, "Trust this workspace?", "trust prompt");
+      await waitForOutput(session, "Project trust", "trust prompt");
       assert.match(
         stripAnsi(session.output()),
         /Do not trust for this session only/u,

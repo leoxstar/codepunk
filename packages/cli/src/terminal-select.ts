@@ -14,6 +14,24 @@ export interface TerminalChoice<T> {
   description?: string;
 }
 
+export interface TerminalSelectOptions {
+  /**
+   * Row to highlight before the first keypress. The trust prompt uses this to
+   * keep the safest decision visible when a caller has already chosen one.
+   */
+  initialIndex?: number;
+  /**
+   * Short facts rendered between the title and the choices. They give a
+   * consequential prompt its scope without adding another selection step.
+   */
+  contextLines?: readonly string[];
+  /**
+   * Build identity is shown for pre-host prompts so a stale process is visible
+   * in the same screen instead of being mistaken for a current menu.
+   */
+  footerNote?: string;
+}
+
 export class TerminalSelectCancelledError extends Error {
   constructor() {
     super("selection cancelled");
@@ -50,6 +68,7 @@ function selectionTheme(color: boolean): SelectListTheme {
 export async function selectTerminalChoice<T>(
   title: string,
   choices: readonly TerminalChoice<T>[],
+  options: TerminalSelectOptions = {},
 ): Promise<T> {
   if (choices.length === 0) {
     throw new Error("selection requires at least one choice");
@@ -69,6 +88,18 @@ export async function selectTerminalChoice<T>(
   // also discard the trust preview printed immediately before the prompt.
   const container = new Container();
   container.addChild(new Text(`${bold}? ${title}${reset}`, 0, 0));
+  if (options.contextLines !== undefined && options.contextLines.length > 0) {
+    container.addChild(
+      new Text(
+        options.contextLines
+          .flatMap((line) => line.split("\n"))
+          .map((line) => `${dim}${line}${reset}`)
+          .join("\n"),
+        0,
+        0,
+      ),
+    );
+  }
   const items: SelectItem[] = choices.map((choice, index) => ({
     value: String(index),
     label: choice.label,
@@ -77,9 +108,10 @@ export async function selectTerminalChoice<T>(
       : { description: choice.description }),
   }));
   const list = new SelectList(items, choices.length, selectionTheme(color), {
-    minPrimaryColumnWidth: 34,
-    maxPrimaryColumnWidth: 52,
+    minPrimaryColumnWidth: 30,
+    maxPrimaryColumnWidth: 42,
   });
+  list.setSelectedIndex(options.initialIndex ?? 0);
   container.addChild(list);
   container.addChild(
     new Text(
@@ -88,6 +120,9 @@ export async function selectTerminalChoice<T>(
       0,
     ),
   );
+  if (options.footerNote !== undefined && options.footerNote.length > 0) {
+    container.addChild(new Text(`${dim}${options.footerNote}${reset}`, 0, 0));
+  }
   ui.addChild(container);
   ui.setFocus(list);
   let settled = false;

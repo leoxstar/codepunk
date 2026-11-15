@@ -78,6 +78,7 @@ import type {
   ApprovalRequest,
   ApprovalScope,
 } from "@codepunk/protocol";
+import { appendBuildDoctorCheck, inspectCliBuild } from "./build-info.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
@@ -87,6 +88,7 @@ export interface TuiState {
   lastEvidence: number;
   warningsShown: boolean;
   modelSelected: boolean;
+  modelOnboardingShown?: boolean;
   ready: boolean;
   childHostArgv: readonly string[];
   subagents?: Map<string, BackgroundSubagent>;
@@ -651,7 +653,8 @@ async function initializeProjectInstructions(
     context.ui.notify(
       [
         "The workspace is not trusted, so a new AGENTS.md would not load.",
-        "Run /trust grant or restart with --trust, then run /init again.",
+        "Run /trust grant, then restart codepunk and run /init again.",
+        "/trust grant only changes future sessions.",
       ].join("\n"),
       "warning",
     );
@@ -2166,6 +2169,116 @@ async function restoreCheckpoint(
   );
 }
 
+function modelLabel(model: {
+  provider: string;
+  id: string;
+  name?: string;
+}): string {
+  const name =
+    model.name === undefined ||
+    model.name.length === 0 ||
+    model.name === model.id
+      ? ""
+      : ` — ${model.name}`;
+  return `${model.provider}/${model.id}${name}`;
+}
+
+function customEndpointMessage(): string {
+  return [
+    "Add a custom OpenAI-compatible endpoint:",
+    "  codepunk models import <base-url> --provider <id> --api openai-responses",
+    "  codepunk models set <id>/<model>",
+    "Then run /model to choose it.",
+  ].join("\n");
+}
+
+/**
+ * First-run setup belongs in the interactive surface, not a warning that
+ * blocks the first prompt. Other coding agents open a provider/model chooser
+ * at this point; Codepunk keeps the same host picker and login command behind
+ * one small arrow-key menu.
+ */
+async function promptForMissingModel(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<boolean> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return false;
+  }
+  if (state.modelOnboardingShown === true) {
+    context.ui.notify(
+      modelOnboardingMessage(runtime) ??
+        "No model selected. Use /model to choose one.",
+      "warning",
+    );
+    return true;
+  }
+  state.modelOnboardingShown = true;
+
+  const models = await availableModels(runtime).catch(() => []);
+  if (models.length > 0) {
+    const visible = models.slice(0, 20);
+    const labels = visible.map(modelLabel);
+    const selected = await context.ui.select(
+      "No model configured. Choose a model for this session:",
+      [...labels, "Set up a provider instead", "Cancel"],
+    );
+    if (selected === undefined || selected === "Cancel") {
+      return true;
+    }
+    if (selected === "Set up a provider instead") {
+      return await showProviderSetup(state, context);
+    }
+    const model = visible[labels.indexOf(selected)];
+    if (model !== undefined) {
+      await selectModelReference(
+        state,
+        context,
+        `${model.provider}/${model.id}`,
+      );
+      return true;
+    }
+    return true;
+  }
+
+  return await showProviderSetup(state, context);
+}
+
+async function showProviderSetup(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<boolean> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return false;
+  }
+  const selected = await context.ui.select("No model configured", [
+    "Sign in to a provider",
+    "Add an OpenAI-compatible endpoint",
+    "Show setup commands",
+    "Cancel",
+  ]);
+  if (selected === undefined || selected === "Cancel") {
+    return true;
+  }
+  if (selected === "Sign in to a provider") {
+    context.ui.setEditorText("/login");
+    context.ui.notify(
+      "Press Enter to open Pi's provider sign-in; Esc closes it.",
+      "info",
+    );
+    return true;
+  }
+  context.ui.notify(
+    selected === "Add an OpenAI-compatible endpoint"
+      ? customEndpointMessage()
+      : (modelOnboardingMessage(runtime) ?? customEndpointMessage()),
+    "info",
+  );
+  return true;
+}
+
 async function availableModels(runtime: CodepunkRuntime) {
   const modelRuntime = runtime.host.services.modelRuntime;
   const cached = modelRuntime.getAvailableSnapshot();
@@ -2831,6 +2944,14 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
         () => tui.footer,
       ) as never,
   );
+  context.ui.setWidget(
+    "model-onboarding",
+    selectedModel(runtime) === undefined
+      ? [
+          "No model configured. The first message opens setup; run /model or /login to configure now.",
+        ]
+      : undefined,
+  );
   const statuses: Array<[string, string]> = [
     [
       "permissions",
@@ -3106,11 +3227,7 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           state.runtime !== null &&
           !state.modelSelected
         ) {
-          context.ui.notify(
-            modelOnboardingMessage(state.runtime) ??
-              "No model selected. Use /model to choose one.",
-            "warning",
-          );
+          await promptForMissingModel(state, context);
           return true;
         }
         return false;
@@ -3367,11 +3484,16 @@ export function createTuiExtension(
       pi.registerCommand("doctor", {
         description: "Run codepunk doctor",
         handler: commandContext(state, async (runtime, context) => {
-          const report = await runDoctor({
-            paths: runtime.paths,
-            config: runtime.config,
-            pluginEnabled: runtime.plugins.enabled,
-          });
+          const build = await inspectCliBuild();
+          const report = appendBuildDoctorCheck(
+            await runDoctor({
+              paths: runtime.paths,
+              config: runtime.config,
+              pluginEnabled: runtime.plugins.enabled,
+              packageVersion: build.version,
+            }),
+            build,
+          );
           await notify(context, formatDoctor(report));
         }),
       });
@@ -3708,6 +3830,7 @@ export function createTuiExtension(
 
 export function setTuiRuntime(state: TuiState, runtime: CodepunkRuntime): void {
   state.runtime = runtime;
+  state.modelOnboardingShown = false;
   if (typeof state.channel.setPersistHandler === "function") {
     state.channel.setPersistHandler(async (request) => {
       if (
