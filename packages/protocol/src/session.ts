@@ -701,6 +701,9 @@ export const SubagentResultEventSchema = Type.Object(
         base_commit: Type.Optional(
           Type.Union([NonEmptyStringSchema, Type.Null()]),
         ),
+        transcript_path: Type.Optional(
+          Type.Union([NonEmptyStringSchema, Type.Null()]),
+        ),
         changed_files: Type.Optional(
           Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
         ),
