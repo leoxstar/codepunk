@@ -11,13 +11,21 @@ export {
   type TaskState,
 } from "./graph.ts";
 export {
+  assertLinkedWorktree,
   createDetachedWorktree,
+  discardWorktree,
+  freezeWorktree,
+  removeMergedWorktree,
   type CreateWorktreeOptions,
+  type FreezeWorktreeOptions,
+  type FrozenWorktree,
   type Worktree,
 } from "./worktree.ts";
 export {
   createHandoff,
+  handoffArtifactPath,
   treeFileHash,
+  writeHandoff,
   type CreateHandoffOptions,
 } from "./handoff.ts";
 export {

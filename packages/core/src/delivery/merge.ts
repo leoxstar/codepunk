@@ -20,6 +20,7 @@ import {
   nulPaths,
   resolveCommit,
   resolveTree,
+  statusOutsideCodepunk,
 } from "./git.ts";
 import type { TaskState } from "./graph.ts";
 import { treeFileHash } from "./handoff.ts";
@@ -30,6 +31,13 @@ export interface MergeOptions {
   sourceWorktree: string;
   spec: TaskSpec;
   handoff: TaskHandoff;
+  /**
+   * Evidence produced by a child session can live under that child's project
+   * store, which has a different project id than the parent checkout. The
+   * handoff already binds the run and session; this path lets the merger
+   * verify the exact chain instead of guessing the parent evidence directory.
+   */
+  evidencePath?: string;
   actor: string;
   human: boolean;
   taskState: TaskState;
@@ -71,6 +79,9 @@ function pathWithin(filePath: string, declared: string): boolean {
   };
   const target = comparable(filePath);
   const entry = comparable(declared);
+  if (entry === ".") {
+    return true;
+  }
   return entry.endsWith("/")
     ? target === entry.slice(0, -1) || target.startsWith(entry)
     : target === entry;
@@ -111,13 +122,17 @@ async function changedPaths(
 async function checkEvidence(
   paths: ProjectPaths,
   handoff: TaskHandoff,
+  evidencePath?: string,
 ): Promise<void> {
-  const evidencePath = path.join(
-    paths.evidenceDir,
-    handoff.evidence.session_id,
-    `${handoff.run_id}.jsonl`,
-  );
-  const loaded = await readEvidenceFile(evidencePath);
+  const target =
+    evidencePath === undefined
+      ? path.join(
+          paths.evidenceDir,
+          handoff.evidence.session_id,
+          `${handoff.run_id}.jsonl`,
+        )
+      : normalizeAbsolute(evidencePath);
+  const loaded = await readEvidenceFile(target);
   if (loaded.truncatedTail) {
     throw new Error("handoff evidence has a truncated tail");
   }
@@ -255,12 +270,12 @@ export async function mergeHandoff(
     throw new Error("worker worktree moved after handoff");
   }
   if (
-    (
+    statusOutsideCodepunk(
       await gitText(sourceWorktree, [
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-      ])
+      ]),
     ).trim().length > 0
   ) {
     throw new Error("worker worktree is dirty after handoff");
@@ -274,12 +289,12 @@ export async function mergeHandoff(
     throw new Error("merge target moved away from the task base");
   }
   if (
-    (
+    statusOutsideCodepunk(
       await gitText(repoRoot, [
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-      ])
+      ]),
     ).trim().length > 0
   ) {
     throw new Error("merge target working tree is dirty");
@@ -334,7 +349,7 @@ export async function mergeHandoff(
   if (sha256Bytes(diff) !== options.handoff.diff_sha256) {
     throw new Error("handoff diff hash does not match the exact commit");
   }
-  await checkEvidence(options.paths, options.handoff);
+  await checkEvidence(options.paths, options.handoff, options.evidencePath);
 
   try {
     await gitText(repoRoot, ["merge", "--no-ff", "--no-edit", head]);
@@ -396,6 +411,7 @@ export async function verifyPostMerge(options: {
   record: MergeRecord;
   run: PostMergeRun;
   paths?: ProjectPaths;
+  evidencePath?: string;
 }): Promise<PostMergeVerification> {
   const issues: string[] = [];
   const repoRoot = normalizeAbsolute(options.repoRoot);
@@ -429,7 +445,7 @@ export async function verifyPostMerge(options: {
       issues.push("merge record is missing or unreadable");
     }
     try {
-      await checkEvidence(options.paths, options.handoff);
+      await checkEvidence(options.paths, options.handoff, options.evidencePath);
     } catch {
       issues.push("handoff evidence chain cannot be verified");
     }

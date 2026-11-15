@@ -96,3 +96,49 @@ export function nulPaths(output: string): string[] {
     .filter((entry) => entry.length > 0)
     .map((entry) => entry.split("\\").join("/"));
 }
+
+/**
+ * Parse porcelain v1 status into records that keep the two-character status
+ * code. With `-z`, a rename or copy is followed by the original path as a
+ * separate NUL field without its own code; re-attach the code so protected
+ * path checks see both sides of the rename.
+ */
+export function statusRecords(status: string): string[] {
+  if (!status.includes("\0")) {
+    return status.split("\n").filter((line) => line.length > 0);
+  }
+  const fields = status.split("\0");
+  const records: string[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const line = fields[index];
+    if (line === undefined || line.length === 0) {
+      continue;
+    }
+    records.push(line);
+    const code = line.slice(0, 2);
+    if (/[RC]/u.test(code)) {
+      const original = fields[index + 1];
+      if (original !== undefined && original.length > 0) {
+        records.push(`${code} ${original}`);
+        index += 1;
+      }
+    }
+  }
+  return records;
+}
+
+const GENERATED_CODEPUNK_STATUS = ".codepunk/.gitignore";
+
+/**
+ * Codepunk creates `.codepunk/.gitignore` during project startup. That file is
+ * product state, not a worker change, and must not make an otherwise clean
+ * merge target look dirty. Every other `.codepunk` change still fails closed.
+ */
+export function statusOutsideCodepunk(status: string): string {
+  return statusRecords(status)
+    .filter((line) => {
+      const filePath = line.slice(3).trim();
+      return filePath.length > 0 && filePath !== GENERATED_CODEPUNK_STATUS;
+    })
+    .join("\n");
+}

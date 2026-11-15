@@ -6,7 +6,7 @@ import readline from "node:readline";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import { createTaskSpec } from "../delivery/spec.ts";
-import { gitText } from "../delivery/git.ts";
+import { gitText, statusOutsideCodepunk } from "../delivery/git.ts";
 import { createDetachedWorktree } from "../delivery/worktree.ts";
 import { createUlid } from "../platform/hash.ts";
 import {
@@ -118,6 +118,7 @@ export interface SubagentHostResult {
   profile: string | null;
   profile_sha256: string | null;
   worktree: string | null;
+  base_commit: string | null;
   changed_files: number | null;
 }
 
@@ -408,6 +409,7 @@ async function runChild(
   exit_code: number;
   child_evidence_path: string | null;
   worktree: string | null;
+  base_commit: string | null;
   changed_files: number | null;
 }> {
   if (options.hostArgv.length === 0) {
@@ -686,7 +688,7 @@ async function runChild(
               "--porcelain=v1",
               "--untracked-files=all",
             ]);
-            changedFiles = status
+            changedFiles = statusOutsideCodepunk(status)
               .split("\n")
               .filter((line) => line.trim().length > 0).length;
           } catch {
@@ -707,6 +709,7 @@ async function runChild(
           exit_code: exitCode,
           child_evidence_path: evidence.evidencePath,
           worktree: worktreePath,
+          base_commit: worktreePath === null ? null : baseCommit,
           changed_files: changedFiles,
         };
       } finally {
@@ -744,6 +747,7 @@ async function runChild(
     exit_code: captured.value.exit_code,
     child_evidence_path: captured.value.child_evidence_path,
     worktree: worktreePath,
+    base_commit: worktreePath === null ? null : baseCommit,
     changed_files: captured.value.changed_files,
   };
 }
@@ -783,6 +787,7 @@ export async function runSubagentHost(
     profile: options.profile?.name ?? null,
     profile_sha256: options.profile?.sha256 ?? null,
     worktree: result.worktree,
+    base_commit: result.base_commit,
     changed_files: result.changed_files,
   };
 }

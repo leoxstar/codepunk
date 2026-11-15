@@ -143,6 +143,9 @@ function writeSetContains(
 ): boolean {
   return writeSet.some((entry) => {
     const normalized = relativeWritePath(entry);
+    if (normalized === ".") {
+      return true;
+    }
     return normalized.endsWith("/")
       ? relative === normalized.slice(0, -1) || relative.startsWith(normalized)
       : relative === normalized;

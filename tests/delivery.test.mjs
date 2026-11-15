@@ -32,7 +32,11 @@ async function git(cwd, args) {
   ).stdout;
 }
 
-async function makeRepo(root, name = "project") {
+async function makeRepo(
+  root,
+  name = "project",
+  { ignoreCodepunk = true } = {},
+) {
   const project = path.join(root, name);
   await fs.mkdir(project);
   await git(project, ["init", "-q"]);
@@ -41,7 +45,10 @@ async function makeRepo(root, name = "project") {
   await writeFile(path.join(project, "src", "app.txt"), "base\n");
   await writeFile(path.join(project, "README.md"), "readme\n");
   await writeFile(path.join(project, "AGENTS.md"), "instructions\n");
-  await writeFile(path.join(project, ".gitignore"), ".codepunk/\n");
+  await writeFile(
+    path.join(project, ".gitignore"),
+    ignoreCodepunk ? ".codepunk/\n" : "*.local.toml\n",
+  );
   await git(project, ["add", "."]);
   await git(project, ["commit", "-q", "-m", "base"]);
   const baseCommit = (await git(project, ["rev-parse", "HEAD"])).trim();
@@ -805,5 +812,235 @@ test("review, branch refs, evidence tampering, and merge records are enforced", 
     });
     assert.equal(missing.verdict, "unverifiable");
     assert.match(missing.issues.join(" "), /missing or unreadable/u);
+  });
+});
+
+test("a dirty child worktree freezes into an exact, protected-path-safe commit", async () => {
+  await withTempDirectory("codepunk-freeze-", async (root) => {
+    assert.equal(core.pathCoveredBySet("child-output.txt", ["."]), true);
+    assert.equal(core.pathCoveredBySet("src/child-output.txt", ["."]), true);
+    const { project, baseCommit, paths } = await makeRepo(root);
+    const worktree = await core.createDetachedWorktree({
+      deliveryRoot: project,
+      projectId: paths.projectId,
+      workerId: "worker-freeze",
+      baseCommit,
+      tempRoot: path.join(root, "worktrees"),
+    });
+    await writeFile(path.join(worktree.path, "src", "app.txt"), "changed\n");
+    await writeFile(path.join(worktree.path, "src", "new.txt"), "new\n");
+
+    const frozen = await core.freezeWorktree({
+      repoRoot: project,
+      worktree: worktree.path,
+      baseCommit,
+      protectedPaths: core.DEFAULT_PROTECTED_PATHS,
+      message: "child candidate",
+    });
+    assert.notEqual(frozen.headCommit, baseCommit);
+    assert.deepEqual(frozen.changedPaths, ["src/app.txt", "src/new.txt"]);
+    assert.equal(
+      (
+        await git(worktree.path, [
+          "status",
+          "--porcelain=v1",
+          "--untracked-files=all",
+        ])
+      ).trim(),
+      "",
+    );
+    assert.equal(
+      (await git(worktree.path, ["log", "-1", "--pretty=%s"])).trim(),
+      "child candidate",
+    );
+    const again = await core.freezeWorktree({
+      repoRoot: project,
+      worktree: worktree.path,
+      baseCommit,
+      protectedPaths: core.DEFAULT_PROTECTED_PATHS,
+      message: "child candidate",
+    });
+    assert.deepEqual(again, frozen);
+  });
+});
+
+test("a child candidate cannot freeze instruction or Codepunk config changes", async () => {
+  await withTempDirectory("codepunk-freeze-protected-", async (root) => {
+    const { project, baseCommit, paths } = await makeRepo(root);
+    const worktree = await core.createDetachedWorktree({
+      deliveryRoot: project,
+      projectId: paths.projectId,
+      workerId: "worker-protected",
+      baseCommit,
+      tempRoot: path.join(root, "worktrees"),
+    });
+    await writeFile(
+      path.join(worktree.path, "AGENTS.md"),
+      "child-instructions\n",
+    );
+    await assert.rejects(
+      () =>
+        core.freezeWorktree({
+          repoRoot: project,
+          worktree: worktree.path,
+          baseCommit,
+          protectedPaths: core.DEFAULT_PROTECTED_PATHS,
+          message: "must not freeze",
+        }),
+      /protected path: AGENTS\.md/u,
+    );
+    assert.equal(
+      (await git(worktree.path, ["rev-parse", "HEAD"])).trim(),
+      baseCommit,
+    );
+    assert.match(
+      await git(worktree.path, ["status", "--porcelain=v1"]),
+      /AGENTS\.md/u,
+    );
+  });
+});
+
+test("freeze tolerates only the generated Codepunk ignore file", async () => {
+  await withTempDirectory("codepunk-freeze-generated-", async (root) => {
+    const { project, baseCommit, paths } = await makeRepo(root, "project", {
+      ignoreCodepunk: false,
+    });
+    const worktree = await core.createDetachedWorktree({
+      deliveryRoot: project,
+      projectId: paths.projectId,
+      workerId: "worker-generated",
+      baseCommit,
+      tempRoot: path.join(root, "worktrees"),
+    });
+    await writeFile(
+      path.join(worktree.path, ".codepunk", ".gitignore"),
+      "local.toml\n*.local.toml\n",
+    );
+    await writeFile(path.join(worktree.path, "src", "generated.txt"), "ok\n");
+    const frozen = await core.freezeWorktree({
+      repoRoot: project,
+      worktree: worktree.path,
+      baseCommit,
+      protectedPaths: core.DEFAULT_PROTECTED_PATHS,
+      message: "generated state stays out",
+    });
+    assert.deepEqual(frozen.changedPaths, ["src/generated.txt"]);
+    assert.match(
+      await git(worktree.path, [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+      ]),
+      /\?\? \.codepunk\/\.gitignore/u,
+    );
+
+    await writeFile(
+      path.join(worktree.path, ".codepunk", "operator-notes.txt"),
+      "must not ride along\n",
+    );
+    await assert.rejects(
+      () =>
+        core.freezeWorktree({
+          repoRoot: project,
+          worktree: worktree.path,
+          baseCommit: frozen.headCommit,
+          protectedPaths: core.DEFAULT_PROTECTED_PATHS,
+          message: "must reject other codepunk state",
+        }),
+      /protected path: \.codepunk\/operator-notes\.txt/u,
+    );
+  });
+});
+
+test("discard only removes a registered linked worktree, never the checkout", async () => {
+  await withTempDirectory("codepunk-discard-", async (root) => {
+    const { project, baseCommit, paths } = await makeRepo(root);
+    await assert.rejects(
+      () =>
+        core.discardWorktree({
+          repoRoot: project,
+          worktree: project,
+        }),
+      /main checkout/u,
+    );
+    const worktree = await core.createDetachedWorktree({
+      deliveryRoot: project,
+      projectId: paths.projectId,
+      workerId: "worker-discard",
+      baseCommit,
+      tempRoot: path.join(root, "worktrees"),
+    });
+    await writeFile(path.join(worktree.path, "discarded.txt"), "discard\n");
+    await core.discardWorktree({
+      repoRoot: project,
+      worktree: worktree.path,
+    });
+    await assert.rejects(() => fs.stat(worktree.path), /ENOENT/u);
+  });
+});
+
+test("merge can verify child evidence outside the parent project store", async () => {
+  await withTempDirectory("codepunk-child-evidence-", async (root) => {
+    const { project, baseCommit, paths } = await makeRepo(root);
+    const spec = specFor(baseCommit, ["src/"]);
+    const worktree = await core.createDetachedWorktree({
+      deliveryRoot: project,
+      projectId: paths.projectId,
+      workerId: "worker-child-evidence",
+      baseCommit,
+      tempRoot: path.join(root, "worktrees"),
+    });
+    await commitWorkerChange(
+      worktree.path,
+      "src/app.txt",
+      "child change\n",
+      "child change",
+    );
+    const evidencePath = path.join(
+      root,
+      "child-project",
+      "evidence",
+      SESSION_ID,
+      `${RUN_ID}.jsonl`,
+    );
+    const ledger = await core.EvidenceLedger.open(evidencePath);
+    const evidenceRecord = await ledger.append(
+      readRecord({ run_id: RUN_ID, session_id: SESSION_ID }),
+    );
+    const handoff = await core.createHandoff({
+      spec,
+      worktree: worktree.path,
+      workerId: "worker-child-evidence",
+      runId: RUN_ID,
+      evidencePath,
+      verdict: {
+        verdict: "complete",
+        sign_off_id: "child-sign-off",
+        evidence_head: core.evidenceRecordHash(evidenceRecord),
+      },
+      now: () => NOW,
+    });
+    const handoffPath = await core.writeHandoff(paths, handoff);
+    assert.equal(
+      JSON.parse(await fs.readFile(handoffPath, "utf8")).run_id,
+      RUN_ID,
+    );
+    const record = await core.mergeHandoff({
+      paths,
+      repoRoot: project,
+      sourceWorktree: worktree.path,
+      spec,
+      handoff,
+      evidencePath,
+      actor: "local-user",
+      human: true,
+      taskState: "review_passed",
+      now: () => NOW,
+    });
+    assert.equal(record.handoff_head, handoff.head_commit);
+    assert.equal(
+      (await git(project, ["rev-parse", "HEAD"])).trim(),
+      record.merge_commit,
+    );
   });
 });

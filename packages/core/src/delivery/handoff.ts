@@ -1,13 +1,17 @@
+import path from "node:path";
 import type { TaskHandoff, TaskSpec, Verdict } from "@codepunk/protocol";
 import { EvidenceError, readEvidenceFile } from "../evidence/index.ts";
+import { atomicWriteFile } from "../platform/fs.ts";
 import { sha256Bytes } from "../platform/hash.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
+import type { ProjectPaths } from "../platform/paths.ts";
 import {
   gitBuffer,
   gitText,
   nulPaths,
   resolveCommit,
   resolveTree,
+  statusOutsideCodepunk,
 } from "./git.ts";
 
 export interface CreateHandoffOptions {
@@ -39,7 +43,7 @@ async function cleanWorktree(worktree: string): Promise<void> {
     "--porcelain=v1",
     "--untracked-files=all",
   ]);
-  if (status.trim().length > 0) {
+  if (statusOutsideCodepunk(status).trim().length > 0) {
     throw new Error("handoff requires a clean worker worktree");
   }
 }
@@ -208,4 +212,30 @@ export async function createHandoff(
     open_issues: [...(options.openIssues ?? [])],
     created_at: now,
   };
+}
+
+export function handoffArtifactPath(
+  paths: ProjectPaths,
+  handoff: Pick<TaskHandoff, "task_id" | "run_id">,
+): string {
+  return path.join(
+    paths.projectDir,
+    "handoffs",
+    handoff.task_id,
+    `${handoff.run_id}.json`,
+  );
+}
+
+/**
+ * Persist the exact handoff object that merge verification will re-check.
+ * The merge record is the transaction; this artifact is the review evidence
+ * that human sign-off and the worker commit existed before the merge.
+ */
+export async function writeHandoff(
+  paths: ProjectPaths,
+  handoff: TaskHandoff,
+): Promise<string> {
+  const target = handoffArtifactPath(paths, handoff);
+  await atomicWriteFile(target, `${JSON.stringify(handoff, null, 2)}\n`);
+  return target;
 }
