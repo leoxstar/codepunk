@@ -257,8 +257,30 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /\/plan\s+show the current plan/u);
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
+  assert.match(help, /\/init \[--update\]/u);
+  assert.match(help, /\/status\s+show model, session, permissions/u);
   assert.match(help, /\/help\s+show this command list/u);
   assert.doesNotMatch(help, /\/share/u);
+});
+
+test("/init prompts the model with repository-evidence instructions", async () => {
+  const { buildInitPrompt } = await importSource("packages/cli/src/tui.ts");
+  const created = buildInitPrompt("/repo", null);
+  assert.match(
+    created,
+    /^Create the repository guidance file at \/repo\/AGENTS\.md\./u,
+  );
+  assert.match(created, /Work from repository evidence only\./u);
+  assert.match(created, /Do not modify\s+any file other than the target\./u);
+  assert.match(created, /Keep it under 120 lines\./u);
+  assert.doesNotMatch(created, /^## /mu);
+
+  const updated = buildInitPrompt("/repo", "/repo/CLAUDE.md");
+  assert.match(
+    updated,
+    /^Update the repository guidance file at \/repo\/CLAUDE\.md\./u,
+  );
+  assert.match(updated, /Preserve accurate existing content/u);
 });
 
 test("permissions why accepts exactly one leading separator", async () => {
@@ -735,6 +757,184 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+    }
+  });
+});
+
+test("a real pty reports status without a configured model", async () => {
+  await withTempDirectory("codepunk-tui-status-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      const mark = session.output().length;
+      session.child.stdin.write("/status\r");
+      await waitForOutputAfter(
+        session,
+        mark,
+        "codepunk status",
+        "/status command",
+      );
+      const output = session.output().slice(mark);
+      assert.match(output, /project: /u);
+      assert.match(output, /model: not selected/u);
+      assert.match(output, /permissions: /u);
+      assert.match(output, /trust: (trusted|untrusted) \(/u);
+      assert.match(output, /capabilities: /u);
+      assert.match(output, /evidence: /u);
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("/init refuses to overwrite an existing root instruction file", async () => {
+  await withTempDirectory("codepunk-tui-init-existing-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(path.join(project, "AGENTS.md"), "EXISTING_RULE\n");
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await trustWorkspace(home, project);
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      const mark = session.output().length;
+      session.child.stdin.write("/init\r");
+      await waitForOutputAfter(
+        session,
+        mark,
+        "Use /init --update to let the agent revise that file in place.",
+        "/init existing file guard",
+      );
+      assert.match(session.output().slice(mark), /\/init --update/u);
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("/init sends the repository-evidence prompt to the selected model", async () => {
+  await withTempDirectory("codepunk-tui-init-model-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const model = await startTextModelServer();
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/init", "CHILD_OK");
+      assert.match(
+        session.output(),
+        /Starting project instruction initialization/u,
+      );
+      assert.ok(model.requests.length > 0);
+      const request = JSON.stringify(model.requests);
+      assert.match(request, /Create the repository guidance file/u);
+      assert.match(request, /AGENTS\.md/u);
+      assert.match(request, /Keep it under 120 lines/u);
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
     }
   });
 });
