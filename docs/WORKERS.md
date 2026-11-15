@@ -134,7 +134,8 @@ repeat it. A per-run `--model` must be in the profile's model pool.
   detached worktree for a read-only profile.
 - `/subagent` returns immediately. Up to four children run at once;
   `/agents`, `/agents profiles`, `/agents result <id>`, `/agents wait <id>`,
-  and `/agents stop <id>` manage the handles.
+  `/agents stop <id>`, `/agents review <id>`, `/agents sign <id>`,
+  `/agents merge <id>`, and `/agents discard <id>` manage the handles.
 - A worktree child receives the parent's explicit trust decision because it
   is created from the same base commit. The child does not inherit the
   parent's scoped rules or `filesystem = full`.
@@ -142,8 +143,19 @@ repeat it. A per-run `--model` must be in the profile's model pool.
   profile or `--model` selects another. The model pool is resolved before the
   child starts.
 - A mutating result stays in its worktree for inspection. The completion
-  notice and `subagent/result` event record the absolute worktree path.
-  Codepunk does not merge child changes automatically.
+  notice and `subagent/result` event record the absolute worktree path and
+  the next review/sign/merge commands. Codepunk never merges child changes
+  automatically.
+- `/agents review <id>` shows the worktree status, changed files, bounded
+  patch, and summary. `/agents sign <id>` asks the human for a
+  complete/incomplete verdict and writes a real sign-off into the child
+  session's own project store.
+- `/agents merge <id>` is accepted only for a child signed complete. It
+  freezes the dirty worktree into an exact commit, writes the handoff, merges
+  that commit with `git merge --no-ff`, and removes the worktree only after
+  proving the child head is contained in the merge commit. The
+  `/agents discard <id>` command removes an unmerged registered worktree
+  after explicit confirmation; neither path can target the main checkout.
 - The child needs a repository with at least one commit so its task spec has
   a real base commit.
 

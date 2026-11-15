@@ -752,21 +752,26 @@ These are real gaps, not hidden fallbacks:
    reimplementing accounting.
 6. `/subagent` runs profile-driven child Pi sessions with up to four
    background handles (`/agents`, `/agents profiles`, `/agents result <id>`,
-   `/agents wait <id>`, `/agents stop <id>`); the child product session header
-   records the parent id. Pi's `parentSession` path field is not used for this
-   link. Without a profile the child is `read`/`search` only and shares the
-   parent checkout. A profile that enables `write` or `edit` runs in a
-   detached worktree, and `--worktree` can isolate a read-only profile. The
-   child is pinned to `sandbox = required`, `filesystem = workspace`, and
-   either `approval = deny` for read-only work or `approval = allow` with
-   `autonomy = ask` for a mutating profile, regardless of the parent's
-   persisted config. An explicit parent trust decision is inherited in both
-   directions; a worktree child receives the parent's decision because it is
-   created from the same base commit. The child does not inherit the parent's
-   scoped rules or full filesystem. A child worktree is preserved for
-   inspection and is never merged automatically. Child progress is streamed
-   as bounded assistant deltas and tool-start events; full child transcripts
-   and tool output are not streamed.
+   `/agents wait <id>`, `/agents stop <id>`, `/agents review <id>`,
+   `/agents sign <id>`, `/agents merge <id>`, `/agents discard <id>`); the
+   child product session header records the parent id. Pi's `parentSession`
+   path field is not used for this link. Without a profile the child is
+   `read`/`search` only and shares the parent checkout. A profile that enables
+   `write` or `edit` runs in a detached worktree, and `--worktree` can isolate
+   a read-only profile. The child is pinned to `sandbox = required`,
+   `filesystem = workspace`, and either `approval = deny` for read-only work
+   or `approval = allow` with `autonomy = ask` for a mutating profile,
+   regardless of the parent's persisted config. An explicit parent trust
+   decision is inherited in both directions; a worktree child receives the
+   parent's decision because it is created from the same base commit. The
+   child does not inherit the parent's scoped rules or full filesystem. A
+   mutating child worktree is preserved until a human reviews it. The
+   `/agents sign` command records the verdict, and only a complete sign-off
+   enables `/agents merge`, which freezes the exact commit, writes the
+   handoff, merges with `--no-ff`, and cleans up the verified worktree.
+   `/agents discard` removes an unmerged worktree only after confirmation.
+   Child progress is streamed as bounded assistant deltas and tool-start
+   events; full child transcripts and tool output are not streamed.
 7. Session surfaces are live: `/resume` and `/new` rebuild the TUI host,
    `/fork` and `/clone` create child product sessions, `/tree` navigates the
    Pi branch, `/export` forwards to `/cp-export`, and the aliases do not appear
@@ -800,12 +805,11 @@ These are real gaps, not hidden fallbacks:
     `permissions.network`; Codepunk keeps it as a separate operator setting
     until a profile-level network choice is designed.
 13. Delivery worktrees, the worker pool, and swarm policy are library-level
-    only: there is no `codepunk work` command, so no user path creates a
-    worker or merges its worktree. `WorkerSandbox` now accepts
-    `networkAllow`/`networkDeny` and defaults to deny-all, but nothing reads
-    the config for it yet. Either wire the surface or stop presenting
-    worktree isolation as a user capability; `docs/COMPARISON.md` says which
-    one it currently is.
+    beyond `/subagent`: mutating subagents now have explicit review, sign,
+    merge, and discard commands, but there is still no `codepunk work`
+    command for `WorkerPool` or swarm tasks. `WorkerSandbox` accepts
+    `networkAllow`/`networkDeny` and defaults to deny-all, but no product
+    surface reads that config yet.
 14. `/commit` is an explicit human-confirmed product action that runs outside
     the model sandbox and records the base/result commit hashes, because
     Codepunk's policy and `srt` profile deny model writes to `.git`.
@@ -845,9 +849,10 @@ The next work should follow the trust boundary, not the feature count:
    gate as runtime use. MCP, skill, and plugin reload already exist.
 2. Make session identity first-class: one visible command name per surface,
    and a fork flow with explicit parent-child evidence links.
-3. Extend the child-session path with full transcript/tool-output streaming
-   and an explicit worktree cleanup/handoff command, then a bidirectional
-   protocol and out-of-terminal status signals.
+3. Extend the child-session path with full transcript/tool-output streaming,
+   then a bidirectional protocol and out-of-terminal status signals. Worktree
+   review, human sign-off, merge handoff, and discard are already exposed
+   through `/agents`.
 
 ## Local evidence
 
@@ -855,7 +860,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 566 tests, 566 pass
+# 572 tests, 572 pass
 # repository check: 506 files, 3 packages
 ```
 

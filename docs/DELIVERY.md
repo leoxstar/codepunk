@@ -62,6 +62,34 @@ the merge commit and tree, the handoff head is an ancestor of the merge, the
 merged path set stays within the write set, and the post-merge evidence chain
 matches the signed verdict. A run on another commit is `unverifiable`.
 
+## Human-gated subagent delivery
+
+The TUI exposes the same checks for profile-driven `/subagent` work:
+
+```text
+/agents review <id>   show status, changed files, bounded patch, and summary
+/agents sign <id>     record a human complete/incomplete verdict
+/agents merge <id>    freeze, hand off, merge the exact commit, then clean up
+/agents discard <id>  remove an unmerged registered worktree after confirmation
+```
+
+`/agents sign` writes the sign-off through the child session's project store,
+because its project id can differ from the parent checkout. The sign-off is
+bound to the child evidence head; a model summary is not a verdict.
+
+`/agents merge` additionally requires the parent `HEAD` to equal the child's
+recorded base commit, a parent working tree clean outside Codepunk's generated
+`.codepunk/.gitignore`, and a human confirmation. The dirty child worktree is
+frozen into a commit inside `freezeWorktree`; protected instruction and
+`.codepunk` paths fail closed. The handoff is written under the parent
+project's `handoffs/` directory and the merge record under `merges/`.
+
+The worktree path must be a registered linked worktree of the parent
+repository. Cleanup verifies that the child `HEAD` is an ancestor of the merge
+commit before using a bounded forced removal for the generated Codepunk state;
+discard requires a separate human confirmation. The main checkout is never a
+valid target for either operation.
+
 ## RequirementTeam
 
 `runRequirementTeam` accepts three or four reviewers with distinct angles
