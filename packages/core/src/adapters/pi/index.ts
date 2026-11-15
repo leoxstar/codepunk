@@ -8,6 +8,7 @@ import {
   createAgentSessionServices,
   resolveModelScopeWithDiagnostics,
   type AgentSession,
+  type AgentSessionEvent,
   type AgentSessionServices,
   type AgentSettledEvent,
   type BeforeAgentStartEvent,
@@ -25,6 +26,7 @@ import {
   type UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentState, PlanStep, TodoItem } from "@codepunk/protocol";
+import { redactOutputPreview } from "../../artifacts/index.ts";
 import { createUlid, sha256Text } from "../../platform/hash.ts";
 import { normalizeAbsolute } from "../../platform/path.ts";
 import {
@@ -555,6 +557,19 @@ export const PRODUCT_SYSTEM_SECTION = [
   "  changes; do not guess at host-internal commands.",
 ].join("\n");
 
+const RETRY_ERROR_PREVIEW_CHARS = 512;
+
+function retryErrorEvidence(
+  message: string,
+  home: string,
+): { sha256: string; preview: string } {
+  const preview = redactOutputPreview(message, home)
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, RETRY_ERROR_PREVIEW_CHARS);
+  return { sha256: sha256Text(message), preview };
+}
+
 export async function createPiHost(
   options: CreatePiHostOptions,
 ): Promise<PiHost> {
@@ -598,6 +613,53 @@ export async function createPiHost(
     });
     eventAppendTail = operation.catch(() => undefined);
     return operation;
+  };
+
+  let retryEventTail: Promise<void> = Promise.resolve();
+  let retryEventFailure: unknown = null;
+  let unsubscribeRetryEvents: (() => void) | null = null;
+  const queueRetryEvent = (event: AgentSessionEvent): void => {
+    if (event.type !== "auto_retry_start" && event.type !== "auto_retry_end") {
+      return;
+    }
+    const runId = currentRunId;
+    const model = session?.model;
+    const modelRef = model === undefined ? null : modelReference(model);
+    const kind =
+      event.type === "auto_retry_start"
+        ? "model/retry_start"
+        : "model/retry_end";
+    let data: unknown;
+    if (event.type === "auto_retry_start") {
+      const error = retryErrorEvidence(event.errorMessage, codepunkHome);
+      data = {
+        run_id: runId,
+        model: modelRef,
+        attempt: event.attempt,
+        max_attempts: event.maxAttempts,
+        delay_ms: event.delayMs,
+        error_sha256: error.sha256,
+        error_preview: error.preview,
+      };
+    } else {
+      const error =
+        event.finalError === undefined
+          ? null
+          : retryErrorEvidence(event.finalError, codepunkHome);
+      data = {
+        run_id: runId,
+        model: modelRef,
+        attempt: event.attempt,
+        success: event.success,
+        final_error_sha256: error?.sha256 ?? null,
+        final_error_preview: error?.preview ?? null,
+      };
+    }
+    retryEventTail = retryEventTail
+      .then(() => appendEvent(kind, data))
+      .catch((error: unknown) => {
+        retryEventFailure ??= error;
+      });
   };
 
   const eventAlreadyExists = (
@@ -1121,6 +1183,8 @@ export async function createPiHost(
         await beginRun();
       });
       pi.on("agent_settled", async (event: AgentSettledEvent) => {
+        await retryEventTail;
+        const retryFailure = retryEventFailure;
         const state = event.aborted
           ? "aborted"
           : lastAssistantStopReason === "error"
@@ -1131,6 +1195,15 @@ export async function createPiHost(
           await maybeSummarizeSession("settled");
         }
         await saveHostAgentState();
+        if (retryFailure !== null) {
+          throw new Error(
+            `cannot record automatic retry evidence: ${
+              retryFailure instanceof Error
+                ? retryFailure.message
+                : String(retryFailure)
+            }`,
+          );
+        }
       });
       pi.on("user_bash", async (event: UserBashEvent) => {
         await beginRun();
@@ -1544,6 +1617,7 @@ export async function createPiHost(
         : {}),
     });
     session = created.session;
+    unsubscribeRetryEvents = session.subscribe(queueRetryEvent);
     syncSessionUsage();
     budgetExceeded =
       budgetExceeded ||
@@ -1638,6 +1712,12 @@ export async function createPiHost(
           if (session !== null) {
             await session.abort().catch(() => undefined);
             await session.waitForIdle().catch(() => undefined);
+            await retryEventTail;
+            unsubscribeRetryEvents?.();
+            unsubscribeRetryEvents = null;
+            if (retryEventFailure !== null) {
+              failure ??= retryEventFailure;
+            }
             await endRun("cancelled", "host_dispose").catch((error) => {
               failure ??= error;
             });
@@ -1649,6 +1729,8 @@ export async function createPiHost(
         } catch (error) {
           failure = error;
         } finally {
+          unsubscribeRetryEvents?.();
+          unsubscribeRetryEvents = null;
           try {
             await assertNoPiSessionFiles(codepunkHome);
             await writer?.release();
@@ -1665,6 +1747,8 @@ export async function createPiHost(
       },
     };
   } catch (error) {
+    unsubscribeRetryEvents?.();
+    unsubscribeRetryEvents = null;
     session?.dispose();
     await writer?.release().catch(() => {});
     restoreEnvironment();

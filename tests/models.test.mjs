@@ -1209,13 +1209,15 @@ test("retry and usage are recorded without plaintext secrets", async () => {
   await withTempDirectory("codepunk-model-", async (root) => {
     const { host, store, ledger } = await setupHost(root);
     const sentinel = "codepunk-test-secret-sentinel";
+    const retrySecret = "retry-error-secret-value-1234";
     try {
       await host.services.modelRuntime.setRuntimeApiKey("openai", sentinel);
+      const retryError = `connection error: api_key=${retrySecret}`;
       const calls = installScriptedStream(host.session, (index) => {
         if (index === 0) {
           return {
             type: "error",
-            text: "connection error: transient upstream failure",
+            text: retryError,
           };
         }
         return { type: "text", text: "recovered after retry" };
@@ -1245,6 +1247,59 @@ test("retry and usage are recorded without plaintext secrets", async () => {
       assert.deepEqual(
         usageEvents.map((event) => event.data.total_tokens),
         [2, 2],
+      );
+      const retryStarts = store.allEvents.filter(
+        (event) => event.kind === "model/retry_start",
+      );
+      const retryEnds = store.allEvents.filter(
+        (event) => event.kind === "model/retry_end",
+      );
+      assert.equal(retryStarts.length, 1);
+      assert.equal(retryEnds.length, 1);
+      assert.deepEqual(
+        {
+          run_id: retryStarts[0].data.run_id,
+          model: retryStarts[0].data.model,
+          attempt: retryStarts[0].data.attempt,
+          max_attempts: retryStarts[0].data.max_attempts,
+          delay_ms: retryStarts[0].data.delay_ms,
+        },
+        {
+          run_id: "run-model",
+          model: `openai/${TEST_MODEL.id}`,
+          attempt: 1,
+          max_attempts: 1,
+          delay_ms: 0,
+        },
+      );
+      assert.equal(
+        retryStarts[0].data.error_sha256,
+        core.sha256Text(retryError),
+      );
+      assert.equal(
+        retryStarts[0].data.error_preview,
+        "connection error: api_key=[REDACTED_SECRET]",
+      );
+      assert.equal(
+        JSON.stringify(store.allEvents).includes(retrySecret),
+        false,
+        "retry evidence must not contain a plaintext secret",
+      );
+      assert.deepEqual(
+        {
+          run_id: retryEnds[0].data.run_id,
+          attempt: retryEnds[0].data.attempt,
+          success: retryEnds[0].data.success,
+          final_error_sha256: retryEnds[0].data.final_error_sha256,
+          final_error_preview: retryEnds[0].data.final_error_preview,
+        },
+        {
+          run_id: "run-model",
+          attempt: 1,
+          success: true,
+          final_error_sha256: null,
+          final_error_preview: null,
+        },
       );
       const summary = core.summarizeModelUsage(store.allEvents);
       assert.deepEqual(summary, {
@@ -1293,6 +1348,60 @@ test("retry and usage are recorded without plaintext secrets", async () => {
       const planted = path.join(root, "planted-secret.txt");
       await fs.writeFile(planted, sentinel);
       assert.deepEqual(await scanForSecret(root, sentinel), [planted]);
+    } finally {
+      await host.dispose();
+    }
+  });
+});
+
+test("exhausted automatic retries record a redacted final error", async () => {
+  await withTempDirectory("codepunk-model-retry-", async (root) => {
+    const { host, store } = await setupHost(root);
+    const sentinel = "codepunk-exhausted-retry-secret";
+    const retryError = `connection error: upstream failed password=${sentinel}`;
+    try {
+      await host.services.modelRuntime.setRuntimeApiKey(
+        "openai",
+        "retry-test-key",
+      );
+      installScriptedStream(host.session, () => ({
+        type: "error",
+        text: retryError,
+      }));
+
+      await host.session.prompt("fail twice");
+      await host.session.waitForIdle();
+
+      const starts = store.allEvents.filter(
+        (event) => event.kind === "model/retry_start",
+      );
+      const ends = store.allEvents.filter(
+        (event) => event.kind === "model/retry_end",
+      );
+      assert.equal(starts.length, 1);
+      assert.equal(ends.length, 1);
+      assert.equal(starts[0].data.attempt, 1);
+      assert.equal(starts[0].data.max_attempts, 1);
+      assert.equal(starts[0].data.error_sha256, core.sha256Text(retryError));
+      assert.equal(
+        starts[0].data.error_preview,
+        "connection error: upstream failed password=[REDACTED_SECRET]",
+      );
+      assert.equal(ends[0].data.success, false);
+      assert.equal(ends[0].data.attempt, 1);
+      assert.equal(
+        ends[0].data.final_error_sha256,
+        core.sha256Text(retryError),
+      );
+      assert.equal(
+        ends[0].data.final_error_preview,
+        "connection error: upstream failed password=[REDACTED_SECRET]",
+      );
+      assert.equal(
+        JSON.stringify(store.allEvents).includes(sentinel),
+        false,
+        "retry evidence must not contain a plaintext secret",
+      );
     } finally {
       await host.dispose();
     }
