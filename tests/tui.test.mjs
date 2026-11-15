@@ -872,7 +872,11 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
     assert.match(output, /codepunk · auto\/auto/u);
     assert.match(
       output,
-      /permissions custom · trust trusted · shell disabled · next sandbox uncovered · fs workspace · evidence 0/u,
+      /project .* · session .* · next sandbox uncovered · fs workspace/u,
+    );
+    assert.match(
+      output,
+      /permissions custom · trust trusted · shell disabled · evidence 0 · budget off/u,
     );
     assert.match(output, /session [0-9A-Z]{10}/u);
     assert.doesNotMatch(output, /v1\.5\.2/u);
@@ -3197,8 +3201,9 @@ test("a real pty shows and persists permission modes", async () => {
       );
       assert.match(
         session.output(),
-        /permissions read-only · trust trusted · shell explicit-unsandboxed · next sandbox required/u,
+        /permissions read-only · trust trusted · shell explicit-unsandboxed/u,
       );
+      assert.match(session.output(), /next sandbox required · fs workspace/u);
       await runCommandAfter(
         session,
         "/permissions sandbox uncovered",
@@ -3886,6 +3891,115 @@ test("a real pty queues input as steering while the model is streaming", async (
           .map((record) => record.data.text);
         assert.ok(inputs.includes("first question"));
         assert.ok(inputs.includes("steer now"));
+        session.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          session.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(session);
+      }
+    } finally {
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
+    }
+  });
+});
+
+test("a real pty surfaces a stopped budget and refuses more model calls", async () => {
+  await withTempDirectory("codepunk-tui-budget-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[budget]",
+        "max_tokens = 1",
+        "",
+      ].join("\n"),
+    );
+    const model = await startTextModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "chat",
+                name: "Chat",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    try {
+      const cli = await ensureBuilt();
+      const session = startPty(process.execPath, [cli], {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      });
+      try {
+        await waitForOutput(session, "codepunk · local/chat", "startup");
+        assert.match(stripAnsi(session.output()), /budget 0\/1 tokens/u);
+        session.child.stdin.write("first question\r");
+        await waitForOutput(session, "CHILD_OK", "first model reply");
+        await waitForOutput(
+          session,
+          "budget stopped at 5/1 tokens",
+          "budget status line",
+        );
+        await runCommandAfter(
+          session,
+          "/budget",
+          "budget: stopped at 5/1 tokens; start a new session with /new",
+        );
+        await runCommandAfter(
+          session,
+          "/status",
+          "budget: stopped at 5/1 tokens; start a new session with /new",
+        );
+        await runCommandAfter(
+          session,
+          "/session",
+          "budget: stopped at 5/1 tokens; start a new session with /new",
+        );
+        const requestsBefore = model.requests.length;
+        assert.equal(requestsBefore, 1);
+        session.child.stdin.write("second question\r");
+        await waitForOutput(
+          session,
+          "session budget exhausted (5/1 tokens)",
+          "budget refusal",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(model.requests.length, requestsBefore);
         session.child.stdin.write("/quit\r");
         const exited = await Promise.race([
           session.exited,
