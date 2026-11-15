@@ -163,7 +163,10 @@ The user config or an explicit CLI flag remains the only place to change a
 permission boundary.
 
 The interactive TUI prompts when protected resources exist and no saved
-decision applies. The choices are trust once, always trust, or do not trust.
+decision applies. The highlighted default is persistent trust; the other
+choices are trust for this session only or do not trust and remember. This
+matches Pi's default trust selector and avoids the surprise of a session-only
+choice being re-asked on the next launch.
 The prompt lists each protected resource with its class, file type, size, and
 SHA-256 preview before the decision. Digests are bounded to 1 MiB of content
 and 512 directory entries per resource, and symlinks are hashed as links

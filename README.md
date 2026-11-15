@@ -72,13 +72,15 @@ codepunk trust [status|grant|revoke] [path] [--json]
 --trust | --no-trust        one-run override
 ```
 
-An interactive start asks once when project resources exist and no saved
-decision applies. The prompt is an arrow-key selector: Up/Down moves the
-pointer, Enter confirms, and Escape cancels. It has no numbered menu. Print
-mode cannot prompt, so it refuses to start while the decision is unresolved
-and project resources exist; pass `--trust`, `--no-trust`, or save a decision
-first. An untrusted session skips project config, policy, skills, and project
-instruction files; user-level instructions in Codepunk home still load.
+An interactive start asks when project resources exist and no saved decision
+applies. The prompt is an arrow-key selector: Up/Down moves the pointer, Enter
+confirms, and Escape cancels. It has no numbered menu. The highlighted default
+is `Trust this workspace and remember`; choose `Trust for this session only`
+when the decision should not persist. Print mode cannot prompt, so it refuses
+to start while the decision is unresolved and project resources exist; pass
+`--trust`, `--no-trust`, or save a decision first. An untrusted session skips
+project config, policy, skills, and project instruction files; user-level
+instructions in Codepunk home still load.
 `/trust` shows the current decision, `/trust grant` and `/trust revoke` save a
 decision for future sessions; they do not hot-reload the current one. The
 trust prompt and `/trust` list each protected resource with its class, type,
