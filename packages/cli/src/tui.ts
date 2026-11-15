@@ -1,0 +1,2665 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  CustomEditor,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type InlineExtension,
+  getPackageDir,
+} from "@earendil-works/pi-coding-agent";
+import {
+  ChildHostError,
+  APPROVAL_MODE_NAMES,
+  PERMISSION_PROFILE_NAMES,
+  PERMISSION_PROFILES,
+  autonomyRulesHash,
+  collectCapabilities,
+  configSummary,
+  decidePolicy,
+  explainPermission,
+  exportSession,
+  formatCapabilities,
+  formatDoctor,
+  formatPlan,
+  formatPermissionExplanation,
+  formatTodos,
+  formatWorkspaceTrust,
+  formatMcpServers,
+  formatSessionList,
+  isFallbackModel,
+  isPermissionProfile,
+  listUserPluginFiles,
+  listProjectSessions,
+  loadScopedRules,
+  normalizeNetworkAllow,
+  normalizeNetworkDeny,
+  persistScopedRule,
+  permissionBehaviorSummary,
+  permissionProfileFor,
+  previewWorkspaceTrustResources,
+  readOnlyLiveWidenIssue,
+  readOnlyLiveSwitchIssue,
+  readSkillInvocation,
+  readWorkState,
+  readSavedWorkspaceTrust,
+  createUlid,
+  runReadOnlySubagent,
+  runDoctor,
+  resolveConfiguredModel,
+  resolveModelSelection,
+  saveWorkspaceTrust,
+  setConfiguredModel,
+  writeUserPermissionProfile,
+  writeUserPermissionSelection,
+  writeUserThinkingSelection,
+  type ApprovalChannel,
+  type CodepunkRuntime,
+  type FilesystemMode,
+  type PermissionProfile,
+  type ReadOnlySubagentResult,
+} from "@codepunk/core";
+import type {
+  ApprovalAnswer,
+  ApprovalRequest,
+  ApprovalScope,
+} from "@codepunk/protocol";
+
+export interface TuiState {
+  runtime: CodepunkRuntime | null;
+  context: ExtensionContext | null;
+  channel: TuiApprovalChannel;
+  lastRunId: string | null;
+  lastEvidence: number;
+  warningsShown: boolean;
+  modelSelected: boolean;
+  ready: boolean;
+  childHostArgv: readonly string[];
+  subagents?: Map<string, BackgroundSubagent>;
+  /**
+   * Slash command names the Pi host will accept in this session. Pi's builtin
+   * table is not exported from the package root, and `pi.getCommands()` covers
+   * only extensions, prompts, and skills, so the accepted set is loaded from
+   * the installed host module at session start.
+   */
+  hostCommands: Set<string>;
+}
+
+interface PiBuiltinSlashCommand {
+  name: string;
+  description: string;
+}
+
+/**
+ * Pi's root export intentionally omits the builtin slash table. Read the
+ * installed package's real table instead of copying it; if a Pi upgrade moves
+ * that module, the session start fails loudly rather than silently rejecting
+ * a legal command.
+ */
+export async function loadPiBuiltinSlashCommands(): Promise<
+  readonly PiBuiltinSlashCommand[]
+> {
+  const modulePath = path.join(
+    getPackageDir(),
+    "dist",
+    "core",
+    "slash-commands.js",
+  );
+  const moduleUrl = pathToFileURL(modulePath).href;
+  const loaded = (await import(moduleUrl)) as {
+    BUILTIN_SLASH_COMMANDS?: unknown;
+  };
+  if (
+    !Array.isArray(loaded.BUILTIN_SLASH_COMMANDS) ||
+    loaded.BUILTIN_SLASH_COMMANDS.some(
+      (command) =>
+        command === null ||
+        typeof command !== "object" ||
+        typeof (command as PiBuiltinSlashCommand).name !== "string" ||
+        typeof (command as PiBuiltinSlashCommand).description !== "string",
+    )
+  ) {
+    throw new Error(
+      `Pi builtin slash commands are missing or malformed at ${modulePath}`,
+    );
+  }
+  return loaded.BUILTIN_SLASH_COMMANDS as PiBuiltinSlashCommand[];
+}
+
+async function persistPiDefaultModel(
+  runtime: CodepunkRuntime,
+  notify?: (message: string, level: "info" | "warning") => void,
+): Promise<boolean> {
+  const settings = runtime.host.services.settingsManager;
+  const provider = settings.getDefaultProvider();
+  const id = settings.getDefaultModel();
+  if (provider === undefined || id === undefined) {
+    return false;
+  }
+  if (isFallbackModel({ provider, id })) {
+    return false;
+  }
+  if (
+    runtime.config.model.provider === provider &&
+    runtime.config.model.id === id
+  ) {
+    return false;
+  }
+  try {
+    await setConfiguredModel(runtime.paths, runtime.config, provider, id);
+    notify?.(
+      `model set to ${provider}/${id}\nconfig: ${runtime.paths.home}/config.toml`,
+      "info",
+    );
+    return true;
+  } catch (error) {
+    notify?.(
+      `model default ${provider}/${id} is active in Pi but was not saved: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "warning",
+    );
+    return false;
+  }
+}
+
+function isSlashCommand(text: string, name: string): boolean {
+  return text === name || text.startsWith(`${name} `);
+}
+
+export interface BackgroundSubagent {
+  childSessionId: string;
+  prompt: string;
+  startedAt: number;
+  status: "running" | "completed" | "failed" | "stopped";
+  result: ReadOnlySubagentResult | null;
+  error: string | null;
+  controller: AbortController;
+  promise: Promise<void>;
+}
+
+interface Renderable {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+function component(text: () => string, visible: () => boolean): Renderable {
+  return {
+    render: () => (visible() ? text().split("\n") : []),
+    invalidate: () => {},
+  };
+}
+
+function setRuntimeStatus(
+  state: TuiState,
+  context: ExtensionContext,
+  key: string,
+  value: string | undefined,
+): void {
+  context.ui.setStatus(
+    key,
+    state.runtime?.config.tui.status === true ? value : undefined,
+  );
+}
+
+function formatApproval(request: ApprovalRequest): string {
+  const lines = [
+    "Approval required",
+    ...(request.tool === undefined ? [] : [`action: ${request.tool}`]),
+    ...(request.command === undefined ? [] : [`command: ${request.command}`]),
+    ...(request.argv === undefined
+      ? []
+      : [`exact argv: ${request.argv.join(" ")}`]),
+    ...(request.cwd === undefined ? [] : [`cwd: ${request.cwd}`]),
+    ...(request.path === undefined ? [] : [`path: ${request.path}`]),
+    ...(request.reason === undefined ? [] : [`why: ${request.reason}`]),
+    ...(request.args_preview === undefined
+      ? []
+      : ["arguments:", request.args_preview]),
+    ...(request.coverage_preview === undefined
+      ? []
+      : [`coverage: ${request.coverage_preview}`]),
+    ...(request.diff_preview === undefined
+      ? []
+      : ["proposed diff:", request.diff_preview]),
+    `session: ${request.session_id}`,
+    `worker: ${request.worker_id}`,
+    `tool call: ${request.tool_call_id}`,
+    `request: ${request.request_id}`,
+    `expires: ${request.expires_at}`,
+  ];
+  return lines.join("\n");
+}
+
+const AUTONOMY_PROFILES = ["read-only", "ask", "scoped"] as const;
+const SANDBOX_MODES = ["required", "uncovered"] as const;
+const FILESYSTEM_MODES = ["workspace", "full"] as const;
+
+function permissionUsage(): string {
+  return [
+    "usage:",
+    `  /permissions profile ${PERMISSION_PROFILE_NAMES.join("|")}`,
+    `  /permissions approval ${APPROVAL_MODE_NAMES.join("|")} · reviewer off|model`,
+    "  /permissions autonomy read-only|ask|scoped",
+    "  /permissions sandbox required|uncovered",
+    "  /permissions sandbox network [allow|deny <domain>...|clear]",
+    "  /permissions filesystem workspace|full",
+    "  /permissions rules",
+    "  /permissions why -- <shell command>",
+    "  /trust [status|grant|revoke]",
+  ].join("\n");
+}
+
+export function parsePermissionWhyCommand(argument: string): string | null {
+  const trimmed = argument.trim();
+  if (trimmed !== "why" && !trimmed.startsWith("why ")) {
+    return null;
+  }
+  let command = trimmed.slice("why".length).trim();
+  if (command === "--") {
+    command = "";
+  } else if (command.startsWith("-- ")) {
+    command = command.slice(3).trim();
+  }
+  return command.length === 0 ? null : command;
+}
+
+export function codepunkHelp(): string {
+  return [
+    "Codepunk commands",
+    "cp- marks a Codepunk command whose name would otherwise collide with a Pi builtin",
+    "",
+    "Models and providers",
+    "  /model [query]             open Pi's fuzzy model picker",
+    "                             Enter is session-only; Ctrl+S saves the default",
+    "                             an exact provider/id or unique bare id saves immediately",
+    "  /login, /logout            manage Pi provider credentials",
+    "  /thinking                  choose the reasoning level; saved to config",
+    "  /scoped-models             explain the file-backed model scope",
+    "",
+    "Permissions and work",
+    "  /permissions               show or change profile, approval, autonomy, sandbox",
+    "  /permissions reviewer [off|model [provider/model]|timeout <ms>]  configure auto-mode review",
+    "  /permissions sandbox network [allow|deny <domain>...|clear]  set the sandbox egress lists",
+    "  /permissions rules         list persisted exact-command rules",
+    "  /permissions why -- <cmd>  explain a policy decision without running it",
+    "  /trust [status|grant|revoke] show or save workspace trust for future sessions",
+    "  !<command>                 run a shell command through the same policy gate",
+    "  /subagent <task>           start a read-only child session",
+    "  /agents [result|stop <id>] list, collect, or stop child sessions",
+    "  /plan                      show the current plan",
+    "  /todos                     show the current todo list",
+    "",
+    "Sessions and evidence",
+    "  /cp-sessions, /session     list sessions or show the current one",
+    "  /resume                    list sessions and the supported resume command",
+    "  /evidence, /budget         show evidence and model usage",
+    "  /cp-export, /export        write a redacted transcript and manifest",
+    "  /sign                      sign the current settled run",
+    "  /new                       show how to start a new product session",
+    "",
+    "Local capabilities",
+    "  /skills, /mcp, /plugins    list installed capabilities",
+    "  /capabilities              summarize skills, MCP servers, and plugins",
+    "  /remember, /memory         write, search, archive, or delete memory",
+    "  /doctor, /policy           run diagnostics or print effective policy",
+    "  /compact                   ask Pi to compact the current context",
+    "  /help                      show this command list",
+    "  /quit                      exit",
+    "",
+    "Pi commands that would bypass the Codepunk session, evidence, or redaction boundary are intercepted with guidance.",
+  ].join("\n");
+}
+
+const APPROVAL_CHOICES: ReadonlyArray<{
+  label: string;
+  decision: "allow" | "deny";
+  scope: ApprovalScope;
+  guidance?: boolean;
+}> = [
+  { label: "Allow once", decision: "allow", scope: "once" },
+  {
+    label: "Allow this exact command for the session",
+    decision: "allow",
+    scope: "session",
+  },
+  {
+    label: "Always allow this exact command",
+    decision: "allow",
+    scope: "persistent",
+  },
+  { label: "Deny", decision: "deny", scope: "once" },
+  {
+    label: "Deny with guidance for the model",
+    decision: "deny",
+    scope: "once",
+    guidance: true,
+  },
+];
+
+const INTERCEPTED_PI_COMMANDS = new Set([
+  "settings",
+  "scoped-models",
+  "import",
+  "share",
+  "bug",
+  "reload",
+  "fork",
+  "clone",
+  "tree",
+  "resume",
+  "new",
+]);
+
+export function filterInterceptedAutocomplete<T extends { value: string }>(
+  items: readonly T[],
+): T[] {
+  return items.filter((item) => !INTERCEPTED_PI_COMMANDS.has(item.value));
+}
+
+const PERSIST_APPROVAL = "Save exact rule and allow";
+const PERSIST_BACK = "Back";
+
+function persistentApprovalPreview(request: ApprovalRequest): string {
+  const argv =
+    request.argv === undefined || request.argv.length === 0
+      ? "(missing; persistent approval is unavailable)"
+      : JSON.stringify(request.argv);
+  return [
+    "Persistent rule preview",
+    "This choice writes a scoped rule for later sessions.",
+    `tool: ${request.tool ?? "(unknown)"}`,
+    `exact argv: ${argv}`,
+    `cwd: ${request.cwd ?? "(missing)"}`,
+    "match: identical argv only, from this exact cwd",
+    "storage: user scoped-rule file; inspect it with /permissions rules",
+    "next session: autonomy switches to scoped so this exact rule can apply",
+    "",
+    "Save this exact rule?",
+  ].join("\n");
+}
+
+export function currentShellStatus(
+  runtime: Pick<CodepunkRuntime, "sandbox">,
+): "srt" | "explicit-unsandboxed" | "disabled" {
+  if (runtime.sandbox?.sandboxed === true) {
+    return "srt";
+  }
+  return runtime.sandbox === null ? "disabled" : "explicit-unsandboxed";
+}
+
+function permissionSummary(runtime: CodepunkRuntime): string {
+  const shell = currentShellStatus(runtime);
+  const approval = {
+    ask: "ask before actions outside safe read-only classes",
+    deny: "deny actions that would otherwise ask",
+    auto: "auto-approve routine and ordinary shell actions; destructive, explicit-policy, protected, sensitive, and MCP actions still ask",
+    allow: "auto-approve sandbox-covered asks; MCP calls still require a human",
+  }[runtime.config.approval.mode];
+  const profile = permissionProfileFor(runtime.config);
+  return [
+    "Permissions",
+    `profile: ${profile}`,
+    `workspace trust: ${runtime.workspaceTrust.trusted ? "trusted" : "untrusted"} (${runtime.workspaceTrust.source})`,
+    `trust root: ${runtime.workspaceTrust.root}`,
+    `approvals: ${runtime.config.approval.mode} (${approval})`,
+    ...(runtime.config.approval.reviewer === "off"
+      ? []
+      : [
+          `approval reviewer: ${runtime.config.approval.reviewer} (${runtime.config.approval.reviewer_model ?? "session model"}, ${runtime.config.approval.reviewer_timeout_ms} ms)`,
+        ]),
+    `autonomy: ${runtime.autonomy.profile}`,
+    `behavior: ${permissionBehaviorSummary(runtime.config)}`,
+    `current shell: ${shell}`,
+    `next session sandbox: ${runtime.config.sandbox.mode}`,
+    `next session network: ${
+      runtime.config.sandbox.network_allow.length === 0
+        ? "deny by default"
+        : runtime.config.sandbox.network_allow.join(", ")
+    }`,
+    ...(runtime.config.sandbox.network_deny.length === 0
+      ? []
+      : [
+          `next session network deny: ${runtime.config.sandbox.network_deny.join(", ")}`,
+        ]),
+    `next session filesystem: ${runtime.config.filesystem.mode}`,
+    ...(runtime.paths.additionalRoots.length === 0
+      ? []
+      : [`extra file roots: ${runtime.paths.additionalRoots.join(", ")}`]),
+    "safe reads: date, identity, and workspace inspection run without approval",
+    `config: ${runtime.paths.home}/config.toml`,
+    "",
+    "Profiles: read-only · standard · auto · auto-approve · full-access · custom",
+    "",
+    permissionUsage(),
+  ].join("\n");
+}
+
+function sessionSummary(runtime: CodepunkRuntime): string {
+  const model = runtime.host.session.model;
+  const usage = runtime.host.session.getContextUsage();
+  return [
+    `session: ${runtime.session.sessionId}`,
+    `model: ${model === undefined ? "not selected" : `${model.provider}/${model.id}`}`,
+    `thinking: ${runtime.host.session.thinkingLevel}`,
+    `context: ${
+      usage === undefined || usage.tokens === null
+        ? "unknown"
+        : `${usage.tokens}/${usage.contextWindow} tokens${
+            usage.percent === null ? "" : ` (${usage.percent.toFixed(1)}%)`
+          }`
+    }`,
+    `run: ${runtime.host.currentRunId}`,
+    `evidence: ${evidenceCount(runtime)} record(s)`,
+    `sessions: ${runtime.paths.sessionsDir}`,
+  ].join("\n");
+}
+
+async function scopedRulesSummary(runtime: CodepunkRuntime): Promise<string> {
+  const filePath = runtime.config.autonomy.scoped_rules;
+  if (filePath === null) {
+    return [
+      "Scoped rules: none.",
+      'Approval choices that say "Always allow this exact command" write here.',
+    ].join("\n");
+  }
+  try {
+    const loaded = await loadScopedRules(filePath, runtime.paths);
+    return [
+      `Scoped rules: ${loaded.rules.length} (profile ${runtime.autonomy.profile})`,
+      `file: ${loaded.path}`,
+      ...loaded.rules.map((rule) => `  ${rule.id}: ${rule.argv.join(" ")}`),
+    ].join("\n");
+  } catch (error) {
+    return `Scoped rules could not be read: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+async function explainCommandPolicy(
+  runtime: CodepunkRuntime,
+  command: string,
+): Promise<string> {
+  const decision = decidePolicy({
+    tool: "bash",
+    command,
+    cwd: runtime.paths.cwd,
+    workspaceRoot: runtime.paths.deliveryRoot,
+    additionalRoots: runtime.paths.additionalRoots,
+    deliveryRoot: runtime.paths.deliveryRoot,
+    codepunkHome: runtime.paths.home,
+    autonomy: runtime.autonomy.profile,
+    filesystem: runtime.permissionSnapshot.filesystem,
+    writeSet: [
+      ...new Set([
+        ...(runtime.policy.writeSet.length > 0
+          ? runtime.policy.writeSet
+          : [runtime.paths.cwd]),
+        ...runtime.paths.additionalRoots,
+      ]),
+    ],
+    userRules: runtime.policy.userRules,
+    projectRules: runtime.policy.projectRules,
+    layers: runtime.policy.layers,
+  });
+  return formatPermissionExplanation(
+    await explainPermission({
+      policy: decision,
+      autonomy: runtime.autonomy,
+      approvalMode: runtime.config.approval.mode,
+      tool: "bash",
+      command,
+      cwd: runtime.paths.cwd,
+      networkAllow: runtime.permissionSnapshot.networkAllow,
+      networkDeny: runtime.permissionSnapshot.networkDeny,
+      execution:
+        runtime.sandbox === null
+          ? {
+              status: "blocked",
+              reason: "shell is disabled for this session",
+            }
+          : { status: "available", reason: null },
+    }),
+  );
+}
+
+async function configurePermissions(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  if (argument.length === 0) {
+    context.ui.notify(permissionSummary(runtime), "info");
+    return;
+  }
+  const trimmed = argument.trim();
+  if (trimmed === "rules") {
+    context.ui.notify(await scopedRulesSummary(runtime), "info");
+    return;
+  }
+  if (trimmed === "why" || trimmed.startsWith("why ")) {
+    const command = parsePermissionWhyCommand(trimmed);
+    if (command === null) {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    context.ui.notify(await explainCommandPolicy(runtime, command), "info");
+    return;
+  }
+  const [group, value, ...rest] = trimmed.split(/\s+/u);
+  if (group === "sandbox" && value === "network") {
+    const formatNetwork = (): string =>
+      [
+        `network allow: ${
+          runtime.config.sandbox.network_allow.length === 0
+            ? "none (deny by default)"
+            : runtime.config.sandbox.network_allow.join(", ")
+        }`,
+        `network deny: ${
+          runtime.config.sandbox.network_deny.length === 0
+            ? "none"
+            : runtime.config.sandbox.network_deny.join(", ")
+        }`,
+      ].join("\n");
+    if (rest.length === 0 || (rest.length === 1 && rest[0] === "show")) {
+      context.ui.notify(formatNetwork(), "info");
+      return;
+    }
+    if (rest[0] === "clear") {
+      const which = rest[1];
+      if (which !== undefined && which !== "allow" && which !== "deny") {
+        context.ui.notify(
+          "usage: /permissions sandbox network clear [allow|deny]",
+          "warning",
+        );
+        return;
+      }
+      try {
+        await writeUserPermissionSelection(runtime.paths, {
+          ...(which === undefined || which === "allow"
+            ? { networkAllow: [] }
+            : {}),
+          ...(which === undefined || which === "deny"
+            ? { networkDeny: [] }
+            : {}),
+        });
+      } catch (error) {
+        context.ui.notify(
+          `network lists were not saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return;
+      }
+      if (which === undefined || which === "allow") {
+        runtime.config.sandbox.network_allow = [];
+      }
+      if (which === undefined || which === "deny") {
+        runtime.config.sandbox.network_deny = [];
+      }
+      context.ui.notify(
+        `${formatNetwork()}\napplies to the next session`,
+        "info",
+      );
+      return;
+    }
+    const list = rest[0] === "allow" || rest[0] === "deny" ? rest[0] : "allow";
+    const requested =
+      rest[0] === "allow" || rest[0] === "deny" ? rest.slice(1) : rest;
+    if (requested.length === 0) {
+      context.ui.notify(
+        `usage: /permissions sandbox network ${list} <domain>...`,
+        "warning",
+      );
+      return;
+    }
+    let normalized: string[];
+    try {
+      normalized =
+        list === "allow"
+          ? normalizeNetworkAllow(requested)
+          : normalizeNetworkDeny(requested);
+    } catch (error) {
+      context.ui.notify(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
+      return;
+    }
+    const other =
+      list === "allow"
+        ? runtime.config.sandbox.network_deny
+        : runtime.config.sandbox.network_allow;
+    const overlap = normalized.filter((entry) => other.includes(entry));
+    if (overlap.length > 0) {
+      context.ui.notify(
+        `sandbox.network_deny also lists ${overlap.join(", ")}; clear the other list first`,
+        "error",
+      );
+      return;
+    }
+    try {
+      await writeUserPermissionSelection(
+        runtime.paths,
+        list === "allow"
+          ? { networkAllow: normalized }
+          : { networkDeny: normalized },
+      );
+    } catch (error) {
+      context.ui.notify(
+        `network list was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    if (list === "allow") {
+      runtime.config.sandbox.network_allow = normalized;
+    } else {
+      runtime.config.sandbox.network_deny = normalized;
+    }
+    context.ui.notify(
+      `${formatNetwork()}\napplies to the next session; each network command still needs its own approval`,
+      "info",
+    );
+    return;
+  }
+  if (group === "reviewer") {
+    const formatReviewer = (): string =>
+      [
+        `reviewer: ${runtime.config.approval.reviewer}`,
+        `reviewer model: ${runtime.config.approval.reviewer_model ?? "session model"}`,
+        `reviewer timeout: ${runtime.config.approval.reviewer_timeout_ms} ms`,
+        "scope: network commands and headless argv exec only; other asks stay human",
+        "failure: ask a human interactively; deny when no channel is available",
+      ].join("\n");
+    const action = value ?? "show";
+    if (action === "show") {
+      context.ui.notify(formatReviewer(), "info");
+      return;
+    }
+    if (action === "off") {
+      try {
+        await writeUserPermissionSelection(runtime.paths, { reviewer: "off" });
+      } catch (error) {
+        context.ui.notify(
+          `reviewer was not saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return;
+      }
+      runtime.config.approval.reviewer = "off";
+      runtime.config.approval.reviewer_model = null;
+      context.ui.notify(
+        `${formatReviewer()}\napplies to the next session`,
+        "info",
+      );
+      return;
+    }
+    if (action === "timeout") {
+      const timeout = Number(rest[0]);
+      if (
+        rest[0] === undefined ||
+        !Number.isSafeInteger(timeout) ||
+        timeout < 1_000
+      ) {
+        context.ui.notify(
+          "usage: /permissions reviewer timeout <ms at least 1000>",
+          "warning",
+        );
+        return;
+      }
+      try {
+        await writeUserPermissionSelection(runtime.paths, {
+          reviewerTimeoutMs: timeout,
+        });
+      } catch (error) {
+        context.ui.notify(
+          `reviewer timeout was not saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return;
+      }
+      runtime.config.approval.reviewer_timeout_ms = timeout;
+      context.ui.notify(
+        `${formatReviewer()}\napplies to the next session`,
+        "info",
+      );
+      return;
+    }
+    if (action !== "model") {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    const model = rest[0];
+    if (model !== undefined && (!model.includes("/") || /\s/u.test(model))) {
+      context.ui.notify(
+        "usage: /permissions reviewer model [provider/model]",
+        "warning",
+      );
+      return;
+    }
+    try {
+      await writeUserPermissionSelection(runtime.paths, {
+        reviewer: "model",
+        ...(model === undefined ? {} : { reviewerModel: model }),
+      });
+    } catch (error) {
+      context.ui.notify(
+        `reviewer was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    runtime.config.approval.reviewer = "model";
+    if (model !== undefined) {
+      runtime.config.approval.reviewer_model = model;
+    }
+    context.ui.notify(
+      [
+        formatReviewer(),
+        runtime.config.approval.mode === "auto"
+          ? "applies to the next session"
+          : "inactive until approval.mode is auto; use /permissions approval auto",
+      ].join("\n"),
+      "info",
+    );
+    return;
+  }
+  if (group === undefined || value === undefined || rest.length > 0) {
+    context.ui.notify(permissionUsage(), "warning");
+    return;
+  }
+  if (group === "profile") {
+    if (!isPermissionProfile(value)) {
+      if (value === "trusted") {
+        context.ui.notify(
+          [
+            "permission profile trusted was removed because it collides with workspace trust.",
+            "Use /permissions profile auto-approve for blanket approval.",
+            "Use /trust grant to trust this workspace's project config, policy, and skills.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    const profile = value as PermissionProfile;
+    if (profile === "full-access") {
+      context.ui.notify(
+        [
+          "full-access cannot be enabled from a running session.",
+          "Exit and restart with:",
+          "  codepunk --permission-mode full-access --dangerously-bypass-approvals-and-sandbox",
+          "Or persist it with `codepunk permissions profile full-access` and start the next session with the dangerous flag.",
+        ].join("\n"),
+        "warning",
+      );
+      return;
+    }
+    const settings = PERMISSION_PROFILES[profile];
+    const previousApproval = runtime.config.approval.mode;
+    const previousAutonomy = runtime.autonomy.profile;
+    runtime.setApprovalMode(settings.approval);
+    try {
+      await setAutonomyProfile(runtime, settings.autonomy);
+    } catch (error) {
+      runtime.setApprovalMode(previousApproval);
+      context.ui.notify(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
+      return;
+    }
+    try {
+      await writeUserPermissionProfile(runtime.paths, profile);
+    } catch (error) {
+      runtime.setApprovalMode(previousApproval);
+      await setAutonomyProfile(runtime, previousAutonomy);
+      context.ui.notify(
+        `permission was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    runtime.config.sandbox.mode = settings.sandbox;
+    runtime.config.filesystem.mode = settings.filesystem;
+    runtime.config.approval.mode = settings.approval;
+    runtime.config.autonomy.profile = settings.autonomy;
+    context.ui.notify(
+      [
+        `permission profile set to ${profile}`,
+        `approvals ${settings.approval} · autonomy ${settings.autonomy} · sandbox ${settings.sandbox} · filesystem ${settings.filesystem}`,
+        "approvals and autonomy apply to this session; sandbox and filesystem apply to the next session",
+        settings.sandbox === "required"
+          ? "next session requests srt; run codepunk doctor if the sandbox is unavailable"
+          : "next session has no shell unless started with --allow-unsandboxed-shell; executions are recorded as uncovered",
+        `config: ${runtime.paths.home}/config.toml`,
+      ].join("\n"),
+      "info",
+    );
+  } else if (group === "approval") {
+    if (!(APPROVAL_MODE_NAMES as readonly string[]).includes(value)) {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    const previous = runtime.config.approval.mode;
+    runtime.setApprovalMode(value as (typeof APPROVAL_MODE_NAMES)[number]);
+    try {
+      await writeUserPermissionSelection(runtime.paths, {
+        approval: value as (typeof APPROVAL_MODE_NAMES)[number],
+      });
+    } catch (error) {
+      runtime.setApprovalMode(previous);
+      context.ui.notify(
+        `permission was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    context.ui.notify(
+      `approvals set to ${value}\nconfig: ${runtime.paths.home}/config.toml`,
+      "info",
+    );
+  } else if (group === "autonomy") {
+    if (!(AUTONOMY_PROFILES as readonly string[]).includes(value)) {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    const previous = runtime.autonomy.profile;
+    try {
+      await setAutonomyProfile(
+        runtime,
+        value as (typeof AUTONOMY_PROFILES)[number],
+      );
+    } catch (error) {
+      context.ui.notify(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
+      return;
+    }
+    try {
+      await writeUserPermissionSelection(runtime.paths, {
+        autonomy: value as (typeof AUTONOMY_PROFILES)[number],
+      });
+    } catch (error) {
+      await setAutonomyProfile(runtime, previous);
+      context.ui.notify(
+        `permission was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    runtime.config.autonomy.profile =
+      value as (typeof AUTONOMY_PROFILES)[number];
+    context.ui.notify(
+      `autonomy set to ${value}\nconfig: ${runtime.paths.home}/config.toml`,
+      "info",
+    );
+  } else if (group === "sandbox") {
+    if (!(SANDBOX_MODES as readonly string[]).includes(value)) {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    try {
+      await writeUserPermissionSelection(runtime.paths, {
+        sandbox: value as (typeof SANDBOX_MODES)[number],
+      });
+    } catch (error) {
+      context.ui.notify(
+        `permission was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    runtime.config.sandbox.mode = value as (typeof SANDBOX_MODES)[number];
+    context.ui.notify(
+      [
+        `sandbox set to ${value} for the next session`,
+        `current session: ${runtime.sandbox?.sandboxed === true ? "srt" : runtime.sandbox === null ? "no shell" : "explicit unsandboxed shell"}`,
+        value === "required"
+          ? "next session requests srt; run codepunk doctor if the sandbox is unavailable"
+          : "next session has no shell unless started with --allow-unsandboxed-shell; executions are recorded as uncovered",
+      ].join("\n"),
+      "warning",
+    );
+  } else if (group === "filesystem") {
+    if (!(FILESYSTEM_MODES as readonly string[]).includes(value)) {
+      context.ui.notify(permissionUsage(), "warning");
+      return;
+    }
+    try {
+      await writeUserPermissionSelection(runtime.paths, {
+        filesystem: value as FilesystemMode,
+      });
+    } catch (error) {
+      context.ui.notify(
+        `permission was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    runtime.config.filesystem.mode = value as FilesystemMode;
+    context.ui.notify(
+      [
+        `filesystem set to ${value} for the next session`,
+        value === "full"
+          ? "next session removes the workspace boundary; start it with --dangerously-bypass-approvals-and-sandbox"
+          : "next session is confined to the workspace and write set",
+      ].join("\n"),
+      "warning",
+    );
+  } else {
+    context.ui.notify(permissionUsage(), "warning");
+    return;
+  }
+  if (state.context !== null) {
+    setupChrome(state, state.context);
+  }
+}
+
+async function configureTrust(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const tokens = argument.split(/\s+/u).filter(Boolean);
+  if (tokens.length > 1) {
+    context.ui.notify("usage: /trust [status|grant|revoke]", "warning");
+    return;
+  }
+  const action = tokens[0] ?? "status";
+  if (action === "grant" || action === "revoke") {
+    try {
+      const store = await saveWorkspaceTrust(
+        runtime.paths.home,
+        runtime.workspaceTrust.root,
+        action === "grant",
+      );
+      context.ui.notify(
+        [
+          `workspace trust saved as ${action === "grant" ? "trusted" : "untrusted"}`,
+          `root: ${runtime.workspaceTrust.root}`,
+          `store: ${store}`,
+          "the current session is unchanged; restart codepunk to load or skip project resources",
+        ].join("\n"),
+        action === "grant" ? "info" : "warning",
+      );
+    } catch (error) {
+      context.ui.notify(
+        `workspace trust was not saved: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+    }
+    return;
+  }
+  if (action !== "status") {
+    context.ui.notify("usage: /trust [status|grant|revoke]", "warning");
+    return;
+  }
+  let saved = "none";
+  try {
+    const entry = readSavedWorkspaceTrust(
+      runtime.paths.home,
+      runtime.workspaceTrust.root,
+    );
+    if (entry !== null) {
+      saved = `${entry.decision ? "trusted" : "untrusted"} (${entry.path})`;
+    }
+  } catch (error) {
+    saved = `unreadable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  context.ui.notify(
+    [
+      formatWorkspaceTrust(
+        runtime.workspaceTrust,
+        await previewWorkspaceTrustResources(
+          runtime.workspaceTrust.root,
+          runtime.workspaceTrust.cwd,
+          {
+            includeSkills: !runtime.isolation.skills,
+            includeInstructions: !runtime.isolation.context,
+          },
+        ),
+        {
+          excluded: [
+            runtime.isolation.context ? "instruction files (--bare)" : null,
+            runtime.isolation.skills
+              ? "project skills (--no-skills or --bare)"
+              : null,
+          ].filter((entry): entry is string => entry !== null),
+        },
+      ),
+      `saved decision: ${saved}`,
+      "Use /trust grant or /trust revoke to change future sessions.",
+    ].join("\n"),
+    "info",
+  );
+}
+
+async function setAutonomyProfile(
+  runtime: CodepunkRuntime,
+  profile: "read-only" | "ask" | "scoped",
+): Promise<void> {
+  if (profile === "read-only") {
+    const issue = readOnlyLiveSwitchIssue({
+      pluginsEnabled: runtime.plugins.enabled,
+      mcpServers: runtime.mcpServers,
+      sandboxStartedWritable:
+        runtime.sandbox?.sandboxed === true &&
+        !runtime.permissionSnapshot.readOnly,
+    });
+    if (issue !== null) {
+      throw new Error(issue);
+    }
+  } else {
+    const issue = readOnlyLiveWidenIssue({
+      target: profile,
+      sandboxStartedReadOnly:
+        runtime.sandbox?.sandboxed === true &&
+        runtime.permissionSnapshot.readOnly,
+    });
+    if (issue !== null) {
+      throw new Error(issue);
+    }
+  }
+  if (profile !== "scoped") {
+    runtime.autonomy.setProfile(profile);
+    return;
+  }
+  const filePath = runtime.config.autonomy.scoped_rules;
+  if (filePath !== null && filePath.length > 0) {
+    const loaded = await loadScopedRules(filePath, runtime.paths);
+    runtime.autonomy.replaceRules(
+      loaded.rules,
+      autonomyRulesHash(loaded.rules),
+    );
+  }
+  runtime.autonomy.setProfile("scoped");
+}
+
+export class TuiApprovalChannel implements ApprovalChannel {
+  readonly id = "codepunk-tui";
+  readonly kind = "tui" as const;
+  readonly isTTY: boolean;
+  private context: ExtensionContext | null = null;
+  private persist: ((request: ApprovalRequest) => Promise<boolean>) | null =
+    null;
+
+  constructor(isTTY = process.stdin.isTTY === true) {
+    this.isTTY = isTTY;
+  }
+
+  attach(context: ExtensionContext): void {
+    this.context = context;
+  }
+
+  setPersistHandler(
+    handler: (request: ApprovalRequest) => Promise<boolean>,
+  ): void {
+    this.persist = handler;
+  }
+
+  async ask(request: ApprovalRequest): Promise<ApprovalAnswer | null> {
+    if (!this.isTTY || this.context === null) {
+      return null;
+    }
+    const canReuseExact =
+      request.argv !== undefined &&
+      request.argv.length > 0 &&
+      request.cwd !== undefined;
+    const choices = APPROVAL_CHOICES.filter(
+      (choice) => choice.scope === "once" || canReuseExact,
+    );
+    const options = choices.map((choice) => choice.label);
+    while (true) {
+      const selected = await this.context.ui.select(
+        formatApproval(request),
+        options,
+      );
+      const choice = choices.find((candidate) => candidate.label === selected);
+      if (choice === undefined || choice.decision === "deny") {
+        const guidance =
+          choice?.guidance === true
+            ? (
+                await this.context.ui.input(
+                  "Denial guidance (optional)",
+                  "Tell the model what to do instead",
+                )
+              )?.trim()
+            : undefined;
+        return this.answer(
+          request,
+          "deny",
+          "once",
+          guidance === undefined || guidance.length === 0
+            ? undefined
+            : guidance,
+        );
+      }
+      if (choice.scope === "persistent") {
+        const confirmed = await this.context.ui.select(
+          persistentApprovalPreview(request),
+          [PERSIST_APPROVAL, PERSIST_BACK],
+        );
+        if (confirmed === PERSIST_BACK) {
+          continue;
+        }
+        if (confirmed !== PERSIST_APPROVAL) {
+          return this.answer(request, "deny", "once");
+        }
+        const stored = await this.persist?.(request);
+        if (stored !== true) {
+          this.context.ui.notify(
+            "the exact rule was not stored; allowing this call only",
+            "warning",
+          );
+          return this.answer(request, "allow", "once");
+        }
+      }
+      return this.answer(request, "allow", choice.scope);
+    }
+  }
+
+  private answer(
+    request: ApprovalRequest,
+    decision: "allow" | "deny",
+    scope: ApprovalScope,
+    guidance?: string,
+  ): ApprovalAnswer {
+    return {
+      request_id: request.request_id,
+      answer: decision,
+      scope,
+      ...(guidance === undefined ? {} : { guidance }),
+      channel: this.kind,
+      channel_id: request.channel_id,
+      nonce_sha256: request.nonce_sha256,
+      worker_id: request.worker_id,
+      session_id: request.session_id,
+      tool_call_id: request.tool_call_id,
+      answered_at: new Date().toISOString(),
+    };
+  }
+}
+
+class InterceptingEditor extends CustomEditor {
+  private readonly intercept: (text: string) => Promise<boolean> | boolean;
+
+  constructor(
+    tui: unknown,
+    theme: unknown,
+    keybindings: unknown,
+    intercept: (text: string) => Promise<boolean> | boolean,
+  ) {
+    super(tui as never, theme as never, keybindings as never);
+    this.intercept = intercept;
+    let assigned: ((text: string) => Promise<void> | void) | undefined;
+    Object.defineProperty(this, "onSubmit", {
+      configurable: true,
+      get:
+        () =>
+        async (text: string): Promise<void> => {
+          if (await this.intercept(text)) {
+            this.setText("");
+            return;
+          }
+          await assigned?.(text);
+        },
+      set: (handler: ((text: string) => Promise<void> | void) | undefined) => {
+        assigned = handler;
+      },
+    });
+  }
+}
+
+class EditorBridge extends InterceptingEditor {
+  constructor(
+    tui: unknown,
+    theme: unknown,
+    keybindings: unknown,
+    intercept: (text: string) => Promise<boolean> | boolean,
+  ) {
+    super(tui, theme, keybindings, intercept);
+  }
+}
+
+function evidenceCount(runtime: CodepunkRuntime): number {
+  return runtime.ledger.all.length;
+}
+
+function isUnknownModel(
+  model: { provider: string; id: string } | undefined,
+): boolean {
+  return (
+    model !== undefined &&
+    model.provider === "unknown" &&
+    model.id === "unknown"
+  );
+}
+
+function selectedModel(
+  runtime: CodepunkRuntime,
+): CodepunkRuntime["host"]["session"]["model"] | undefined {
+  const model = runtime.host.session.model;
+  return isUnknownModel(model) ? undefined : model;
+}
+
+function lastRoutedModel(runtime: CodepunkRuntime): string | undefined {
+  for (
+    let index = runtime.host.session.messages.length - 1;
+    index >= 0;
+    index--
+  ) {
+    const message = runtime.host.session.messages[index]!;
+    if (
+      message.role === "assistant" &&
+      message.stopReason !== "error" &&
+      message.stopReason !== "aborted"
+    ) {
+      return `${message.provider}/${message.model}`;
+    }
+  }
+  return undefined;
+}
+
+function physicalModel(
+  runtime: CodepunkRuntime,
+): CodepunkRuntime["host"]["session"]["model"] | undefined {
+  if (!isUnknownModel(runtime.primaryModel)) {
+    return runtime.primaryModel;
+  }
+  const selected = selectedModel(runtime);
+  return selected !== undefined && !isFallbackModel(selected)
+    ? selected
+    : undefined;
+}
+
+function modelStatus(runtime: CodepunkRuntime): string {
+  const selected = selectedModel(runtime);
+  if (selected === undefined) {
+    return `codepunk · ${runtime.config.model.provider ?? "auto"}/${runtime.config.model.id ?? "auto"}`;
+  }
+  if (isFallbackModel(selected)) {
+    const primary = physicalModel(runtime);
+    const primaryReference =
+      primary === undefined ? "unrouted" : `${primary.provider}/${primary.id}`;
+    const routed = lastRoutedModel(runtime);
+    return `codepunk · auto -> ${primaryReference}${
+      routed !== undefined && routed !== primaryReference
+        ? ` (last ${routed})`
+        : ""
+    }`;
+  }
+  return `codepunk · ${selected.provider}/${selected.id}`;
+}
+
+function renderStatus(state: TuiState): string {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return "codepunk · starting";
+  }
+  const profile = permissionProfileFor(runtime.config);
+  const usage = runtime.usage();
+  const tokenLimit =
+    runtime.config.budget.max_tokens === null
+      ? null
+      : runtime.config.budget.max_tokens;
+  return [
+    modelStatus(runtime),
+    `project ${runtime.paths.projectId} · session ${runtime.session.sessionId.slice(0, 12)}`,
+    `permissions ${profile} · trust ${runtime.workspaceTrust.trusted ? "trusted" : "untrusted"} · shell ${currentShellStatus(runtime)} · next sandbox ${runtime.config.sandbox.mode} · fs ${runtime.config.filesystem.mode} · evidence ${evidenceCount(runtime)} · tokens ${usage.total_tokens}${tokenLimit === null ? "" : `/${tokenLimit}`}`,
+  ].join("\n");
+}
+
+export function modelOnboardingMessage(
+  runtime: CodepunkRuntime,
+): string | undefined {
+  const active = physicalModel(runtime);
+  const configuredProvider = runtime.config.model.provider;
+  const configuredId = runtime.config.model.id;
+  if (active === undefined) {
+    const configured =
+      configuredProvider === null || configuredId === null
+        ? null
+        : `${configuredProvider}/${configuredId}`;
+    return [
+      configured === null
+        ? "No model configured."
+        : `Configured model ${configured} is not active.`,
+      "Choose one with /model (type to search, Ctrl+S saves the default), or add a provider with /login.",
+      "For a custom OpenAI-compatible endpoint:",
+      "  codepunk models import <base-url> --provider <id> --api openai-responses",
+      "  codepunk models set <id>/<model>",
+    ].join("\n");
+  }
+  if (configuredProvider === null || configuredId === null) {
+    return [
+      "No default model configured.",
+      `This session is using ${active.provider}/${active.id} (selected by the Pi host).`,
+      "Run /model and type to search; Ctrl+S saves the highlighted model as default.",
+      "Select an exact model and save it with:",
+      `  /model ${active.provider}/${active.id}`,
+    ].join("\n");
+  }
+  return undefined;
+}
+
+function noAuthenticatedModelsMessage(): string {
+  return [
+    "No authenticated models. Add a provider, then choose a model with /model.",
+    "Use /login for a built-in provider, or import an OpenAI-compatible endpoint:",
+    "  codepunk models import <base-url> --provider <id> --api openai-responses",
+    "  codepunk models set <id>/<model>",
+  ].join("\n");
+}
+
+async function availableModels(runtime: CodepunkRuntime) {
+  const modelRuntime = runtime.host.services.modelRuntime;
+  const cached = modelRuntime.getAvailableSnapshot();
+  if (cached.length > 0) {
+    return [...cached];
+  }
+  return modelRuntime.getAvailable();
+}
+
+async function selectModelReference(
+  state: TuiState,
+  context: ExtensionContext,
+  reference: string,
+): Promise<boolean> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return true;
+  }
+  if (reference.length === 0) {
+    context.ui.notify(
+      "usage: /model <provider/model>; omit the argument to search interactively",
+      "warning",
+    );
+    return true;
+  }
+  const modelRuntime = runtime.host.services.modelRuntime;
+  const resolution = resolveModelSelection(modelRuntime, reference);
+  if (resolution.status !== "resolved") {
+    context.ui.notify(resolution.error, "warning");
+    return true;
+  }
+  const model = resolution.model;
+  try {
+    await resolveConfiguredModel(
+      runtime.paths,
+      {
+        ...runtime.config,
+        model: {
+          ...runtime.config.model,
+          provider: model.provider,
+          id: model.id,
+        },
+      },
+      modelRuntime,
+    );
+    await runtime.host.session.setModel(model);
+    if (resolution.thinkingLevel !== undefined) {
+      runtime.host.session.setThinkingLevel(resolution.thinkingLevel);
+    }
+  } catch (error) {
+    context.ui.notify(
+      `model could not be selected: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+    return true;
+  }
+  runtime.primaryModel = model;
+  try {
+    await setConfiguredModel(
+      runtime.paths,
+      runtime.config,
+      model.provider,
+      model.id,
+      resolution.thinkingLevel,
+    );
+    context.ui.notify(
+      `model set to ${model.provider}/${model.id}\nconfig: ${runtime.paths.home}/config.toml`,
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `model selected for this session; config was not saved: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "warning",
+    );
+  }
+  state.modelSelected = true;
+  setupChrome(state, context);
+  return true;
+}
+
+async function notify(
+  context: ExtensionCommandContext,
+  message: string,
+): Promise<void> {
+  context.ui.notify(message, "info");
+}
+
+async function runSubagent(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  args: string,
+): Promise<void> {
+  if (args.length === 0) {
+    context.ui.notify("usage: /subagent <read-only analysis task>", "warning");
+    return;
+  }
+  if (state.childHostArgv.length === 0) {
+    context.ui.notify(
+      "subagent host is not available in this invocation",
+      "error",
+    );
+    return;
+  }
+  const registry = (state.subagents ??= new Map());
+  const running = [...registry.values()].filter(
+    (record) => record.status === "running",
+  );
+  if (running.length >= 4) {
+    context.ui.notify(
+      "four background subagents are already running; stop one with /agents stop <id>",
+      "warning",
+    );
+    return;
+  }
+  const parentSessionId = runtime.session.sessionId;
+  const parentRunId = runtime.host.currentRunId;
+  const childSessionId = createUlid();
+  const activeModel = physicalModel(runtime);
+  const configuredModel =
+    activeModel !== undefined
+      ? `${activeModel.provider}/${activeModel.id}`
+      : runtime.config.model.provider !== null &&
+          runtime.config.model.id !== null
+        ? `${runtime.config.model.provider}/${runtime.config.model.id}`
+        : undefined;
+  const activeThinking = runtime.host.session.thinkingLevel;
+  const controller = new AbortController();
+  const record: BackgroundSubagent = {
+    childSessionId,
+    prompt: args,
+    startedAt: Date.now(),
+    status: "running",
+    result: null,
+    error: null,
+    controller,
+    promise: Promise.resolve(),
+  };
+  registry.set(childSessionId, record);
+  updateSubagentStatus(state);
+  context.ui.notify(
+    [
+      `subagent started: ${childSessionId}`,
+      "mode: read-only child Pi session",
+      `model: ${configuredModel ?? "inherited"}`,
+      "background: use /agents, /agents result <id>, or /agents stop <id>",
+    ].join("\n"),
+    "info",
+  );
+  record.promise = (async () => {
+    let stopped = false;
+    try {
+      record.result = await runReadOnlySubagent({
+        hostArgv: state.childHostArgv,
+        cwd: runtime.paths.cwd,
+        ...(runtime.paths.additionalRoots.length === 0
+          ? {}
+          : { additionalDirs: runtime.paths.additionalRoots }),
+        parentSessionId,
+        childSessionId,
+        prompt: args,
+        ...(runtime.workspaceTrust.source === "saved" ||
+        runtime.workspaceTrust.source === "no-resources"
+          ? {}
+          : {
+              workspaceTrustOverride: runtime.workspaceTrust.trusted
+                ? ("trust" as const)
+                : ("no-trust" as const),
+            }),
+        ...(configuredModel !== undefined ? { model: configuredModel } : {}),
+        thinking: activeThinking,
+        bare: runtime.isolation.bare,
+        noSkills: runtime.isolation.skills,
+        noPlugins: runtime.isolation.plugins,
+        noMcp: runtime.isolation.mcp,
+        signal: controller.signal,
+      });
+      record.status = "completed";
+    } catch (error) {
+      record.error = error instanceof Error ? error.message : String(error);
+      stopped =
+        error instanceof ChildHostError && error.code === "subagent.stopped";
+      record.status = stopped ? "stopped" : "failed";
+    }
+    const eventData = {
+      run_id: parentRunId,
+      parent_session_id: parentSessionId,
+      child_session_id: childSessionId,
+      depth: 1,
+      isolation: "shared" as const,
+      model: record.result?.model ?? configuredModel ?? null,
+      status: record.status,
+      summary: record.result?.summary ?? "",
+      evidence_head: record.result?.evidence_head ?? null,
+      child_run_id: record.result?.child_run_id ?? null,
+      exit_code: record.result?.exit_code ?? null,
+      error: record.error,
+    };
+    try {
+      await runtime.host.recordEvent("subagent/result", eventData);
+    } catch (error) {
+      state.context?.ui.notify(
+        `subagent result could not be recorded: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+    }
+    updateSubagentStatus(state);
+    if (record.status === "completed") {
+      state.context?.ui.notify(
+        `subagent ${childSessionId} completed; use /agents result ${childSessionId}`,
+        "info",
+      );
+    } else {
+      state.context?.ui.notify(
+        `subagent ${childSessionId} ${record.status}${
+          record.error === null ? "" : `: ${record.error}`
+        }`,
+        record.status === "stopped" ? "warning" : "error",
+      );
+    }
+  })();
+}
+
+function formatSubagents(state: TuiState): string {
+  const records = [...(state.subagents?.values() ?? [])];
+  if (records.length === 0) {
+    return "No subagents. Start one with /subagent <read-only task>.";
+  }
+  return records
+    .map((record) => {
+      const elapsed = Math.max(
+        0,
+        Math.floor((Date.now() - record.startedAt) / 1_000),
+      );
+      const prompt = record.prompt.replace(/\s+/gu, " ").slice(0, 100);
+      return `${record.childSessionId}  ${record.status}  ${elapsed}s  ${prompt}`;
+    })
+    .join("\n");
+}
+
+function updateSubagentStatus(state: TuiState): void {
+  if (state.context === null) {
+    return;
+  }
+  const records = [...(state.subagents?.values() ?? [])];
+  const running = records.filter(
+    (record) => record.status === "running",
+  ).length;
+  setRuntimeStatus(
+    state,
+    state.context,
+    "agents",
+    records.length === 0
+      ? "none"
+      : `${running} running / ${records.length} total`,
+  );
+}
+
+async function manageSubagents(
+  state: TuiState,
+  context: ExtensionCommandContext,
+  args: string,
+): Promise<void> {
+  const [action, childSessionId] = args.split(/\s+/u);
+  if (action === undefined || action.length === 0) {
+    context.ui.notify(formatSubagents(state), "info");
+    return;
+  }
+  if (action !== "result" && action !== "wait" && action !== "stop") {
+    context.ui.notify(
+      "usage: /agents [result|wait|stop] <child-session-id>",
+      "warning",
+    );
+    return;
+  }
+  if (childSessionId === undefined) {
+    context.ui.notify("usage: /agents [result|wait|stop] <id>", "warning");
+    return;
+  }
+  const record = state.subagents?.get(childSessionId);
+  if (record === undefined) {
+    context.ui.notify(`subagent ${childSessionId} is not registered`, "error");
+    return;
+  }
+  if (action === "stop") {
+    if (record.status !== "running") {
+      context.ui.notify(
+        `subagent ${childSessionId} is already ${record.status}`,
+        "warning",
+      );
+      return;
+    }
+    record.controller.abort();
+    updateSubagentStatus(state);
+    context.ui.notify(`stopping subagent ${childSessionId}`, "warning");
+    return;
+  }
+  if (action === "wait") {
+    context.ui.notify(`waiting for subagent ${childSessionId}`, "info");
+    await record.promise;
+  }
+  if (record.status === "completed" && record.result !== null) {
+    const summary =
+      record.result.summary.length > 4_000
+        ? `${record.result.summary.slice(0, 4_000)}\n[summary truncated]`
+        : record.result.summary;
+    context.ui.notify(
+      [
+        `subagent ${childSessionId} completed`,
+        `evidence: ${
+          record.result.evidence_head ?? "none (the child made no tool calls)"
+        }`,
+        summary,
+      ].join("\n"),
+      "info",
+    );
+    return;
+  }
+  context.ui.notify(
+    `subagent ${childSessionId} is ${record.status}${
+      record.error === null ? "" : `: ${record.error}`
+    }`,
+    record.status === "failed" ? "error" : "warning",
+  );
+}
+
+function commandContext(
+  state: TuiState,
+  handler: (
+    runtime: CodepunkRuntime,
+    context: ExtensionCommandContext,
+    args: string,
+  ) => Promise<void>,
+): (args: string, context: ExtensionCommandContext) => Promise<void> {
+  return async (args, context) => {
+    state.context = context;
+    state.channel.attach(context);
+    const runtime = state.runtime;
+    if (runtime === null) {
+      context.ui.notify("codepunk runtime is not ready", "error");
+      return;
+    }
+    await handler(runtime, context, args.trim());
+  };
+}
+
+function setupChrome(state: TuiState, context: ExtensionContext): void {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return;
+  }
+  const tui = runtime.config.tui;
+  const title = ["codepunk", `session ${runtime.session.sessionId}`];
+  context.ui.setTitle(title.join(" · "));
+  context.ui.setHeader(
+    () =>
+      component(
+        () => renderStatus(state),
+        () => tui.header,
+      ) as never,
+  );
+  context.ui.setFooter(
+    () =>
+      component(
+        () => `${renderStatus(state)}\n${runtime.paths.cwd}`,
+        () => tui.footer,
+      ) as never,
+  );
+  const statuses: Array<[string, string]> = [
+    [
+      "permissions",
+      `approvals:${runtime.config.approval.mode},autonomy:${runtime.autonomy.profile}`,
+    ],
+    ["thinking", runtime.host.session.thinkingLevel],
+    ["shell", currentShellStatus(runtime)],
+    ["next-sandbox", runtime.config.sandbox.mode],
+    ["evidence", String(evidenceCount(runtime))],
+    ["run", state.lastRunId ?? "ready"],
+  ];
+  for (const [key, value] of statuses) {
+    setRuntimeStatus(state, context, key, value);
+  }
+  if (!tui.widgets) {
+    context.ui.setWidget("codepunk", undefined);
+  }
+  context.ui.setEditorComponent(
+    (tui, theme, keybindings) =>
+      new EditorBridge(tui, theme, keybindings, async (text) => {
+        const trimmed = text.trim();
+        const command = trimmed.split(/\s+/u)[0] ?? "";
+        if (trimmed.startsWith("!")) {
+          if (trimmed === "!" || trimmed === "!!") {
+            context.ui.notify("usage: !<command> or !!<command>", "warning");
+            return true;
+          }
+          context.ui.setStatus("shell", `editor:${command.slice(0, 24)}`);
+          if (runtime.plugins.enabled) {
+            context.ui.notify(
+              "! is disabled while Pi plugins are enabled",
+              "warning",
+            );
+            return true;
+          }
+          // Pi's user_bash handler remains the execution backstop after the
+          // editor has classified and displayed this input.
+          return false;
+        }
+        if (command.startsWith("/skill:")) {
+          const name = command.slice("/skill:".length);
+          const skill = runtime.skills.find((entry) => entry.name === name);
+          if (skill === undefined) {
+            context.ui.notify(`skill ${name} is not loaded`, "warning");
+            return true;
+          }
+          try {
+            const invocation = await readSkillInvocation(skill, {
+              arguments: trimmed.slice(command.length).trim(),
+            });
+            await runtime.host.recordEvent("skill/invoked", {
+              name: invocation.name,
+              scope: invocation.scope,
+              sha256: invocation.sha256,
+              bytes: invocation.bytes,
+            });
+            await runtime.host.session.prompt(invocation.prompt);
+          } catch (error) {
+            context.ui.notify(
+              `skill ${name} could not be invoked: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
+          return true;
+        }
+        if (trimmed === "/resume" || trimmed.startsWith("/resume ")) {
+          const sessions = await listProjectSessions(
+            runtime.paths.home,
+            runtime.paths.projectId,
+          );
+          context.ui.notify(
+            [
+              "Live resume is not implemented in this TUI.",
+              formatSessionList(sessions),
+              "Restart with `codepunk --session <id>` or `codepunk --continue`.",
+            ].join("\n\n"),
+            "info",
+          );
+          return true;
+        }
+        if (trimmed === "/export" || trimmed.startsWith("/export ")) {
+          await runtime.host.session.prompt("/cp-export");
+          return true;
+        }
+        if (trimmed === "/session") {
+          context.ui.notify(sessionSummary(runtime), "info");
+          return true;
+        }
+        if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+          return false;
+        }
+        if (
+          trimmed === "/remember" ||
+          trimmed.startsWith("/remember ") ||
+          trimmed === "/memory" ||
+          trimmed.startsWith("/memory ")
+        ) {
+          return false;
+        }
+        if (trimmed === "/new" || trimmed.startsWith("/new ")) {
+          context.ui.notify(
+            "start a new product session with codepunk --new-session",
+            "info",
+          );
+          return true;
+        }
+        if (trimmed === "/model" || trimmed.startsWith("/model ")) {
+          if (!state.ready) {
+            context.ui.notify(
+              [
+                "The model selector is still starting.",
+                "Wait for the current turn to settle, then use /model <provider/model>.",
+              ].join("\n"),
+              "warning",
+            );
+            return true;
+          }
+          let models: Awaited<ReturnType<typeof availableModels>>;
+          try {
+            models = await availableModels(runtime);
+          } catch (error) {
+            context.ui.notify(
+              `No authenticated models.\n${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "warning",
+            );
+            return true;
+          }
+          if (models.length === 0) {
+            context.ui.notify(noAuthenticatedModelsMessage(), "warning");
+            return true;
+          }
+          const reference = trimmed.slice("/model".length).trim();
+          if (reference.length > 0 && !/\s/u.test(reference)) {
+            const resolution = resolveModelSelection(
+              runtime.host.services.modelRuntime,
+              reference,
+            );
+            if (resolution.status === "resolved") {
+              return selectModelReference(state, context, reference);
+            }
+          }
+          // Pi owns fuzzy search, the selector, and catalog refresh.
+          return false;
+        }
+        if (isSlashCommand(trimmed, "/help")) {
+          context.ui.notify(codepunkHelp(), "info");
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/settings")) {
+          context.ui.notify(
+            [
+              "codepunk settings are file-backed.",
+              `config: ${runtime.paths.home}/config.toml`,
+              "Use /permissions for approval, autonomy, and sandbox; /model for the model.",
+            ].join("\n"),
+            "info",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/scoped-models")) {
+          context.ui.notify(
+            [
+              "Model scope is file-backed in codepunk.",
+              `Set model.enabled in ${runtime.paths.home}/config.toml, for example:`,
+              '  enabled = ["gateway/primary-model", "openai/gpt-5"]',
+              "Pi's selector only changes in-memory host state in this build, so codepunk does not open it.",
+            ].join("\n"),
+            "info",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/trust")) {
+          const argument = trimmed.slice("/trust".length).trim();
+          await configureTrust(state, context, argument);
+          return true;
+        }
+        if (
+          trimmed === "/permissions" ||
+          trimmed.startsWith("/permissions ") ||
+          trimmed === "/permission" ||
+          trimmed.startsWith("/permission ")
+        ) {
+          const slash = trimmed.indexOf(" ");
+          await configurePermissions(
+            state,
+            context,
+            slash < 0 ? "" : trimmed.slice(slash + 1).trim(),
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/import")) {
+          context.ui.notify(
+            [
+              "Pi session import is not supported in codepunk.",
+              "Codepunk sessions keep their own evidence chain; use /cp-sessions or `codepunk --session <id>`.",
+              "For a model endpoint, use `codepunk models import <base-url> --provider <id>` in a shell.",
+            ].join("\n"),
+            "info",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/share")) {
+          context.ui.notify(
+            [
+              "Codepunk does not upload sessions to an external share service.",
+              "Use /cp-export to write a redacted transcript and manifest locally.",
+            ].join("\n"),
+            "info",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/bug")) {
+          context.ui.notify(
+            [
+              "Pi's /bug flow can upload a session transcript to the Pi developers.",
+              "Codepunk keeps session data local; use /cp-export for a redacted transcript.",
+              "Attach that export manually if you need to report a Codepunk defect.",
+            ].join("\n"),
+            "warning",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/reload")) {
+          context.ui.notify(
+            [
+              "Hot reload is not supported in codepunk.",
+              "Restart codepunk to reload config, skills, plugins, MCP servers, and extensions.",
+            ].join("\n"),
+            "warning",
+          );
+          return true;
+        }
+        if (
+          isSlashCommand(trimmed, "/fork") ||
+          isSlashCommand(trimmed, "/clone")
+        ) {
+          context.ui.notify(
+            [
+              `Fork the current session as a new child session: codepunk --fork ${runtime.session.sessionId}`,
+              "The child copies the settled Pi branch and records a session/forked evidence event bound to the parent state.",
+              "A live source session is refused; exit this TUI before forking it.",
+            ].join("\n"),
+            "info",
+          );
+          return true;
+        }
+        if (isSlashCommand(trimmed, "/tree")) {
+          context.ui.notify(
+            [
+              "Moving within a Pi session tree is not exposed; codepunk persists one settled branch per session.",
+              "Use /fork in a shell to create a child session from the current branch.",
+            ].join("\n"),
+            "warning",
+          );
+          return true;
+        }
+        if (trimmed.startsWith("/")) {
+          const commandName = trimmed.slice(1).split(/\s+/u)[0] ?? "";
+          if (!state.hostCommands.has(commandName)) {
+            context.ui.notify(
+              [
+                `Unknown command /${commandName}.`,
+                "Type /help for the available Codepunk and Pi commands.",
+              ].join("\n"),
+              "warning",
+            );
+            return true;
+          }
+        }
+        if (
+          !trimmed.startsWith("/") &&
+          state.runtime !== null &&
+          !state.modelSelected
+        ) {
+          context.ui.notify(
+            modelOnboardingMessage(state.runtime) ??
+              "No model selected. Use /model to choose one.",
+            "warning",
+          );
+          return true;
+        }
+        return false;
+      }),
+  );
+}
+
+export function createTuiExtension(
+  state: TuiState,
+  channel: TuiApprovalChannel,
+): InlineExtension {
+  state.channel = channel;
+  return {
+    name: "codepunk-tui",
+    hidden: true,
+    factory: (pi) => {
+      pi.on("session_start", async (_event, context) => {
+        state.context = context;
+        state.ready = true;
+        state.hostCommands = new Set([
+          ...(await loadPiBuiltinSlashCommands()).map(
+            (command) => command.name,
+          ),
+          ...pi.getCommands().map((command) => command.name),
+        ]);
+        channel.attach(context);
+        context.ui.addAutocompleteProvider((current) => ({
+          ...(current.triggerCharacters === undefined
+            ? {}
+            : { triggerCharacters: current.triggerCharacters }),
+          async getSuggestions(lines, cursorLine, cursorCol, options) {
+            const suggestions = await current.getSuggestions(
+              lines,
+              cursorLine,
+              cursorCol,
+              options,
+            );
+            if (suggestions === null) {
+              return null;
+            }
+            const items = filterInterceptedAutocomplete(suggestions.items);
+            return items.length === 0 ? null : { ...suggestions, items };
+          },
+          applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+            return current.applyCompletion(
+              lines,
+              cursorLine,
+              cursorCol,
+              item,
+              prefix,
+            );
+          },
+          shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+            return (
+              current.shouldTriggerFileCompletion?.(
+                lines,
+                cursorLine,
+                cursorCol,
+              ) ?? false
+            );
+          },
+        }));
+        setupChrome(state, context);
+        if (state.runtime !== null && !state.warningsShown) {
+          state.warningsShown = true;
+          for (const warning of state.runtime.loadedConfig.warnings) {
+            context.ui.notify(`codepunk warning: ${warning}`, "warning");
+          }
+          if (state.runtime.plugins.enabled) {
+            context.ui.notify(
+              "Plugins are trusted in-process code; they can bypass policy, approval, sandbox, and evidence.",
+              "warning",
+            );
+          }
+        }
+      });
+      pi.on("model_select", async (event, context) => {
+        state.modelSelected = true;
+        const runtime = state.runtime;
+        if (runtime === null) {
+          return;
+        }
+        if (isFallbackModel(event.model)) {
+          const primary = physicalModel(runtime);
+          const settings = runtime.host.services.settingsManager;
+          if (
+            primary !== undefined &&
+            settings.getDefaultProvider() === event.model.provider &&
+            settings.getDefaultModel() === event.model.id
+          ) {
+            settings.setDefaultModelAndProvider(primary.provider, primary.id);
+          }
+          context.ui.notify(
+            "codepunk/auto is the active fallback route; choose a physical model to change the default.",
+            "info",
+          );
+          setupChrome(state, context);
+          return;
+        }
+        runtime.primaryModel = event.model;
+        const settings = runtime.host.services.settingsManager;
+        const persistedDefault =
+          settings.getDefaultProvider() === event.model.provider &&
+          settings.getDefaultModel() === event.model.id;
+        if (event.source !== "set" || !persistedDefault) {
+          setupChrome(state, context);
+          return;
+        }
+        const saved = await persistPiDefaultModel(runtime, (message, level) =>
+          context.ui.notify(message, level),
+        );
+        setRuntimeStatus(
+          state,
+          context,
+          "model",
+          saved ? `${event.model.provider}/${event.model.id}` : "not saved",
+        );
+        setupChrome(state, context);
+      });
+      pi.on("thinking_level_select", async (event, context) => {
+        const runtime = state.runtime;
+        if (runtime === null) {
+          return;
+        }
+        runtime.config.model.thinking = event.level;
+        try {
+          await writeUserThinkingSelection(runtime.paths, event.level);
+          setRuntimeStatus(state, context, "thinking", event.level);
+        } catch (error) {
+          context.ui.notify(
+            `thinking changed for this session; config was not saved: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            "warning",
+          );
+        }
+      });
+      pi.on("agent_start", async (_event, context) => {
+        state.lastRunId = state.runtime?.host.currentRunId ?? null;
+        context.ui.setTitle(
+          `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
+        );
+        setRuntimeStatus(state, context, "run", state.lastRunId ?? "running");
+      });
+      pi.on("agent_settled", async (_event, context) => {
+        context.ui.setTitle(
+          `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
+        );
+        state.lastEvidence =
+          state.runtime?.ledger.all.length ?? state.lastEvidence;
+        setRuntimeStatus(
+          state,
+          context,
+          "evidence",
+          String(state.lastEvidence),
+        );
+        setRuntimeStatus(state, context, "run", "settled");
+      });
+      pi.on("session_shutdown", async (event) => {
+        if (event.reason === "quit" && state.runtime !== null) {
+          await persistPiDefaultModel(state.runtime);
+        }
+      });
+      pi.registerCommand("help", {
+        description: "Show the Codepunk command list",
+        handler: commandContext(state, async (_runtime, context) => {
+          await notify(context, codepunkHelp());
+        }),
+      });
+      pi.registerCommand("cp-sessions", {
+        description: "List codepunk sessions",
+        handler: commandContext(state, async (runtime, context) => {
+          const sessions = await listProjectSessions(
+            runtime.paths.home,
+            runtime.paths.projectId,
+          );
+          await notify(context, formatSessionList(sessions));
+        }),
+      });
+      pi.registerCommand("plan", {
+        description: "Show the current plan",
+        handler: commandContext(state, async (runtime, context) => {
+          const work = readWorkState(runtime.session.allEvents);
+          await notify(context, formatPlan(work.plan));
+        }),
+      });
+      pi.registerCommand("todos", {
+        description: "Show the current todo list",
+        handler: commandContext(state, async (runtime, context) => {
+          const work = readWorkState(runtime.session.allEvents);
+          await notify(context, formatTodos(work.todos));
+        }),
+      });
+      pi.registerCommand("evidence", {
+        description: "Show current run evidence count",
+        handler: commandContext(state, async (runtime, context) => {
+          const records = runtime.ledger.all;
+          await notify(
+            context,
+            records.length === 0
+              ? "No evidence in the current run."
+              : `${records.length} evidence record(s); head ${runtime.ledger.head ?? "none"}`,
+          );
+        }),
+      });
+      pi.registerCommand("budget", {
+        description: "Show model token and cost usage against the budget",
+        handler: commandContext(state, async (runtime, context) => {
+          const usage = runtime.usage();
+          const maxTokens = runtime.config.budget.max_tokens;
+          const maxCost = runtime.config.budget.max_cost_usd;
+          await notify(
+            context,
+            [
+              `tokens: ${usage.total_tokens}${maxTokens === null ? "" : ` / ${maxTokens}`}`,
+              `cost: $${usage.cost_total.toFixed(6)}${maxCost === null ? "" : ` / $${maxCost}`}`,
+              `calls: ${usage.calls}`,
+              maxTokens === null && maxCost === null
+                ? "budget: off"
+                : "budget: enforced from recorded model usage; exceeding it aborts the run",
+            ].join("\n"),
+          );
+        }),
+      });
+      pi.registerCommand("doctor", {
+        description: "Run codepunk doctor",
+        handler: commandContext(state, async (runtime, context) => {
+          const report = await runDoctor({
+            paths: runtime.paths,
+            config: runtime.config,
+            pluginEnabled: runtime.plugins.enabled,
+          });
+          await notify(context, formatDoctor(report));
+        }),
+      });
+      pi.registerCommand("policy", {
+        description: "Show effective codepunk policy",
+        handler: commandContext(state, async (runtime, context) => {
+          await notify(
+            context,
+            [
+              ...configSummary(runtime.config, runtime.policy.writeSet),
+              `policy layers: ${runtime.policy.layers.map((layer) => layer.layer).join(", ") || "default"}`,
+              `plugins: ${runtime.plugins.enabled ? "enabled" : "disabled"}`,
+              `isolation: ${
+                [
+                  runtime.isolation.context ? "context" : null,
+                  runtime.isolation.skills ? "skills" : null,
+                  runtime.isolation.plugins ? "plugins" : null,
+                  runtime.isolation.mcp ? "mcp" : null,
+                  runtime.isolation.memory ? "memory" : null,
+                ]
+                  .filter((entry): entry is string => entry !== null)
+                  .join(", ") || "none"
+              }`,
+            ].join("\n"),
+          );
+        }),
+      });
+      pi.registerCommand("capabilities", {
+        description: "List MCP servers, skills, and plugins",
+        handler: commandContext(state, async (runtime, context) => {
+          const snapshot = await collectCapabilities(runtime.paths, {
+            pluginEnabled: runtime.plugins.enabled,
+            skills: runtime.skills,
+            ...(runtime.plugins.paths.length > 0
+              ? { pluginFiles: runtime.plugins.paths }
+              : {}),
+          });
+          await notify(context, formatCapabilities(snapshot));
+        }),
+      });
+      pi.registerCommand("skills", {
+        description: "List loaded skills and management commands",
+        handler: commandContext(state, async (runtime, context) => {
+          const lines = [
+            runtime.isolation.skills
+              ? "Skills (disabled for this session)"
+              : `Skills (${runtime.skills.length})`,
+          ];
+          if (runtime.isolation.skills) {
+            lines.push(
+              "  restart without --no-skills or --bare to load installed skills",
+            );
+            await notify(context, lines.join("\n"));
+            return;
+          }
+          if (runtime.skills.length === 0) {
+            lines.push("  none");
+          } else {
+            for (const skill of runtime.skills) {
+              lines.push(
+                `  ${skill.scope.padEnd(7)} ${skill.name}  ${skill.bytes} B${skill.disable_model_invocation ? `  manual-only (/skill:${skill.name})` : ""}`,
+              );
+              lines.push(`          ${skill.path}`);
+            }
+          }
+          lines.push(
+            "",
+            "add:    codepunk skills add <dir> [--scope user|project]",
+            "remove: codepunk skills remove <name> [--scope user|project]",
+            "restart codepunk after changing skills",
+          );
+          await notify(context, lines.join("\n"));
+        }),
+      });
+      pi.registerCommand("plugins", {
+        description: "List plugin files and management commands",
+        handler: commandContext(state, async (runtime, context) => {
+          const directory = path.join(runtime.paths.home, "extensions");
+          const files = await listUserPluginFiles(directory);
+          await notify(
+            context,
+            [
+              `Plugins (${runtime.plugins.enabled ? "enabled" : runtime.isolation.plugins ? "disabled for this session" : "disabled"}, ${files.length} file${files.length === 1 ? "" : "s"})`,
+              `directory: ${directory}`,
+              ...(files.length === 0
+                ? ["  none"]
+                : files.map((file) => `  ${file}`)),
+              "",
+              "enable:  codepunk plugins enable",
+              "disable: codepunk plugins disable",
+              "add:     codepunk plugins add <file> [--force]",
+              "remove:  codepunk plugins remove <file>",
+              "restart codepunk after changes; plugin tools are rejected",
+            ].join("\n"),
+          );
+        }),
+      });
+      pi.registerCommand("mcp", {
+        description: "List user MCP servers and connection check commands",
+        handler: commandContext(state, async (runtime, context) => {
+          const snapshot = await collectCapabilities(runtime.paths, {
+            pluginEnabled: runtime.plugins.enabled,
+            skills: runtime.skills,
+            ...(runtime.plugins.paths.length > 0
+              ? { pluginFiles: runtime.plugins.paths }
+              : {}),
+          });
+          await notify(
+            context,
+            [
+              ...formatMcpServers(snapshot.mcp),
+              "",
+              "add:    codepunk mcp add <name> -- <command> [args...]",
+              "check:  codepunk mcp test [name]",
+              "remove: codepunk mcp remove <name>",
+              "login:  codepunk mcp login <name>",
+              "status: codepunk mcp status [name]",
+              "logout: codepunk mcp logout <name>",
+              "restart codepunk after changing MCP configuration",
+            ].join("\n"),
+          );
+        }),
+      });
+      const permissionsCommand = {
+        description: "Show or change approval, autonomy, and sandbox modes",
+        handler: commandContext(state, async (_runtime, context, args) => {
+          await configurePermissions(state, context, args);
+        }),
+      };
+      pi.registerCommand("permissions", permissionsCommand);
+      pi.registerCommand("permission", permissionsCommand);
+      pi.registerCommand("cp-export", {
+        description: "Export a redacted audit transcript",
+        handler: commandContext(state, async (runtime, context) => {
+          const exported = await exportSession(runtime.session);
+          const target = path.join(
+            runtime.paths.artifactsDir,
+            `${runtime.session.sessionId}.md`,
+          );
+          const manifestTarget = path.join(
+            runtime.paths.artifactsDir,
+            `${runtime.session.sessionId}.manifest.json`,
+          );
+          await fs.mkdir(path.dirname(target), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await fs.writeFile(target, exported.transcript, { mode: 0o600 });
+          await fs.writeFile(
+            manifestTarget,
+            `${JSON.stringify(exported.manifest, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          await notify(
+            context,
+            `Exported redacted transcript: ${target}\nManifest: ${manifestTarget}`,
+          );
+        }),
+      });
+      pi.registerCommand("subagent", {
+        description: "Start a background read-only child Pi session",
+        handler: commandContext(state, async (runtime, context, args) => {
+          await runSubagent(state, runtime, context, args);
+        }),
+      });
+      pi.registerCommand("agents", {
+        description: "List, stop, or collect background subagents",
+        handler: commandContext(state, async (_runtime, context, args) => {
+          await manageSubagents(state, context, args);
+        }),
+      });
+      pi.registerCommand("sign", {
+        description: "Sign the current settled run",
+        handler: commandContext(state, async (runtime, context) => {
+          if (process.stdin.isTTY !== true) {
+            context.ui.notify("sign requires a top-level TTY", "error");
+            return;
+          }
+          const runId = state.lastRunId ?? runtime.host.currentRunId;
+          const ended = runtime.session.allEvents.some(
+            (event) => event.kind === "run/end" && event.data.run_id === runId,
+          );
+          if (!ended) {
+            context.ui.notify(
+              "the current run has no durable run/end",
+              "error",
+            );
+            return;
+          }
+          const allowed = await context.ui.confirm(
+            "codepunk sign",
+            `Sign ${runId} as complete?`,
+          );
+          if (!allowed) {
+            return;
+          }
+          try {
+            const result = await runtime.signInProcess("complete", {
+              channel: "tui",
+              tty: true,
+            });
+            await notify(
+              context,
+              `verdict ${result.verdict} · ${result.artifactPath}`,
+            );
+          } catch (error) {
+            context.ui.notify(
+              error instanceof Error ? error.message : String(error),
+              "error",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("remember", {
+        description: "Remember a user or project fact",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const scopeMatch = /(?:^|\s)--scope\s+(user|project)\s*$/u.exec(args);
+          const scope =
+            scopeMatch?.[1] === "user" || scopeMatch?.[1] === "project"
+              ? scopeMatch[1]
+              : "project";
+          const content =
+            scopeMatch === null ? args : args.slice(0, scopeMatch.index).trim();
+          if (content.length === 0) {
+            context.ui.notify(
+              "usage: /remember <text> [--scope user|project]",
+              "warning",
+            );
+            return;
+          }
+          const result = await runtime.memory.add({
+            scope,
+            content,
+            source: "user",
+            source_refs: [`session:${runtime.session.sessionId}`],
+          });
+          await runtime.recordMemoryWrite({
+            scope,
+            action: result.ok ? "add" : "reject",
+            memoryId: result.record?.id ?? null,
+            contentSha256: result.record?.content_sha256 ?? null,
+            sourceRefs: [`session:${runtime.session.sessionId}`],
+            reason: result.ok ? null : result.reason,
+          });
+          context.ui.notify(
+            result.ok
+              ? `remembered ${result.record?.id}`
+              : `memory rejected: ${result.reason}`,
+            result.ok ? "info" : "warning",
+          );
+        }),
+      });
+      pi.registerCommand("memory", {
+        description: "List, search, delete, or archive memory",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const tokens = args.split(/\s+/u).filter(Boolean);
+          const subcommand = tokens[0];
+          const argument = tokens.slice(1).join(" ");
+          if (subcommand === "delete" || subcommand === "archive") {
+            if (argument.length === 0) {
+              context.ui.notify(
+                `usage: /memory ${subcommand} <memory-id>`,
+                "warning",
+              );
+              return;
+            }
+            for (const scope of ["user", "project"] as const) {
+              const store = runtime.memory.storeFor(scope);
+              const record = store.records.find(
+                (candidate) => candidate.id === argument,
+              );
+              if (record === undefined) {
+                continue;
+              }
+              const changed =
+                subcommand === "delete"
+                  ? await store.delete(argument)
+                  : await store.archive(argument);
+              await runtime.recordMemoryWrite({
+                scope,
+                action: subcommand,
+                memoryId: argument,
+                contentSha256: record.content_sha256,
+                sourceRefs: [`session:${runtime.session.sessionId}`],
+                reason: changed ? null : "not_found",
+              });
+              context.ui.notify(
+                changed
+                  ? `${subcommand === "delete" ? "deleted" : "archived"} ${argument}`
+                  : `memory record was not found: ${argument}`,
+                changed ? "info" : "warning",
+              );
+              return;
+            }
+            context.ui.notify(
+              `memory record was not found: ${argument}`,
+              "warning",
+            );
+            return;
+          }
+          if (subcommand === "search" && argument.length === 0) {
+            context.ui.notify("usage: /memory search <query>", "warning");
+            return;
+          }
+          if (
+            subcommand !== undefined &&
+            subcommand !== "list" &&
+            subcommand !== "search"
+          ) {
+            context.ui.notify(
+              "usage: /memory [list|search <query>|delete <memory-id>|archive <memory-id>]",
+              "warning",
+            );
+            return;
+          }
+          const query = subcommand === "search" ? argument : "";
+          const result = await runtime.memory.search(query, "all", 8);
+          await notify(
+            context,
+            result.records.length === 0
+              ? "No memory records matched."
+              : result.records
+                  .map(
+                    (record) =>
+                      `${record.id} [${record.scope}] ${record.content}`,
+                  )
+                  .join("\n"),
+          );
+        }),
+      });
+    },
+  };
+}
+
+export function setTuiRuntime(state: TuiState, runtime: CodepunkRuntime): void {
+  state.runtime = runtime;
+  if (typeof state.channel.setPersistHandler === "function") {
+    state.channel.setPersistHandler(async (request) => {
+      if (
+        request.argv === undefined ||
+        request.argv.length === 0 ||
+        request.cwd === undefined
+      ) {
+        return false;
+      }
+      try {
+        const persisted = await persistScopedRule({
+          paths: runtime.paths,
+          argv: request.argv,
+          cwd: request.cwd,
+          filePath:
+            runtime.config.autonomy.scoped_rules ??
+            path.join(runtime.paths.home, "scoped-rules.toml"),
+        });
+        await writeUserPermissionSelection(runtime.paths, {
+          autonomy: "scoped",
+          scopedRules: persisted.path,
+        });
+        runtime.config.autonomy.scoped_rules = persisted.path;
+        state.context?.ui.notify(
+          [
+            `saved exact rule ${persisted.rule.id} for the next session`,
+            `argv: ${persisted.rule.argv.join(" ")}`,
+            `cwd: ${persisted.rule.cwd}`,
+            `file: ${persisted.path}`,
+          ].join("\n"),
+          "info",
+        );
+        return true;
+      } catch (error) {
+        state.context?.ui.notify(
+          `exact rule was not saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return false;
+      }
+    });
+  }
+  state.modelSelected = selectedModel(runtime) !== undefined;
+  if (state.context !== null) {
+    setupChrome(state, state.context);
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@codepunk/cli",
+  "version": "0.0.0",
+  "description": "Terminal surface, approvals, arguments, and exit codes.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "codepunk": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit"
+  },
+  "dependencies": {
+    "@codepunk/core": "0.0.0",
+    "@codepunk/protocol": "0.0.0",
+    "@earendil-works/pi-coding-agent": "1.5.2"
+  }
+}
