@@ -28,6 +28,16 @@ explicit policy boundary around file and shell actions.
 - `/init` bootstraps `AGENTS.md` from repository evidence through a normal
   model turn, and `/status` summarizes the model, session, permissions, trust,
   capabilities, evidence, and token usage.
+- `/diff` shows the working-tree status, staged and unstaged stats, and a
+  bounded patch without sending a model request or writing the index.
+- `/commit [message]` previews staged, unstaged, and untracked files, asks for
+  an explicit scope and confirmation, then creates a Git commit outside the
+  model sandbox and records its base/result commit hashes in evidence.
+- `/undo [count]` and `/redo [count]` restore or reapply bounded per-session
+  snapshots of successful Codepunk `write`/`edit` calls. A restore is refused
+  when the current file digest differs from the checkpoint, so a manual or
+  shell edit is never silently overwritten. Shell, MCP, and plugin effects are
+  outside this boundary.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
   yet. The local daemon is read-only.
@@ -73,12 +83,20 @@ codepunk trust [status|grant|revoke] [path] [--json]
 ```
 
 An interactive start asks when project resources exist and no saved decision
-applies. The prompt is Pi's own `SelectList`: Up/Down moves the pointer, Enter
-confirms, Page Up/Page Down move a page, and Escape or Ctrl+C cancels. It has no
-numbered menu. The highlighted default is `Trust this workspace and remember`;
-choose `Trust for this session only` when the decision should not persist, or
-`Do not trust for this session only` to inspect the repository once without
-writing a saved decision.
+applies. The prompt is titled `Project trust` and is Pi's own `SelectList`:
+Up/Down moves the pointer, Enter confirms, Page Up/Page Down move a page, and
+Escape or Ctrl+C cancels. It has no numbered menu. The prompt states whether
+this exact checkout already has a saved decision. Each row carries a short
+description of what it loads and whether the decision persists. The highlighted
+default is
+`Trust this workspace and remember`; choose `Trust for this session only` when
+the decision should not persist, `Do not trust and remember this decision` to
+skip project resources from now on, or `Do not trust for this session only` to
+inspect the repository once without writing a saved decision.
+The prompt footer and `codepunk --version` print the running package version,
+dist build time, entry path, and whether `dist` matches the package sources.
+`codepunk doctor` and `/doctor` add the same result as a `build` check, so a
+stale checkout cannot silently keep serving an older trust or command UI.
 Print mode cannot prompt, so it refuses
 to start while the decision is unresolved and project resources exist; pass
 `--trust`, `--no-trust`, or save a decision first. An untrusted session skips
@@ -101,12 +119,40 @@ from an extra root.
 codepunk --add-dir ../shared-lib [--add-dir ../another-root]
 ```
 
-Extra roots are canonicalized, deduplicated, and checked to stay outside the
-user home and Codepunk home. They broaden file-tool containment and the policy
+Extra roots are canonicalized, deduplicated, and rejected when they contain
+the user home or Codepunk home. They broaden file-tool containment and the policy
 write set; the active autonomy and approval modes still decide whether a read
 or write is allowed. The `srt` profile protects every root's `.codepunk` and
 Git control paths. `codepunk permissions` and `permissions why` show the same
 extra roots, and a path outside every root remains denied.
+
+## File checkpoints
+
+Codepunk records a bounded checkpoint after every successful `write` or `edit`
+tool call. The checkpoint lives with the session under
+`$CODEPUNK_HOME/projects/<project>/sessions/<session>/checkpoints`; the model
+never sees this directory through a file tool.
+
+```text
+/undo          restore the latest applied checkpoint
+/undo 3        restore up to three applied checkpoints
+/redo          reapply the latest undone checkpoint
+/redo 2        reapply up to two undone checkpoints
+```
+
+Each file is capped at 1 MiB, the session store at 32 MiB and 100 entries;
+larger or over-budget mutations proceed normally but are not undoable. A
+checkpoint is eligible only for a regular file inside the workspace or an
+explicit `--add-dir` root; `.git` and `.codepunk` are never checkpointed.
+Before writing, Codepunk compares the current file digest with the checkpoint's
+expected before/after digest and refuses a mismatch. It restores the original
+file mode and deletes a file that did not exist before the mutation.
+`checkpoint/restore` is appended to the session log after each undo or redo.
+
+This is not a Git reset and not Pi's editor text undo. Manual edits, shell
+commands, MCP servers, plugins, and other processes are not captured; if one
+of them changed the file after the checkpoint, `/undo` stops instead of
+overwriting it.
 
 ## Project instructions
 
@@ -369,8 +415,9 @@ changes also persist. Model scope is file-backed through
 `model.enabled`; `/scoped-models` explains that instead of opening a selector
 whose save action would only update in-memory host state. A run can override
 the default with `--model <provider/model>`. When no model is configured, the
-TUI points at `/login`, `/model`, and `codepunk models import` instead of
-starting a request with an unusable model. The
+TUI opens an arrow-key setup menu and points at `/login`, `/model`, and
+`codepunk models import` instead of starting a request with an unusable model.
+The
 [model guide](docs/MODELS.md) covers the file formats and failure behavior.
 
 `/help` lists the usable Codepunk and Pi commands. Pi builtins that would
@@ -465,13 +512,20 @@ codepunk mcp status
 
 `mcp add/remove` preserve unrelated configuration, `mcp list` does not start
 servers, and `mcp test` performs a real initialize/tools-list connection.
+In the TUI, `/mcp` lists servers; `/mcp login [name]` runs OAuth with an
+arrow-key server choice, `/mcp status [name]` reports stored credentials, and
+`/mcp logout [name]` removes them, offering the same arrow-key choice when no
+name is given. `/mcp add [name]` and `/mcp remove [name]` create or remove
+user-scope entries through the same validated writer as the CLI; the add form
+covers stdio commands and Streamable HTTP URLs, then reloads the server set.
 Session startup is tolerant of one broken server: it records a configuration
 warning and keeps the other servers, while `mcp test` remains the fail-closed
 check for the broken entry.
 In the TUI, `/reload` re-discovers skills, re-reads `mcp.toml`, starts the new
 server set, stops the old processes, and rebuilds the wrapped tool surface
-without replacing the Codepunk session. Codepunk config and plugin inventory
-still require a restart.
+without replacing the Codepunk session. It also re-scans user plugins and
+swaps Pi's extension/tool registry in place. Codepunk configuration still
+requires a restart.
 Transport comes from Pi's MCP client; Codepunk still approval-gates every
 server tool and records uncovered execution. `/mcp` shows the same inventory
 inside the TUI.
@@ -515,9 +569,11 @@ pnpm run verify
 
 The repository is a pnpm workspace. Package scripts, dependency pins, CI, and
 testing conventions are documented in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
-The product CLI's published `install`, `upgrade`, and `uninstall` commands use npm
-as the user-facing package manager; that is separate from repository
-development.
+The CLI's `install`, `upgrade`, and `uninstall` commands use npm as the
+user-facing package manager; that is separate from repository development.
+This checkout is version `0.0.0` and `@codepunk/cli` is not published, so
+`install` now fails with an explicit message instead of attempting an install
+that cannot resolve.
 
 ## Packages
 

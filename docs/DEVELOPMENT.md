@@ -32,6 +32,23 @@ The repository pins pnpm through `packageManager` and
 `pnpm run verify` runs formatting, repository checks, type checking, tests, the
 build, and the built-entry-point check.
 
+## Build identity and stale checkouts
+
+The installed `codepunk` entry runs `packages/cli/dist/index.js`. Editing
+`packages/*/src` without rebuilding leaves the terminal on the previous trust
+prompt and command surface. `codepunk --version` therefore reports:
+
+- the CLI package version;
+- the absolute `dist/index.js` entry being executed;
+- the newest dist build time;
+- whether every `dist` JavaScript file is current with its TypeScript source.
+
+`codepunk doctor` and the TUI `/doctor` command include the same comparison as
+a `build` check. An interactive startup also warns when `dist` is stale, and
+the pre-host `Project trust` footer shows the same build identity before the
+decision is made. An installed package without `src` reports the source
+comparison as unavailable rather than claiming the build is current.
+
 ## Workspace
 
 The dependency direction is:
