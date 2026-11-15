@@ -51,8 +51,8 @@ rather than executed behavior, it is marked.
 | Hooks                       | not exposed                                                                                                                                                                                                                                                                                                                                                                                           | hook trust controls in help                   | `hooks`                     | not verified           | hooks in help                                                                     |
 | Session list/resume         | CLI list/resume plus live TUI `/resume` that rebuilds the host                                                                                                                                                                                                                                                                                                                                        | yes                                           | yes                         | `session`              | yes                                                                               |
 | Session fork/clone          | settled CLI `--fork` plus live TUI `/fork`/`/clone` into a child product session                                                                                                                                                                                                                                                                                                                      | `fork`                                        | not exposed in help         | `--fork`               | `--fork-session`                                                                  |
-| Sub-agent delegation        | `/subagent` read-only child Pi session with its own session and evidence                                                                                                                                                                                                                                                                                                                              | not verified                                  | not exposed in help         | not exposed in help    | not verified                                                                      |
-| Worktree isolation          | library-level delivery worktrees (`WorkerSandbox`/`WorkerPool`); no CLI command yet                                                                                                                                                                                                                                                                                                                   | `--worktree`                                  | `-w`                        | not exposed in help    | not exposed in help                                                               |
+| Sub-agent delegation        | `/subagent` child Pi session with its own session and evidence; optional profile supplies read/search/write/edit mask, model pool, thinking level, prompt, and worktree isolation                                                                                                                                                                                                                     | not verified                                  | not exposed in help         | not exposed in help    | not verified                                                                      |
+| Worktree isolation          | mutable `/subagent` profiles run in detached worktrees; library-level delivery worktrees (`WorkerSandbox`/`WorkerPool`); no worker CLI command yet                                                                                                                                                                                                                                                    | `--worktree`                                  | `-w`                        | not exposed in help    | not exposed in help                                                               |
 | Evidence chain and sign-off | yes                                                                                                                                                                                                                                                                                                                                                                                                   | no equivalent observed                        | no equivalent observed      | no equivalent observed | no equivalent observed                                                            |
 | Local read-only daemon      | yes                                                                                                                                                                                                                                                                                                                                                                                                   | app server/remote control                     | ACP                         | server/service API     | background sessions                                                               |
 | Web search                  | no                                                                                                                                                                                                                                                                                                                                                                                                    | `--search`                                    | not verified                | not verified           | not verified                                                                      |
@@ -110,7 +110,7 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 `--bare` isolation, PTY tests for both read-only live-switch directions,
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. On 2026-11-15,
-the local suite reported 518 tests and the repository check reported 468 files
+the local suite reported 526 tests and the repository check reported 474 files
 across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
@@ -322,13 +322,14 @@ in the comparison.
    and `session/tree` and snapshots the active branch. Sibling branches are
    still in-memory only, so there is no durable cross-session branch graph.
    `/export` aliases `/cp-export`.
-10. `/subagent` gives a read-only child Pi process its own Codepunk session,
-    run id, and evidence head, linked from the parent through a
-    `subagent/result` event. Up to four children run in the background and are
-    managed with `/agents`; they still share the parent checkout. It does not
-    yet offer mutable child sessions, agent profiles, a per-child model pool,
-    isolated worktrees, or streamed child output. Kimi and MiniMax Code remain
-    the strongest references for those behaviors.
+10. `/subagent` gives a child Pi process its own Codepunk session, run id, and
+    evidence head, linked from the parent through a `subagent/result` event.
+    A child without a profile is read-only (`read`, `search`) and shares the
+    parent checkout. A Markdown agent profile can add write/edit tools, a
+    model pool, a thinking level, and a system prompt; a mutating profile runs
+    in a detached worktree, and `--worktree` can isolate a read-only profile.
+    Up to four children run in the background and are managed with `/agents`.
+    Streamed child output and automatic worktree merge are not implemented.
 11. Pi emits OSC 7501 program status, and Codepunk inherits it because it runs
     Pi's interactive runtime. The reported app identity is still Pi's
     `APP_NAME`, Codepunk adds no per-event notifications, and the status line
@@ -365,8 +366,8 @@ in the comparison.
 
 Ordered by expected value for the next iteration:
 
-1. Mutable child-session delegation with agent profiles and a per-child model
-   pool on top of the existing `/subagent` path.
+1. Streamed child output and an explicit worktree cleanup/handoff command for
+   profile-driven `/subagent` sessions.
 2. Plugin/skill/MCP hot reload with the same policy gating as runtime tool
    calls. OAuth login and token refresh are implemented.
 3. Surface the existing session budget stop more clearly in the status line

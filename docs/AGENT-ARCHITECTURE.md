@@ -488,7 +488,7 @@ would leave the next process with a route that has not been registered yet.
 | TUI layout and editor            | Delegate to Pi                       | Codepunk registers an extension and adds header/footer/status/commands; it does not render a second TUI.                                                                                                                                                                                                                                                                                                                                                                                      |
 | Session fork/clone               | Codepunk state, Pi branch            | `codepunk --fork <id>` is the settled cold path: it takes the parent writer lock and refuses a live writer or `state_covers_seq != last_seq` before copying the Pi branch. In the TUI, `/fork [entry]` and `/clone` validate the live agent state, write a child product session plus `session/forked` (`mode: "live"`), and switch to it. The product header carries the parent id and state hash; Pi's `parentSession` path field is not reused as a product link.                          |
 | Session tree navigation          | Pi branch, recorded by Codepunk      | `/tree` lists the in-memory branch tree; `/tree <entry-id>` calls Pi's `navigateTree`, writes `session/tree` with the from/to entry ids and active branch length, and saves the agent-state snapshot. This is live navigation inside one session, not a second durable event tree: only the active branch is snapshotted, so sibling branches do not survive a process restart as separate product sessions.                                                                                  |
-| User-visible sub-agents          | Read-only child Pi sessions          | `/subagent` launches a separate Codepunk/Pi child with its own session, parent session id, and evidence namespace. Pi has no first-class delegation surface, so Codepunk supplies the link, not a second loop.                                                                                                                                                                                                                                                                                |
+| User-visible sub-agents          | Profile-driven child Pi sessions     | `/subagent` launches a separate Codepunk/Pi child with its own session, parent session id, evidence namespace, tool mask, model pool, and optional detached worktree. Pi has no first-class delegation surface, so Codepunk supplies the link, not a second loop.                                                                                                                                                                                                                             |
 | Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, fallback event, and `model/retry_start`/`model/retry_end` evidence for Pi's automatic retries. No second request loop.                                                                                                                                                                                                                                                                      |
 | Cost budget                      | Keep in Codepunk, implemented        | `config.budget.max_tokens` / `max_cost_usd` combine assistant and compaction usage with Pi's `getSessionStats()` totals, then add direct summary calls separately by `model/usage.source`. A larger Pi total can no longer hide summary tokens. The host aborts and blocks further input with a `budget/exceeded` event. This is product policy over the host's accounting, not a second retry loop.                                                                                          |
 
@@ -522,9 +522,9 @@ Five conclusions follow:
    classes (`git status`, `git diff --stat`, filesystem inspection) and keep
    pipelines, substitutions, redirects, and unknown commands behind approval.
 4. Codepunk should not fake sub-agents with role prompts in one context. Kimi
-   and MiniMax Code both use isolated child sessions. Codepunk's first slice
-   now does the same for read-only work; mutable profiles, a model pool, and
-   richer evidence links are the remaining work.
+   and MiniMax Code both use isolated child sessions. Codepunk now uses
+   profile-driven child sessions with read/search/write/edit tool masks, a
+   per-child model pool, and detached worktrees for mutating profiles.
 5. Workspace trust and action approval are separate axes. Kimi's
    `workspace.requireTrust` gates project MCP and project permission rules
    before a tool call exists, but the inspected paths do not show the same gate
@@ -663,22 +663,22 @@ These are real gaps, not hidden fallbacks:
    guard consumes assistant usage events plus Pi's session totals and stops the
    session; remaining work is reporting the stop more clearly, not
    reimplementing accounting.
-6. `/subagent` runs read-only child Pi sessions with up to four background
-   handles (`/agents`, `/agents result <id>`, `/agents stop <id>`) in the
-   parent working directory; the child product session header records the
-   parent id. Pi's `parentSession` path field is not used for this link.
-   The child is pinned to `sandbox = required`, `filesystem = workspace`, and
-   `autonomy = read-only` regardless of the parent's persisted config, so a
-   parent running full-access cannot silently widen the child's read reach.
-   An explicit parent trust decision is inherited in both directions:
-   `--trust` covers a one-run prompt and `--no-trust` prevents the child from
-   re-reading a saved decision. A parent using a saved decision leaves the
-   child to resolve the same store itself. The child does not inherit the
-   parent's scoped rules or full filesystem.
-   Mutable child sessions, agent profiles, a per-child model pool, isolated
-   worktrees, and streamed child output are still missing. They should extend
-   the child Pi session path rather than adding role prompts inside one
-   context.
+6. `/subagent` runs profile-driven child Pi sessions with up to four
+   background handles (`/agents`, `/agents profiles`, `/agents result <id>`,
+   `/agents wait <id>`, `/agents stop <id>`); the child product session header
+   records the parent id. Pi's `parentSession` path field is not used for this
+   link. Without a profile the child is `read`/`search` only and shares the
+   parent checkout. A profile that enables `write` or `edit` runs in a
+   detached worktree, and `--worktree` can isolate a read-only profile. The
+   child is pinned to `sandbox = required`, `filesystem = workspace`, and
+   either `approval = deny` for read-only work or `approval = allow` with
+   `autonomy = ask` for a mutating profile, regardless of the parent's
+   persisted config. An explicit parent trust decision is inherited in both
+   directions; a worktree child receives the parent's decision because it is
+   created from the same base commit. The child does not inherit the parent's
+   scoped rules or full filesystem. A child worktree is preserved for
+   inspection and is never merged automatically. Streamed child output is
+   still missing.
 7. Session surfaces are live: `/resume` and `/new` rebuild the TUI host,
    `/fork` and `/clone` create child product sessions, `/tree` navigates the
    Pi branch, `/export` forwards to `/cp-export`, and the aliases do not appear
@@ -700,10 +700,12 @@ These are real gaps, not hidden fallbacks:
     shows a discovery list before the decision. Codepunk now shows a bounded
     type, size, and digest preview before the decision, but still lacks
     per-resource choices such as "trust instructions but skip project config".
-11. Subagents use a hard tool mask (`read`, `search` only) rather than a
-    privilege ladder. That is safe but cannot express "inherit my mode, but
-    never exceed `standard`". Claude resolves child modes against a ladder;
-    Codex carries a per-agent sandbox policy; Codepunk has one read-only shape.
+11. Subagents use a declared tool mask rather than a privilege ladder. A
+    profile can enable read/search/write/edit, but cannot express "inherit my
+    mode, but never exceed `standard`". Claude resolves child modes against a
+    ladder; Codex carries a per-agent sandbox policy. Codepunk keeps the
+    profile declaration inside the child process policy instead of treating
+    the profile as authority.
 12. The five named profiles carry no network dimension. `network_allow` and
     `network_deny` are independent user-scope lists, so switching
     `--permission-mode` never changes egress. Codex folds network into
@@ -747,8 +749,8 @@ The next work should follow the trust boundary, not the feature count:
    policy gate as runtime use. OAuth sign-in and refresh already exist.
 2. Make session identity first-class: one visible command name per surface,
    and a fork flow with explicit parent-child evidence links.
-3. Extend the read-only child-session path with mutable profiles, a per-child
-   model pool, background handles, then a bidirectional protocol and
+3. Extend the child-session path with streamed output and an explicit
+   worktree cleanup/handoff command, then a bidirectional protocol and
    out-of-terminal status signals.
 
 ## Local evidence
@@ -757,8 +759,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 518 tests, 518 pass
-# repository check: 468 files, 3 packages
+# 526 tests, 526 pass
+# repository check: 474 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only

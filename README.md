@@ -360,19 +360,39 @@ it changes the data boundary.
 
 ## Subagents
 
-`/subagent <task>` starts a separate read-only Codepunk/Pi child process. The
-child has its own session id and evidence namespace; the parent records a
-`subagent/result` event linking both sessions, the child run and evidence head,
-and the exit status. The current surface runs in the parent working directory,
-inherits the active model and thinking level, and exposes only `read` and
-`search`—no writes, edits, shell, or `memory_search`.
-An explicit parent trust decision is propagated as `--trust` or `--no-trust`;
-a parent using a saved decision leaves the child to resolve the same store.
+`/subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared]
+<task>` starts a separate Codepunk/Pi child process. The child has its own
+session id and evidence namespace; the parent records a `subagent/result`
+event linking both sessions, the child run and evidence head, the effective
+profile, isolation, worktree, and exit status.
 
-Up to four children run in the background; `/agents`, `/agents result <id>`, and
-`/agents stop <id>` manage the handles. A child needs a git repository with at
-least one commit. If it answers without calling a tool, the result reports no
-evidence run rather than inventing a hash.
+An agent profile is a Markdown file with `name`, `description`, `tools`,
+`model`, `fallback`, and `thinking` frontmatter. Profiles load from
+`$CODEPUNK_HOME/agents/*.md`; project profiles load from
+`.codepunk/agents/*.md` only after the workspace is trusted, and override a
+user profile with the same name. `tools` accepts `read`, `search`, `write`,
+and `edit`. `shell` is rejected until a profile can declare an exact command
+allowlist. `model` and `fallback` use exact `provider/model` references; a
+per-run `--model` must belong to the profile's pool.
+
+Without a profile, the child is a read-only `read`/`search` session in the
+parent checkout. A profile that enables `write` or `edit` always runs in a
+detached worktree; `--shared` is rejected for that profile. `--worktree` can
+also isolate a read-only profile. The child inherits the parent's model and
+thinking level unless the profile or `--model` selects another. An explicit
+parent trust decision is propagated as `--trust` or `--no-trust`; a worktree
+child receives the parent's decision because it is created from the same
+commit.
+
+Up to four children run in the background. `/agents` lists them,
+`/agents profiles` lists the available profiles, and `/agents result <id>`,
+`/agents wait <id>`, and `/agents stop <id>` manage a handle. A child needs a
+git repository with at least one commit. If it answers without calling a tool,
+the result reports no evidence run rather than inventing a hash.
+
+A mutating result stays in its worktree for inspection; the completion notice
+and `subagent/result` event record the absolute worktree path. Codepunk does
+not merge child changes automatically.
 
 ## Capabilities
 

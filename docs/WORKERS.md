@@ -83,30 +83,69 @@ the guarded entry.
 
 ## Child Pi sessions
 
-`/subagent <task>` in the TUI starts a separate Codepunk/Pi process through the
-same guarded-host path. The child receives a new explicit Codepunk session id,
-records the parent session id in its own session header, runs in the parent
-working directory, and records its own session events and evidence. The parent
-records a `subagent/result` event with both session ids, the child run id when
-an evidence run exists, the evidence head, exit code, and status.
+`/subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared]
+<task>` in the TUI starts a separate Codepunk/Pi process through the same
+guarded-host path. The child receives a new explicit Codepunk session id,
+records the parent session id in its own session header, and records its own
+session events and evidence. The parent records a `subagent/result` event with
+both session ids, the child run id when an evidence run exists, the evidence
+head, exit code, status, profile digest, isolation, worktree, and changed-file
+count.
 
-The current surface is deliberately narrow:
+### Agent profiles
 
-- background: `/subagent` returns immediately, up to four children run at
-  once, and `/agents`, `/agents result <id>`, and `/agents stop <id>` manage
-  the handles;
-- read-only: the child policy exposes only `read` and `search`, with
-  `--approval deny`; write, edit, shell, and `memory_search` are absent;
-- shared cwd: no worktree is created, so a read-only child sees the same
-  checkout as the parent;
-- inherited trust: a saved workspace trust decision is resolved by the child;
-  an explicit parent decision is passed through in both directions with
-  `--trust` or `--no-trust`. The child does not inherit the parent's scoped
-  rules or `filesystem = full`;
-- inherited model: the child receives the active host model and thinking level
-  when one is selected;
-- git-only: the child needs a repository with at least one commit so its task
-  spec has a real base commit.
+Agent profiles are Markdown files. User profiles live in
+`$CODEPUNK_HOME/agents/*.md`; project profiles live in
+`.codepunk/agents/*.md` and load only from a trusted workspace. A project
+profile overrides a user profile with the same name. Files must be regular
+files, no larger than 64 KiB, with a lowercase name and a non-empty
+description and body.
+
+The supported frontmatter is:
+
+```markdown
+---
+name: reviewer
+description: Review a bounded change set
+tools: read, search
+model: local/primary
+fallback: local/secondary, local/tertiary
+thinking: high
+---
+
+Return findings with file and line references.
+```
+
+`tools` accepts `read`, `search`, `write`, and `edit`. `shell` is rejected
+until a profile can declare an exact command allowlist; the child does not
+receive `memory_search`. `model` and every fallback use exact
+`provider/model` references. A fallback requires a primary model and cannot
+repeat it. A per-run `--model` must be in the profile's model pool.
+
+### Isolation and lifecycle
+
+- A read-only child (the default, or a profile containing only read/search)
+  shares the parent checkout and runs with `--approval deny`.
+- A profile that enables `write` or `edit` always runs in a detached worktree
+  and uses `--approval allow`, `--autonomy ask`, `--sandbox required`, and
+  `--filesystem workspace`. The write set is the worktree root; protected
+  instruction and `.codepunk` paths still fail closed.
+- `--shared` is rejected for a mutating profile. `--worktree` forces a
+  detached worktree for a read-only profile.
+- `/subagent` returns immediately. Up to four children run at once;
+  `/agents`, `/agents profiles`, `/agents result <id>`, `/agents wait <id>`,
+  and `/agents stop <id>` manage the handles.
+- A worktree child receives the parent's explicit trust decision because it
+  is created from the same base commit. The child does not inherit the
+  parent's scoped rules or `filesystem = full`.
+- The child inherits the active host model and thinking level unless the
+  profile or `--model` selects another. The model pool is resolved before the
+  child starts.
+- A mutating result stays in its worktree for inspection. The completion
+  notice and `subagent/result` event record the absolute worktree path.
+  Codepunk does not merge child changes automatically.
+- The child needs a repository with at least one commit so its task spec has
+  a real base commit.
 
 If the child answers without calling a tool, the result has no evidence run and
 the event carries `evidence_head: null`. If a tool did run but its evidence is
@@ -116,5 +155,8 @@ tool-call budget; the wall-clock budget aborts the child as well. This
 read-only path has no disk-write surface, so it does not charge disk bytes.
 The prompt is delivered over the child's standard input rather than its
 command-line arguments.
-This is not yet mutable delegation: there are no agent profiles, per-child
-model pools, isolated worktrees, or streamed child output.
+
+Streamed child output is not implemented. A child failure that leaves a
+worktree behind reports that path in the error message and
+`subagent/result`; a failed run with no changes may still leave a clean
+worktree for inspection.
