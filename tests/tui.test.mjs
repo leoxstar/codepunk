@@ -2461,6 +2461,16 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/reload",
         "Reloaded Pi resources and MCP configuration.",
       );
+      await runCommandAfter(
+        session,
+        "/skills",
+        "run /reload after changing skills",
+      );
+      await runCommandAfter(
+        session,
+        "/mcp",
+        "run /reload after changing MCP configuration",
+      );
       await runCommandAfter(session, "/fork", "forked ");
       await runCommandAfter(session, "/tree", "Session tree");
       await runCommandAfter(

@@ -3244,7 +3244,7 @@ export function createTuiExtension(
             "",
             "add:    codepunk skills add <dir> [--scope user|project]",
             "remove: codepunk skills remove <name> [--scope user|project]",
-            "restart codepunk after changing skills",
+            "run /reload after changing skills",
           );
           await notify(context, lines.join("\n"));
         }),
@@ -3293,7 +3293,7 @@ export function createTuiExtension(
               "login:  codepunk mcp login <name>",
               "status: codepunk mcp status [name]",
               "logout: codepunk mcp logout <name>",
-              "restart codepunk after changing MCP configuration",
+              "run /reload after changing MCP configuration",
             ].join("\n"),
           );
         }),
