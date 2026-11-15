@@ -12,6 +12,13 @@ export {
   type ScopedRule,
 } from "./autonomy/index.ts";
 export {
+  AgentProfileError,
+  formatAgentProfiles,
+  loadAgentProfiles,
+  type AgentProfile,
+  type AgentProfileBundle,
+} from "./agents/index.ts";
+export {
   HostIsolationError,
   assertWrappedToolRegistry,
   createPiHost,
