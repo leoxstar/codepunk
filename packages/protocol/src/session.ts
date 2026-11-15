@@ -126,6 +126,25 @@ export const BashResultEventSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CheckpointRestoreEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("checkpoint/restore"),
+    data: Type.Object(
+      {
+        action: Type.Union([Type.Literal("undo"), Type.Literal("redo")]),
+        checkpoint_id: NonEmptyStringSchema,
+        tool_call_id: NonEmptyStringSchema,
+        target: NonEmptyStringSchema,
+        from_sha256: Sha256Schema,
+        to_sha256: Sha256Schema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const ContextSourceSchema = Type.Object(
   {
     rank: Type.Integer({ minimum: 1 }),
@@ -669,6 +688,7 @@ export const SessionEventSchema = Type.Union([
   SessionTreeEventSchema,
   ApprovalAnswerEventSchema,
   BashResultEventSchema,
+  CheckpointRestoreEventSchema,
   ContextLoadedEventSchema,
   TrustDecisionEventSchema,
   CompactionDecisionEventSchema,
@@ -699,6 +719,9 @@ export type SessionForkedEvent = Static<typeof SessionForkedEventSchema>;
 export type SessionTreeEvent = Static<typeof SessionTreeEventSchema>;
 export type ApprovalAnswerEvent = Static<typeof ApprovalAnswerEventSchema>;
 export type BashResultEvent = Static<typeof BashResultEventSchema>;
+export type CheckpointRestoreEvent = Static<
+  typeof CheckpointRestoreEventSchema
+>;
 export type ContextLoadedEvent = Static<typeof ContextLoadedEventSchema>;
 export type CompactionDecisionEvent = Static<
   typeof CompactionDecisionEventSchema

@@ -18,6 +18,7 @@ import type {
 import { validateSchema } from "@codepunk/protocol";
 import type { ApprovalBroker } from "../approval/index.ts";
 import type { ApprovalResult } from "../approval/index.ts";
+import type { CheckpointStore } from "../checkpoints/index.ts";
 import type { ActionReviewer, ReviewResult } from "../reviewer/index.ts";
 import { AutonomyController, isShellLauncher } from "../autonomy/index.ts";
 import {
@@ -96,6 +97,12 @@ export interface ToolWrapOptions {
   artifactsDir?: string;
   artifactThresholdTokens?: number;
   maxToolOutputTokens?: number;
+  /**
+   * Optional bounded file snapshots for `/undo` and `/redo`. Snapshot capture
+   * is deliberately best-effort: a full or oversized store must not fail the
+   * file mutation itself. External shell edits remain outside this boundary.
+   */
+  checkpoints?: CheckpointStore | null;
   verifyExec?: (
     argv: readonly string[],
     cwd: string,
@@ -127,6 +134,7 @@ interface FileSnapshot {
   exists: boolean;
   bytes: Buffer;
   sha256: string;
+  mode: number | null;
 }
 
 function emptySnapshot(): FileSnapshot {
@@ -135,6 +143,7 @@ function emptySnapshot(): FileSnapshot {
     exists: false,
     bytes,
     sha256: fileContentHash(bytes),
+    mode: null,
   };
 }
 
@@ -176,8 +185,17 @@ function exactApprovalArgv(
 
 async function snapshotFile(target: string): Promise<FileSnapshot> {
   try {
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(`mutation target is not a regular file: ${target}`);
+    }
     const bytes = await fs.readFile(target);
-    return { exists: true, bytes, sha256: fileContentHash(bytes) };
+    return {
+      exists: true,
+      bytes,
+      sha256: fileContentHash(bytes),
+      mode: stat.mode & 0o7777,
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return emptySnapshot();
@@ -1146,6 +1164,28 @@ export async function wrapToolDefinition(
           isMutation && before !== null && after !== null
             ? diffHash(beforeBytes, afterBytes, label)
             : null;
+        if (
+          isMutation &&
+          target !== null &&
+          before !== null &&
+          after !== null &&
+          outcome === "completed" &&
+          options.checkpoints !== null &&
+          options.checkpoints !== undefined
+        ) {
+          try {
+            await options.checkpoints.record({
+              tool: definition.name as "write" | "edit",
+              toolCallId,
+              target,
+              before,
+              after,
+            });
+          } catch {
+            // Undo is an auxiliary recovery surface. A full checkpoint store
+            // must not turn a successful file mutation into a tool failure.
+          }
+        }
         await options.ledger.append(
           baseRecord(options, {
             source: evidenceSource(definition.name),

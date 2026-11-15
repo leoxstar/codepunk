@@ -24,6 +24,14 @@ export async function atomicWriteFile(
   content: string,
   mode = 0o600,
 ): Promise<void> {
+  await atomicWriteBytes(filePath, Buffer.from(content, "utf8"), mode);
+}
+
+export async function atomicWriteBytes(
+  filePath: string,
+  content: Uint8Array,
+  mode = 0o600,
+): Promise<void> {
   const directory = path.dirname(filePath);
   await ensurePrivateDir(directory);
   const tempPath = path.join(
@@ -36,7 +44,7 @@ export async function atomicWriteFile(
     for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
         handle = await fs.open(tempPath, "wx", mode);
-        await handle.writeFile(content, "utf8");
+        await handle.writeFile(content);
         await handle.sync();
         await handle.close();
         handle = undefined;

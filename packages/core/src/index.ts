@@ -56,6 +56,16 @@ export {
   type ToolOutputArtifact,
 } from "./artifacts/index.ts";
 export {
+  CheckpointConflictError,
+  CheckpointError,
+  CheckpointStore,
+  type CheckpointEntry,
+  type CheckpointPreview,
+  type CheckpointRestoreResult,
+  type CheckpointSnapshot,
+  type CheckpointStoreOptions,
+} from "./checkpoints/index.ts";
+export {
   collectCapabilities,
   formatCapabilities,
   formatMcpServers,

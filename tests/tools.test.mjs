@@ -161,6 +161,47 @@ test("parallel writes record a serialized evidence chain for the same file", asy
   assert.equal(records[1].after_sha256, hashFile(Buffer.from("second\n")));
 });
 
+test("successful writes create a bounded file checkpoint for undo", async () => {
+  const paths = await setup();
+  const target = path.join(paths.workspace, "checkpoint.txt");
+  await fs.writeFile(target, "before\n");
+  const ledger = await core.EvidenceLedger.open(paths.evidence);
+  const checkpoints = new core.CheckpointStore({
+    sessionDir: path.join(paths.root, "session"),
+    workspaceRoot: paths.workspace,
+  });
+  const definitions = await core.createCodepunkToolDefinitions(
+    paths.workspace,
+    null,
+  );
+  const writeDefinition = definitions.find(
+    (definition) => definition.name === "write",
+  );
+  assert.ok(writeDefinition);
+  const write = await core.wrapToolDefinition(
+    writeDefinition,
+    wrapOptions(paths, { ledger, checkpoints }),
+  );
+
+  const result = await write.execute(
+    "call-checkpoint",
+    { path: "checkpoint.txt", content: "after\n" },
+    undefined,
+    undefined,
+    {},
+  );
+  assert.equal(result.isError, undefined);
+  const entries = await checkpoints.list();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].tool_call_id, "call-checkpoint");
+  assert.equal(entries[0].target, target);
+  assert.equal(entries[0].before.sha256, hashFile(Buffer.from("before\n")));
+  assert.equal(entries[0].after.sha256, hashFile(Buffer.from("after\n")));
+
+  await checkpoints.undo();
+  assert.equal(await fs.readFile(target, "utf8"), "before\n");
+});
+
 test("approval carries a diff preview and returns denial guidance", async () => {
   const paths = await setup();
   const target = path.join(paths.workspace, "note.txt");

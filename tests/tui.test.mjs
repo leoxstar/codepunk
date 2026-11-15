@@ -143,6 +143,105 @@ function sendTextResponse(response, text) {
   response.end();
 }
 
+async function startWriteModelServer({ path: targetPath, content }) {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      const body = JSON.parse(raw);
+      requests.push(body);
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      const send = (value) => {
+        response.write(`data: ${JSON.stringify(value)}\n\n`);
+      };
+      const hasToolResult = body.messages.some(
+        (message) => message.role === "tool",
+      );
+      if (!hasToolResult) {
+        send({
+          id: "write-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-write",
+                    type: "function",
+                    function: {
+                      name: "write",
+                      arguments: JSON.stringify({
+                        path: targetPath,
+                        content,
+                      }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "write-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        });
+      } else {
+        send({
+          id: "write-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "WRITE_DONE" },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "write-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: {
+            prompt_tokens: 4,
+            completion_tokens: 2,
+            total_tokens: 6,
+          },
+        });
+      }
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return {
+    server,
+    requests,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  };
+}
+
 test("the TUI treats an active session model as selected", async () => {
   const { setTuiRuntime } = await importSource("packages/cli/src/tui.ts");
   const makeState = () => ({
@@ -698,6 +797,122 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
     );
     assert.match(output, /session [0-9A-Z]{10}/u);
     assert.doesNotMatch(output, /v1\.5\.2/u);
+  });
+});
+
+test("a real pty undoes and redoes Codepunk file changes", async () => {
+  await withTempDirectory("codepunk-tui-undo-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(path.join(project, "note.txt"), "before\n");
+    const model = await startWriteModelServer({
+      path: "note.txt",
+      content: "after\n",
+    });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[approval]",
+        'mode = "allow"',
+        "",
+      ].join("\n"),
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      session.child.stdin.write("write note.txt\r");
+      await waitForOutput(session, "WRITE_DONE", "model write");
+      assert.equal(
+        await fs.readFile(path.join(project, "note.txt"), "utf8"),
+        "after\n",
+      );
+
+      await runCommandAfter(session, "/undo", "Undo file changes?");
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "undo: 1 file checkpoint(s) restored");
+      assert.equal(
+        await fs.readFile(path.join(project, "note.txt"), "utf8"),
+        "before\n",
+      );
+
+      await runCommandAfter(session, "/redo", "Redo file changes?");
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "redo: 1 file checkpoint(s) restored");
+      assert.equal(
+        await fs.readFile(path.join(project, "note.txt"), "utf8"),
+        "after\n",
+      );
+
+      const eventFiles = (await fs.readdir(home, { recursive: true })).filter(
+        (entry) => entry.endsWith("session.jsonl"),
+      );
+      assert.equal(eventFiles.length, 1);
+      const events = (await fs.readFile(path.join(home, eventFiles[0]), "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      const restores = events.filter(
+        (entry) => entry.kind === "checkpoint/restore",
+      );
+      assert.deepEqual(
+        restores.map((entry) => entry.data.action),
+        ["undo", "redo"],
+      );
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
+    }
   });
 });
 

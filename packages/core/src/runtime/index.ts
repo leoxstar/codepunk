@@ -8,6 +8,7 @@ import type {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { createPiHost, type PiHost } from "../adapters/pi/index.ts";
+import { CheckpointStore } from "../checkpoints/index.ts";
 import { loadContext } from "../context/index.ts";
 import {
   AutonomyController,
@@ -222,6 +223,7 @@ export interface CodepunkRuntime {
   workspaceTrust: WorkspaceTrust;
   memory: MemoryManagerType;
   session: SessionStoreType;
+  checkpoints: CheckpointStore;
   ledger: RunLedger;
   sandbox: ShellProvider | null;
   autonomy: AutonomyController;
@@ -795,6 +797,12 @@ export async function createRuntime(
     config.session.heartbeat_seconds * 1_000,
     config.session.lease_seconds * 1_000,
   );
+  const checkpoints = new CheckpointStore({
+    sessionDir: session.paths.sessionDir,
+    workspaceRoot: paths.deliveryRoot,
+    additionalRoots: paths.additionalRoots,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
   if (selectedModel === undefined && config.model.fallback.length > 0) {
     loadedConfig.warnings.push(
       "model fallback is ignored until a primary model is configured",
@@ -989,6 +997,7 @@ export async function createRuntime(
       shellUnavailableReason: () => shellUnavailableReason(sessionSandboxMode),
       context: configuredContext,
       artifactsDir: paths.artifactsDir,
+      checkpoints,
       artifactThresholdTokens: config.context.artifact_threshold_tokens,
       maxToolOutputTokens: config.context.max_tool_output_tokens,
       truncation: config.context.truncation,
@@ -1113,6 +1122,7 @@ export async function createRuntime(
     workspaceTrust,
     memory,
     session,
+    checkpoints,
     ledger,
     sandbox,
     autonomy,

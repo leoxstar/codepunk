@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   ChildHostError,
+  CheckpointConflictError,
   APPROVAL_MODE_NAMES,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
@@ -63,6 +64,7 @@ import {
   writeUserThinkingSelection,
   type ApprovalChannel,
   type AgentProfile,
+  type CheckpointPreview,
   type CodepunkRuntime,
   type FilesystemMode,
   type McpReloadResult,
@@ -322,6 +324,8 @@ export function codepunkHelp(): string {
     "",
     "Project",
     "  /init [--update]           create or update AGENTS.md from repository evidence",
+    "  /undo [count]              restore recent Codepunk write/edit changes",
+    "  /redo [count]              reapply changes removed by /undo",
     "  /status                    show model, session, permissions, trust, and usage",
     "",
     "Sessions and evidence",
@@ -2055,6 +2059,113 @@ function noAuthenticatedModelsMessage(): string {
   ].join("\n");
 }
 
+function checkpointPreviewText(
+  action: "undo" | "redo",
+  preview: CheckpointPreview,
+): string {
+  if (preview.entries.length === 0) {
+    return action === "undo"
+      ? "No applied Codepunk file checkpoint is available."
+      : "No undone Codepunk file checkpoint is available.";
+  }
+  return preview.entries
+    .map(
+      (entry) =>
+        `${entry.tool} ${entry.display_target} (${entry.state} → ${action === "undo" ? "before" : "after"})`,
+    )
+    .join("\n");
+}
+
+async function restoreCheckpoint(
+  state: TuiState,
+  context: ExtensionCommandContext,
+  action: "undo" | "redo",
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  if (runtime.host.session.isStreaming || runtime.host.session.isCompacting) {
+    context.ui.notify(
+      `Wait for the current ${runtime.host.session.isStreaming ? "response" : "compaction"} to finish before /${action}.`,
+      "warning",
+    );
+    return;
+  }
+  const raw = argument.trim();
+  const count = raw.length === 0 ? 1 : Number(raw);
+  if (!Number.isSafeInteger(count) || count < 1 || count > 100) {
+    context.ui.notify(`usage: /${action} [count]`, "warning");
+    return;
+  }
+  let preview: CheckpointPreview;
+  try {
+    preview = await runtime.checkpoints.preview(action, count);
+  } catch (error) {
+    const message =
+      error instanceof CheckpointConflictError
+        ? error.message
+        : `checkpoint preview failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+    context.ui.notify(message, "error");
+    return;
+  }
+  if (preview.entries.length === 0) {
+    context.ui.notify(checkpointPreviewText(action, preview), "info");
+    return;
+  }
+  const confirmed = await context.ui.confirm(
+    action === "undo" ? "Undo file changes?" : "Redo file changes?",
+    `${checkpointPreviewText(action, preview)}\n\nOnly files whose current digest matches the checkpoint will be changed.`,
+  );
+  if (!confirmed) {
+    context.ui.notify(`${action} cancelled.`, "info");
+    return;
+  }
+  let result;
+  try {
+    result =
+      action === "undo"
+        ? await runtime.checkpoints.undo(count)
+        : await runtime.checkpoints.redo(count);
+  } catch (error) {
+    const message =
+      error instanceof CheckpointConflictError
+        ? error.message
+        : `${action} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+    context.ui.notify(message, "error");
+    return;
+  }
+  for (const entry of result.entries) {
+    const from = action === "undo" ? entry.after.sha256 : entry.before.sha256;
+    const to = action === "undo" ? entry.before.sha256 : entry.after.sha256;
+    try {
+      await runtime.host.recordEvent("checkpoint/restore", {
+        action,
+        checkpoint_id: entry.id,
+        tool_call_id: entry.tool_call_id,
+        target: entry.target,
+        from_sha256: from,
+        to_sha256: to,
+      });
+    } catch {
+      context.ui.notify(
+        `${action} restored files, but its session event could not be recorded.`,
+        "warning",
+      );
+    }
+  }
+  context.ui.notify(
+    `${action}: ${result.entries.length} file checkpoint(s) restored.`,
+    "info",
+  );
+}
+
 async function availableModels(runtime: CodepunkRuntime) {
   const modelRuntime = runtime.host.services.modelRuntime;
   const cached = modelRuntime.getAvailableSnapshot();
@@ -3178,6 +3289,18 @@ export function createTuiExtension(
         description: "Create or update AGENTS.md from repository evidence",
         handler: commandContext(state, async (runtime, context, args) => {
           await initializeProjectInstructions(runtime, context, args);
+        }),
+      });
+      pi.registerCommand("undo", {
+        description: "Restore recent Codepunk write/edit changes",
+        handler: commandContext(state, async (_runtime, context, args) => {
+          await restoreCheckpoint(state, context, "undo", args);
+        }),
+      });
+      pi.registerCommand("redo", {
+        description: "Reapply changes removed by /undo",
+        handler: commandContext(state, async (_runtime, context, args) => {
+          await restoreCheckpoint(state, context, "redo", args);
         }),
       });
       pi.registerCommand("status", {
