@@ -125,7 +125,11 @@ writes failures to stderr. `list` is read-only and does not start servers.
 `test --json` also reports `resource_servers` and the shared `resource_tools`
 list when a connected server advertises resources.
 The TUI `/mcp` command shows the same configured list and lifecycle guidance.
-Configuration changes take effect on the next Codepunk process.
+In the TUI, `/reload` re-reads `$CODEPUNK_HOME/mcp.toml` without replacing the
+Codepunk session: it starts the new server set, swaps the wrapped MCP tools,
+stops the previous server processes, and asks Pi to rebuild its tool registry.
+Codepunk config, skills, and plugin inventory are still read at process start,
+so those changes still need a restart.
 
 `login` is the only browser entry point. It runs Pi's sign-in flow against a
 loopback callback and stores the resulting client registration and tokens in
@@ -194,12 +198,16 @@ servers stay available, so one broken optional integration cannot make the
 whole session unusable. Explicit `mcp test` remains fail-closed and exits
 non-zero; the strict loader used by management and test paths still stops
 already-started servers and reports the failure.
+`/reload` uses the same tolerant loader and records a `mcp/server_start` event
+for every server it starts. If the new configuration is invalid, the previous
+server processes and tools stay active and the TUI reports the error instead
+of half-applying the change.
 
 `--no-mcp` skips every user-scope server for one session and records that
 choice in the startup warnings. The model and session are resolved before MCP
 startup. When no model is selected, every mode skips MCP startup and reports
-that the user must select a model and restart the session to load MCP tools;
-no user-scope stdio server runs during model onboarding.
+that the user must select a model and run `/reload` in the TUI (or restart) to
+load MCP tools; no user-scope stdio server runs during model onboarding.
 
 For a deliberately isolated run, `--no-skills`, `--no-plugins`, and
 `--no-mcp` remove one surface each. `--bare` removes all three together and

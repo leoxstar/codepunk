@@ -67,8 +67,11 @@ and `/new` dispose the old host, build a new Codepunk runtime for the selected
 or newly created session, and rebind the product extension context. `/fork` and
 `/clone` first write a live child session, then switch to it through the same
 replacement path. A Pi session replacement without a Codepunk target fails
-closed, as do `/import`, `/share`, `/bug`, and `/reload`; `/settings` and
-`/scoped-models` keep their file-backed product guidance.
+closed, as do `/import`, `/share`, and `/bug`. `/reload` keeps the same
+Codepunk session but re-reads `$CODEPUNK_HOME/mcp.toml`, closes the old server
+processes, and lets Pi rebuild its extension and tool registry; Codepunk
+config, skills, and user-plugin inventory remain startup-bound. `/settings`
+and `/scoped-models` keep their file-backed product guidance.
 
 `/subagent` reuses that same stack in a guarded child Codepunk process. The
 child gets its own product session and evidence; the parent records the link.
@@ -578,8 +581,8 @@ picker mechanics to Pi.
 
 ## Command ownership
 
-The TUI intercepts a slash command only when Pi's behavior would be wrong or
-misleading for Codepunk:
+The TUI owns or intercepts a slash command when Pi's behavior would be wrong,
+misleading, or incomplete for Codepunk:
 
 | Command                          | Owner                        | Behavior                                                                                                                                                                         |
 | -------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -600,7 +603,7 @@ misleading for Codepunk:
 | `/fork`, `/clone`, `/tree`       | Codepunk + Pi                | `/fork [entry]` and `/clone` create and switch to a live child product session; `/tree` lists or navigates Pi's branch and records the move in the Codepunk log.                 |
 | `/import`, `/share`              | Codepunk refusal             | Pi import/share would bypass the Codepunk evidence and redaction boundary.                                                                                                       |
 | `/bug`                           | Codepunk refusal             | Pi's bug report can upload a session transcript; Codepunk points at `/cp-export` for a local redacted transcript instead.                                                        |
-| `/reload`                        | Codepunk refusal             | Codepunk loads skills, plugins, MCP servers, and config at startup; restart the process instead of rebuilding the in-process Pi runtime.                                         |
+| `/reload`                        | Codepunk + Pi                | Re-reads user-scope MCP, restarts its servers, and asks Pi to reload the tool registry and Pi resources; Codepunk config, skills, and plugin inventory stay startup-bound.       |
 
 The `cp-` prefix is not a copy of Pi. It marks a Codepunk-owned command whose
 name would otherwise collide with a Pi builtin. Only two commands need it:
@@ -647,8 +650,10 @@ These are real gaps, not hidden fallbacks:
    `mcp test` and `doctor` perform real connection checks. OAuth sign-in and
    refresh reuse `pi-mcp/oauth`; credentials live in
    `$CODEPUNK_HOME/mcp-auth.json` with owner-only permissions, and a session
-   start never opens a browser. Skills and plugins have add/remove, and
-   plugins have enable/disable. Hot reload and TUI-based OAuth management are
+   start never opens a browser. `/reload` swaps MCP servers and tools in place,
+   including the model-selection and read-only gates, and records each newly
+   started server. Skills and plugins have add/remove, and plugins have
+   enable/disable, but their hot reload and TUI-based OAuth management are
    still missing.
 3. Approval prompts show action, command/path, reason, exact argv, sandbox
    coverage, a hashed proposed diff, and a redacted MCP argument preview bound
@@ -745,8 +750,9 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Add hot reload for plugins, skills, and MCP configuration with the same
-   policy gate as runtime use. OAuth sign-in and refresh already exist.
+1. Extend the `/reload` path to plugins, skills, and Codepunk configuration
+   with the same policy gate as runtime use. MCP hot reload and OAuth sign-in
+   already exist.
 2. Make session identity first-class: one visible command name per surface,
    and a fork flow with explicit parent-child evidence links.
 3. Extend the child-session path with streamed output and an explicit
@@ -759,8 +765,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 526 tests, 526 pass
-# repository check: 474 files, 3 packages
+# 531 tests, 531 pass
+# repository check: 479 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only

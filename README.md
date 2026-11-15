@@ -436,6 +436,10 @@ servers, and `mcp test` performs a real initialize/tools-list connection.
 Session startup is tolerant of one broken server: it records a configuration
 warning and keeps the other servers, while `mcp test` remains the fail-closed
 check for the broken entry.
+In the TUI, `/reload` re-reads `mcp.toml`, starts the new server set, stops the
+old processes, and rebuilds the wrapped tool surface without replacing the
+Codepunk session. Codepunk config, skills, and plugin inventory still require a
+restart.
 Transport comes from Pi's MCP client; Codepunk still approval-gates every
 server tool and records uncovered execution. `/mcp` shows the same inventory
 inside the TUI.

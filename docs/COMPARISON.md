@@ -314,8 +314,12 @@ in the comparison.
    sessions neither start MCP servers nor load user plugins; blanket approval
    still leaves every MCP call at a human gate because both execute outside
    the shell sandbox.
+   `/reload` re-reads `mcp.toml`, stops the old server processes, swaps the
+   wrapped tool surface, and lets Pi rebuild its registry without creating a
+   new Codepunk session. A reload that lands while no model is selected or
+   autonomy is read-only keeps MCP stopped and says why.
    Skills and plugins have file-based add/remove, plugins have enable/disable,
-   and hot reload plus TUI management commands are still missing.
+   but their hot reload and TUI management commands are still missing.
 9. Session continuity is live: `/resume` and `/new` rebuild the host,
    `/fork` and `/clone` write a child product session and switch to it, and
    `/tree` lists or navigates Pi's branch. Codepunk records `session/forked`
@@ -368,8 +372,8 @@ Ordered by expected value for the next iteration:
 
 1. Streamed child output and an explicit worktree cleanup/handoff command for
    profile-driven `/subagent` sessions.
-2. Plugin/skill/MCP hot reload with the same policy gating as runtime tool
-   calls. OAuth login and token refresh are implemented.
+2. Plugin/skill/config hot reload with the same policy gating as runtime tool
+   calls. MCP hot reload, OAuth login, and token refresh are implemented.
 3. Surface the existing session budget stop more clearly in the status line
    and session summary. The budget guard and virtual-model fallback are done.
 4. Session fork/clone with explicit parent-child evidence links, and one
