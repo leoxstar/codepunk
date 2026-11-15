@@ -71,6 +71,78 @@ async function startTextModelServer() {
   };
 }
 
+async function startHeldModelServer() {
+  const requests = [];
+  let firstResponse = null;
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      requests.push(JSON.parse(raw));
+      if (requests.length === 1) {
+        firstResponse = response;
+        return;
+      }
+      sendTextResponse(
+        response,
+        requests.length === 2 ? "STEER_DONE" : "AFTER_DONE",
+      );
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return {
+    server,
+    requests,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    releaseFirst() {
+      assert.ok(firstResponse);
+      sendTextResponse(firstResponse, "FIRST_DONE");
+      firstResponse = null;
+    },
+  };
+}
+
+function sendTextResponse(response, text) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+  });
+  const send = (value) => {
+    response.write(`data: ${JSON.stringify(value)}\n\n`);
+  };
+  send({
+    id: "text-response",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "local-test",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: text },
+        finish_reason: null,
+      },
+    ],
+  });
+  send({
+    id: "text-response",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "local-test",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    usage: {
+      prompt_tokens: 3,
+      completion_tokens: 2,
+      total_tokens: 5,
+    },
+  });
+  response.write("data: [DONE]\n\n");
+  response.end();
+}
+
 test("the TUI treats an active session model as selected", async () => {
   const { setTuiRuntime } = await importSource("packages/cli/src/tui.ts");
   const makeState = () => ({
@@ -214,12 +286,43 @@ test("autocomplete hides intercepted Pi builtins", async () => {
     { value: "plan", label: "plan" },
     { value: "settings", label: "settings" },
     { value: "share", label: "share" },
+    { value: "resume", label: "resume" },
+    { value: "new", label: "new" },
+    { value: "fork", label: "fork" },
+    { value: "clone", label: "clone" },
+    { value: "tree", label: "tree" },
     { value: "permissions", label: "permissions" },
   ];
   assert.deepEqual(
     filterInterceptedAutocomplete(items).map((item) => item.value),
-    ["model", "plan", "permissions"],
+    ["model", "plan", "resume", "new", "fork", "clone", "tree", "permissions"],
   );
+});
+
+test("resume preflight rejects a session held by a live writer", async () => {
+  const core = await importSource("packages/core/src/index.ts");
+  const { sessionResumeIssue } = await importSource("packages/cli/src/tui.ts");
+  await withTempDirectory("codepunk-resume-preflight-", async (dir) => {
+    const projectId = "resume-preflight";
+    const store = await core.SessionStore.create({
+      rootDir: dir,
+      cwd: dir,
+      projectRoot: dir,
+      projectId,
+      sessionId: core.createUlid(),
+    });
+    const runtime = {
+      paths: { home: dir, cwd: dir, deliveryRoot: dir, projectId },
+    };
+    assert.equal(await sessionResumeIssue(runtime, store.sessionId), null);
+    const writer = await store.acquireWriter();
+    try {
+      const issue = await sessionResumeIssue(runtime, store.sessionId);
+      assert.match(issue ?? "", /not resumable now/);
+    } finally {
+      await writer.release();
+    }
+  });
 });
 
 test("the Pi builtin command table is loaded from the installed host", async () => {
@@ -382,7 +485,11 @@ async function waitForOutput(session, marker, label) {
       return;
     }
     if (session.child.exitCode !== null) {
-      throw new Error(`${label}: TUI exited before rendering ${marker}`);
+      throw new Error(
+        `${label}: TUI exited before rendering ${marker}\n${stripAnsi(
+          session.output(),
+        ).slice(-4000)}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -398,7 +505,11 @@ async function waitForOutputAfter(session, mark, marker, label) {
       return;
     }
     if (session.child.exitCode !== null) {
-      throw new Error(`${label}: TUI exited before rendering ${marker}`);
+      throw new Error(
+        `${label}: TUI exited before rendering ${marker}\n${stripAnsi(
+          session.output(),
+        ).slice(-4000)}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -1944,22 +2055,16 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       await runCommandAfter(session, "/session", "session: ");
       assert.match(session.output(), /model: unknown\/unknown/u);
       assert.match(session.output(), /evidence: 0 record/u);
-      await runCommandAfter(
-        session,
-        "/resume",
-        "Live resume is not implemented in this TUI.",
-      );
+      await runCommandAfter(session, "/resume", "Already in session ");
       assert.match(session.output(), /events  \(untitled\)/u);
       await runCommandAfter(
         session,
         "/export",
         "Exported redacted transcript:",
       );
-      await runCommandAfter(
-        session,
-        "/new",
-        "start a new product session with codepunk --new-session",
-      );
+      await runCommandAfter(session, "/new", "Start a new codepunk session?");
+      session.child.stdin.write("\u001b");
+      await waitForQuiet(session, 250);
       await runCommandAfter(
         session,
         "/import probe.jsonl",
@@ -2065,16 +2170,8 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "Pi's /bug flow can upload a session transcript",
       );
       await runCommandAfter(session, "/reload", "Hot reload is not supported");
-      await runCommandAfter(
-        session,
-        "/fork current",
-        "A live source session is refused",
-      );
-      await runCommandAfter(
-        session,
-        "/tree",
-        "Moving within a Pi session tree is not exposed",
-      );
+      await runCommandAfter(session, "/fork", "forked ");
+      await runCommandAfter(session, "/tree", "Session tree");
       await runCommandAfter(
         session,
         "/definitely-not-a-command",
@@ -2166,6 +2263,417 @@ test("/login and /logout reach the Pi host instead of being intercepted", async 
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+    }
+  });
+});
+
+test("a real pty resumes another session without restarting the CLI", async () => {
+  await withTempDirectory("codepunk-tui-resume-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const model = await startTextModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "chat",
+                name: "Chat",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    try {
+      const cli = await ensureBuilt();
+      const env = {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      };
+      const first = startPty(process.execPath, [cli], { cwd: project, env });
+      let firstId;
+      try {
+        await waitForOutput(first, "codepunk · local/chat", "first startup");
+        first.child.stdin.write("first question\r");
+        await waitForOutput(first, "CHILD_OK", "first model reply");
+        await runCommandAfter(first, "/session", "session: ");
+        const ids = [...first.output().matchAll(/session: ([0-9A-Z]{10,})/gu)];
+        firstId = ids.at(-1)?.[1];
+        assert.ok(firstId);
+        first.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          first.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(first);
+      }
+
+      const second = startPty(process.execPath, [cli, "--new-session"], {
+        cwd: project,
+        env,
+      });
+      try {
+        await waitForOutput(second, "codepunk · local/chat", "second startup");
+        second.child.stdin.write("second question\r");
+        await waitForOutput(second, "CHILD_OK", "second model reply");
+        await runCommandAfter(second, "/session", "session: ");
+        const ids = [...second.output().matchAll(/session: ([0-9A-Z]{10,})/gu)];
+        const secondId = ids.at(-1)?.[1];
+        assert.ok(secondId);
+        assert.notEqual(secondId, firstId);
+
+        await runCommandAfter(
+          second,
+          `/resume ${firstId}`,
+          `resumed session ${firstId}`,
+        );
+        await runCommandAfter(second, "/session", `session: ${firstId}`);
+        second.child.stdin.write("after resume\r");
+        await waitForOutput(second, "CHILD_OK", "model reply after resume");
+        second.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          second.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(second);
+      }
+    } finally {
+      await new Promise((resolve) => model.server.close(resolve));
+    }
+  });
+});
+
+test("a real pty starts a new session in place", async () => {
+  await withTempDirectory("codepunk-tui-new-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/session", "session: ");
+      const firstMatches = [
+        ...session.output().matchAll(/session: ([0-9A-Z]{10,})/gu),
+      ];
+      const firstId = firstMatches.at(-1)?.[1];
+      assert.ok(firstId);
+      await runCommandAfter(session, "/new", "Start a new codepunk session?");
+      session.child.stdin.write("\r");
+      await waitForOutput(session, "started session ", "new session");
+      await runCommandAfter(session, "/session", "session: ");
+      const secondMatches = [
+        ...session.output().matchAll(/session: ([0-9A-Z]{10,})/gu),
+      ];
+      const secondId = secondMatches.at(-1)?.[1];
+      assert.ok(secondId);
+      assert.notEqual(secondId, firstId);
+      session.child.stdin.write("/quit\r");
+      const exited = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(exited, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("a real pty navigates the session tree and forks into a child session", async () => {
+  await withTempDirectory("codepunk-tui-fork-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const model = await startTextModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "chat",
+                name: "Chat",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    try {
+      const cli = await ensureBuilt();
+      const session = startPty(process.execPath, [cli], {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      });
+      try {
+        await waitForOutput(session, "codepunk · local/chat", "startup");
+        session.child.stdin.write("first branch prompt\r");
+        await waitForOutput(session, "CHILD_OK", "first reply");
+        session.child.stdin.write("second branch prompt\r");
+        await waitForOutput(session, "CHILD_OK", "second reply");
+        await runCommandAfter(session, "/session", "session: ");
+        const idMatches = [
+          ...session.output().matchAll(/session: ([0-9A-Z]{10,})/gu),
+        ];
+        const parentId = idMatches.at(-1)?.[1];
+        assert.ok(parentId);
+        const files = await fs.readdir(home, { recursive: true });
+        const stateEntry = files.find((entry) =>
+          entry.endsWith(path.join("sessions", parentId, "agent-state.json")),
+        );
+        assert.ok(stateEntry);
+        const statePath = path.join(home, stateEntry);
+        const parentState = JSON.parse(await fs.readFile(statePath, "utf8"));
+        const firstEntry = parentState.branch.find(
+          (entry) => entry.type === "message" && entry.message?.role === "user",
+        );
+        assert.ok(firstEntry);
+
+        await runCommandAfter(session, "/tree", "Session tree");
+        await runCommandAfter(
+          session,
+          `/tree ${firstEntry.id}`,
+          `moved to ${firstEntry.id}`,
+        );
+        const sessionLog = files.find((entry) =>
+          entry.endsWith(path.join("sessions", parentId, "session.jsonl")),
+        );
+        assert.ok(sessionLog);
+        const logRecords = (
+          await fs.readFile(path.join(home, sessionLog), "utf8")
+        )
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line));
+        assert.ok(
+          logRecords.some(
+            (record) =>
+              record.kind === "session/tree" &&
+              record.data?.to_entry_id === firstEntry.id,
+          ),
+        );
+
+        session.child.stdin.write("third branch prompt\r");
+        await waitForOutput(session, "CHILD_OK", "reply after tree move");
+        await runCommandAfter(session, "/fork", "forked ");
+        await runCommandAfter(session, "/session", "session: ");
+        const childMatches = [
+          ...session.output().matchAll(/session: ([0-9A-Z]{10,})/gu),
+        ];
+        const childId = childMatches.at(-1)?.[1];
+        assert.ok(childId);
+        assert.notEqual(childId, parentId);
+        const childFiles = await fs.readdir(home, { recursive: true });
+        const childStateEntry = childFiles.find((entry) =>
+          entry.endsWith(path.join("sessions", childId, "agent-state.json")),
+        );
+        assert.ok(childStateEntry);
+        const childState = JSON.parse(
+          await fs.readFile(path.join(home, childStateEntry), "utf8"),
+        );
+        assert.equal(childState.header.id, childId);
+        const childLogEntry = childFiles.find((entry) =>
+          entry.endsWith(path.join("sessions", childId, "session.jsonl")),
+        );
+        assert.ok(childLogEntry);
+        const childLog = (
+          await fs.readFile(path.join(home, childLogEntry), "utf8")
+        )
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line));
+        assert.equal(childLog[0].type, "codepunk/session");
+        assert.equal(childLog[0].parent_session_id, parentId);
+        const forkedEvent = childLog.find(
+          (record) => record.kind === "session/forked",
+        );
+        assert.ok(forkedEvent);
+        assert.equal(forkedEvent.data.parent_session_id, parentId);
+        assert.equal(forkedEvent.data.mode, "live");
+
+        session.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          session.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(session);
+      }
+    } finally {
+      await new Promise((resolve) => model.server.close(resolve));
+    }
+  });
+});
+
+test("a real pty queues input as steering while the model is streaming", async () => {
+  await withTempDirectory("codepunk-tui-steer-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const model = await startHeldModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "chat",
+                name: "Chat",
+                reasoning: false,
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    try {
+      const cli = await ensureBuilt();
+      const session = startPty(process.execPath, [cli], {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      });
+      try {
+        await waitForOutput(session, "codepunk · local/chat", "startup");
+        session.child.stdin.write("first question\r");
+        await waitFor(
+          () => (model.requests.length === 1 ? true : null),
+          "first model request",
+        );
+        session.child.stdin.write("steer now\r");
+        await waitForOutput(
+          session,
+          "Steering: steer now",
+          "queued steering message",
+        );
+        assert.equal(model.requests.length, 1);
+        model.releaseFirst();
+        await waitForOutput(session, "FIRST_DONE", "first model reply");
+        await waitForOutput(session, "STEER_DONE", "steered model reply");
+        const files = await fs.readdir(home, { recursive: true });
+        const logEntry = files.find((entry) => entry.endsWith("session.jsonl"));
+        assert.ok(logEntry);
+        const inputs = (await fs.readFile(path.join(home, logEntry), "utf8"))
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line))
+          .filter((record) => record.kind === "user/input")
+          .map((record) => record.data.text);
+        assert.ok(inputs.includes("first question"));
+        assert.ok(inputs.includes("steer now"));
+        session.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          session.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(session);
+      }
+    } finally {
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });

@@ -8,6 +8,7 @@ import {
   InteractiveMode,
   createAgentSessionRuntime,
   runPrintMode,
+  type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import {
   AutonomyController,
@@ -105,10 +106,13 @@ import type {
   DaemonSessionReadResult,
 } from "@codepunk/protocol";
 import {
+  applyReplacedRuntime,
   TuiApprovalChannel,
   createTuiExtension,
   modelOnboardingMessage,
   setTuiRuntime,
+  type TuiRuntimeReplacement,
+  type TuiSessionTarget,
   type TuiState,
 } from "./tui.ts";
 
@@ -1046,27 +1050,46 @@ function sessionSelector(value: string | undefined): {
     : { sessionId: value };
 }
 
-async function makeSessionRuntime(runtime: CodepunkRuntime) {
+async function makeSessionRuntime(
+  runtime: CodepunkRuntime,
+  options?: {
+    switchState: { target: TuiSessionTarget | null };
+    disposeCurrent: () => Promise<void>;
+    createRuntime: (target: TuiSessionTarget) => Promise<CodepunkRuntime>;
+  },
+) {
   const initialCwd = runtime.paths.cwd;
   const initialAgentDir = runtime.paths.home;
   const initialSessionManager = runtime.host.sessionManager;
   return createAgentSessionRuntime(
     async (target) => {
-      if (
-        path.resolve(target.cwd) !== path.resolve(initialCwd) ||
-        path.resolve(target.agentDir) !== path.resolve(initialAgentDir) ||
-        target.sessionManager !== initialSessionManager
-      ) {
+      if (target.sessionManager === initialSessionManager) {
+        return {
+          session: runtime.host.session,
+          services: runtime.host.services,
+          diagnostics: runtime.host.services.diagnostics,
+          extensionsResult:
+            runtime.host.services.resourceLoader.getExtensions() as never,
+        };
+      }
+      if (options === undefined) {
+        throw new Error("Pi session replacement is not supported in this mode");
+      }
+      const requested = options.switchState.target;
+      if (requested === null) {
         throw new Error(
-          "Pi session replacement is not supported; restart codepunk with --session, --new-session, or --fork",
+          "Pi requested a session replacement without a Codepunk target",
         );
       }
+      options.switchState.target = null;
+      await options.disposeCurrent();
+      const next = await options.createRuntime(requested);
       return {
-        session: runtime.host.session,
-        services: runtime.host.services,
-        diagnostics: runtime.host.services.diagnostics,
+        session: next.host.session,
+        services: next.host.services,
+        diagnostics: next.host.services.diagnostics,
         extensionsResult:
-          runtime.host.services.resourceLoader.getExtensions() as never,
+          next.host.services.resourceLoader.getExtensions() as never,
       };
     },
     {
@@ -1193,11 +1216,55 @@ async function runTui(options: CliOptions): Promise<number> {
     options,
     projectPaths(project),
   );
-  const runtime = await createRuntime({
-    cwd: process.cwd(),
-    additionalDirs: options.additionalDirs,
-    environment: process.env,
-    configOverrides: overrides,
+  const buildTuiRuntime = async (selection: {
+    sessionId?: string;
+    sessionPath?: string;
+    newSession?: boolean;
+    continueSession?: boolean;
+    newSessionId?: string;
+    parentSessionId?: string;
+  }) =>
+    createRuntime({
+      cwd: process.cwd(),
+      additionalDirs: options.additionalDirs,
+      environment: process.env,
+      configOverrides: overrides,
+      ...(selection.continueSession === undefined
+        ? {}
+        : { continueSession: selection.continueSession }),
+      ...(selection.newSession === undefined
+        ? {}
+        : { newSession: selection.newSession }),
+      ...(selection.newSessionId !== undefined
+        ? { newSessionId: selection.newSessionId }
+        : {}),
+      ...(selection.parentSessionId !== undefined
+        ? { parentSessionId: selection.parentSessionId }
+        : {}),
+      ...(selection.sessionId !== undefined
+        ? { sessionId: selection.sessionId }
+        : {}),
+      ...(selection.sessionPath !== undefined
+        ? { sessionPath: selection.sessionPath }
+        : {}),
+      ...(options.headlessPolicy !== undefined
+        ? { headlessPolicyPath: options.headlessPolicy }
+        : {}),
+      approvalChannel: channel,
+      allowUnsandboxedShell:
+        options.allowUnsandboxedShell || options.dangerouslyBypass,
+      allowFullFilesystem: options.dangerouslyBypass,
+      allowMissingModel: true,
+      bindMode: "tui",
+      allowPlugins: options.allowPlugins,
+      disableMcp: options.noMcp,
+      disableSkills: options.noSkills,
+      disablePlugins: options.noPlugins,
+      bare: options.bare,
+      additionalExtensionFactories: [extension],
+      ...trustRuntimeOptions(workspaceTrust),
+    });
+  const runtime = await buildTuiRuntime({
     continueSession: forkedSessionId === undefined && options.continueSession,
     newSession: forkedSessionId === undefined && options.newSession,
     ...(options.newSessionId !== undefined
@@ -1207,26 +1274,64 @@ async function runTui(options: CliOptions): Promise<number> {
       ? { parentSessionId: options.parentSessionId }
       : {}),
     ...selector,
-    ...(options.headlessPolicy !== undefined
-      ? { headlessPolicyPath: options.headlessPolicy }
-      : {}),
-    approvalChannel: channel,
-    allowUnsandboxedShell:
-      options.allowUnsandboxedShell || options.dangerouslyBypass,
-    allowFullFilesystem: options.dangerouslyBypass,
-    allowMissingModel: true,
-    bindMode: "tui",
-    allowPlugins: options.allowPlugins,
-    disableMcp: options.noMcp,
-    disableSkills: options.noSkills,
-    disablePlugins: options.noPlugins,
-    bare: options.bare,
-    additionalExtensionFactories: [extension],
-    ...trustRuntimeOptions(workspaceTrust),
   });
   setTuiRuntime(state, runtime);
+  let currentRuntime: CodepunkRuntime | null = runtime;
+  const switchState: { target: TuiSessionTarget | null } = { target: null };
   try {
-    const sessionRuntime = await makeSessionRuntime(runtime);
+    const sessionRuntime = await makeSessionRuntime(runtime, {
+      switchState,
+      async disposeCurrent() {
+        const current = currentRuntime;
+        currentRuntime = null;
+        if (current !== null) {
+          await current.dispose();
+        }
+      },
+      async createRuntime(target) {
+        const next = await buildTuiRuntime(target);
+        currentRuntime = next;
+        state.runtime = next;
+        return next;
+      },
+    });
+    state.replaceRuntime = async (target) => {
+      const previousRuntime = state.runtime;
+      const previousContext = state.context;
+      if (previousRuntime === null) {
+        throw new Error("codepunk runtime is not ready");
+      }
+      state.runtime = null;
+      state.context = null;
+      switchState.target = target;
+      let replacementContext: ExtensionCommandContext | null = null;
+      try {
+        const result = await sessionRuntime.newSession({
+          withSession: async (context) => {
+            replacementContext = context;
+          },
+        });
+        if (result.cancelled) {
+          throw new Error("session switch was cancelled");
+        }
+        if (replacementContext === null || currentRuntime === null) {
+          throw new Error("session switch did not produce a runtime");
+        }
+        const replacement: TuiRuntimeReplacement = {
+          runtime: currentRuntime,
+          context: replacementContext,
+        };
+        applyReplacedRuntime(state, replacement.runtime, replacement.context);
+        return replacement;
+      } catch (error) {
+        switchState.target = null;
+        if (currentRuntime !== null) {
+          state.runtime = previousRuntime;
+          state.context = previousContext;
+        }
+        throw error;
+      }
+    };
     const modelFallbackMessage =
       modelOnboardingMessage(runtime) ?? sessionRuntime.modelFallbackMessage;
     const interactive = new InteractiveMode(sessionRuntime, {
@@ -1236,7 +1341,7 @@ async function runTui(options: CliOptions): Promise<number> {
     await interactive.init();
     const applyTitle = () => {
       state.context?.ui.setTitle(
-        `codepunk · session ${runtime.session.sessionId}`,
+        `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
       );
     };
     applyTitle();
@@ -1255,7 +1360,7 @@ async function runTui(options: CliOptions): Promise<number> {
       Promise.allSettled(running.map((record) => record.promise)),
       new Promise((resolve) => setTimeout(resolve, 5_000)),
     ]);
-    await runtime.dispose();
+    await currentRuntime?.dispose();
   }
 }
 

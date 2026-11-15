@@ -19,6 +19,7 @@ import {
   decidePolicy,
   explainPermission,
   exportSession,
+  forkLiveSession,
   formatCapabilities,
   formatDoctor,
   formatPlan,
@@ -32,6 +33,7 @@ import {
   listUserPluginFiles,
   listProjectSessions,
   loadScopedRules,
+  LOCK_LEASE_MS,
   normalizeNetworkAllow,
   normalizeNetworkDeny,
   persistScopedRule,
@@ -40,15 +42,18 @@ import {
   previewWorkspaceTrustResources,
   readOnlyLiveWidenIssue,
   readOnlyLiveSwitchIssue,
+  readLock,
   readSkillInvocation,
   readWorkState,
   readSavedWorkspaceTrust,
+  SessionStore,
   createUlid,
   runReadOnlySubagent,
   runDoctor,
   resolveConfiguredModel,
   resolveModelSelection,
   saveWorkspaceTrust,
+  staleLockReason,
   setConfiguredModel,
   writeUserPermissionProfile,
   writeUserPermissionSelection,
@@ -83,6 +88,17 @@ export interface TuiState {
    * the installed host module at session start.
    */
   hostCommands: Set<string>;
+  replaceRuntime?: (target: TuiSessionTarget) => Promise<TuiRuntimeReplacement>;
+}
+
+export interface TuiSessionTarget {
+  sessionId?: string;
+  newSession?: boolean;
+}
+
+export interface TuiRuntimeReplacement {
+  runtime: CodepunkRuntime;
+  context: ExtensionCommandContext;
 }
 
 interface PiBuiltinSlashCommand {
@@ -292,11 +308,13 @@ export function codepunkHelp(): string {
     "",
     "Sessions and evidence",
     "  /cp-sessions, /session     list sessions or show the current one",
-    "  /resume                    list sessions and the supported resume command",
+    "  /resume [id|latest]        switch to another session in this TUI",
+    "  /fork [entry-id], /clone   fork at the leaf or entry and switch to the child",
+    "  /tree [entry-id]           list the session tree or move to an entry",
     "  /evidence, /budget         show evidence and model usage",
     "  /cp-export, /export        write a redacted transcript and manifest",
     "  /sign                      sign the current settled run",
-    "  /new                       show how to start a new product session",
+    "  /new                       start a new session in this TUI",
     "",
     "Local capabilities",
     "  /skills, /mcp, /plugins    list installed capabilities",
@@ -344,11 +362,6 @@ const INTERCEPTED_PI_COMMANDS = new Set([
   "share",
   "bug",
   "reload",
-  "fork",
-  "clone",
-  "tree",
-  "resume",
-  "new",
 ]);
 
 export function filterInterceptedAutocomplete<T extends { value: string }>(
@@ -453,6 +466,400 @@ function sessionSummary(runtime: CodepunkRuntime): string {
     `evidence: ${evidenceCount(runtime)} record(s)`,
     `sessions: ${runtime.paths.sessionsDir}`,
   ].join("\n");
+}
+
+interface TreeEntryView {
+  id: string;
+  type: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  customType?: string;
+}
+
+interface TreeNodeView {
+  entry: TreeEntryView;
+  children: TreeNodeView[];
+  label?: string;
+}
+
+function previewText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return value
+    .map((part) => {
+      if (
+        part !== null &&
+        typeof part === "object" &&
+        (part as { type?: unknown }).type === "text" &&
+        typeof (part as { text?: unknown }).text === "string"
+      ) {
+        return (part as { text: string }).text;
+      }
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
+function treeEntryPreview(entry: TreeEntryView): string {
+  const raw =
+    entry.type === "message"
+      ? previewText(entry.message?.content)
+      : entry.type === "compaction"
+        ? (entry.summary ?? "")
+        : entry.type === "custom_message"
+          ? `[${entry.customType ?? "custom"}] ${previewText((entry as { content?: unknown }).content)}`
+          : "";
+  const collapsed = raw.replace(/\s+/gu, " ").trim();
+  if (collapsed.length === 0) {
+    return "";
+  }
+  return collapsed.length <= 64 ? collapsed : `${collapsed.slice(0, 63)}…`;
+}
+
+function formatSessionTree(
+  tree: readonly TreeNodeView[],
+  leafId: string | null,
+): string {
+  if (tree.length === 0) {
+    return "Session tree is empty.";
+  }
+  const lines = [
+    `Session tree (leaf ${leafId ?? "none"})`,
+    "  * marks the current leaf; use /tree <entry-id> to move there",
+  ];
+  const walk = (nodes: readonly TreeNodeView[], depth: number): void => {
+    for (const node of nodes) {
+      const marker = node.entry.id === leafId ? " *" : "  ";
+      const label = node.label === undefined ? "" : `  [${node.label}]`;
+      const preview = treeEntryPreview(node.entry);
+      lines.push(
+        `${"  ".repeat(depth)}${marker} ${node.entry.id}  ${node.entry.type}${label}${
+          preview.length === 0 ? "" : `  ${preview}`
+        }`,
+      );
+      walk(node.children, depth + 1);
+    }
+  };
+  walk(tree, 1);
+  return lines.join("\n");
+}
+
+function sessionChoiceLabel(
+  entry: Awaited<ReturnType<typeof listProjectSessions>>[number],
+  currentId: string,
+): string {
+  return `${entry.id === currentId ? "*" : " "} ${entry.id}  ${entry.updated_at}  ${
+    entry.title ?? "(untitled)"
+  }${entry.parent_session_id === null ? "" : `  from ${entry.parent_session_id}`}`;
+}
+
+function matchSessionChoice(
+  entries: Awaited<ReturnType<typeof listProjectSessions>>,
+  query: string,
+): Awaited<ReturnType<typeof listProjectSessions>>[number] | null {
+  const exact = entries.find((entry) => entry.id === query);
+  if (exact !== undefined) {
+    return exact;
+  }
+  const matches = entries.filter((entry) => entry.id.startsWith(query));
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+/**
+ * Pi tears down the current host session before it builds the replacement.
+ * A target that cannot be opened or locked therefore costs the live TUI
+ * runtime, not just the switch. Check the durable store first so a live
+ * writer, stale state, or corrupt session is reported before teardown.
+ */
+export async function sessionResumeIssue(
+  runtime: Pick<CodepunkRuntime, "paths">,
+  sessionId: string,
+): Promise<string | null> {
+  try {
+    const store = await SessionStore.open({
+      rootDir: runtime.paths.home,
+      cwd: runtime.paths.cwd,
+      projectRoot: runtime.paths.deliveryRoot,
+      projectId: runtime.paths.projectId,
+      sessionId,
+    });
+    const lock = await readLock(store.paths.lockPath);
+    if (lock !== null) {
+      const reason = staleLockReason(lock, new Date(), LOCK_LEASE_MS);
+      if (reason !== null) {
+        return `session ${sessionId} is not resumable now: ${reason}`;
+      }
+    }
+    const state = await store.readAgentState();
+    if (state === null) {
+      return store.allEvents.length === 0
+        ? null
+        : `session ${sessionId} has events but no agent-state.json`;
+    }
+    const resumed = await store.resume();
+    if (resumed.uncommittedEvents.length > 0) {
+      return `session ${sessionId} has ${resumed.uncommittedEvents.length} uncommitted event(s) after the last agent-state snapshot`;
+    }
+    return null;
+  } catch (error) {
+    return `session ${sessionId} cannot be resumed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+async function resumeSession(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null || state.replaceRuntime === undefined) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const entries = await listProjectSessions(
+    runtime.paths.home,
+    runtime.paths.projectId,
+  );
+  if (entries.length === 0) {
+    context.ui.notify("No sessions in this project.", "warning");
+    return;
+  }
+  let targetId: string | undefined;
+  const query = argument.trim();
+  if (query === "latest" || query === "--latest") {
+    targetId = entries[0]!.id;
+  } else if (query.length > 0) {
+    const matched = matchSessionChoice(entries, query);
+    if (matched === null) {
+      context.ui.notify(
+        `No unique session matches ${query}. Use /cp-sessions to list exact ids.`,
+        "warning",
+      );
+      return;
+    }
+    targetId = matched.id;
+  } else if (entries.length === 1) {
+    targetId = entries[0]!.id;
+  } else {
+    const labels = entries
+      .slice(0, 20)
+      .map((entry) => sessionChoiceLabel(entry, runtime.session.sessionId));
+    const selected = await context.ui.select("Resume session", labels);
+    if (selected === undefined) {
+      return;
+    }
+    targetId = entries[labels.indexOf(selected)]?.id;
+  }
+  if (targetId === undefined) {
+    return;
+  }
+  if (targetId === runtime.session.sessionId) {
+    context.ui.notify(`Already in session ${targetId}.`, "info");
+    return;
+  }
+  if (runtime.host.session.isStreaming || runtime.host.session.isCompacting) {
+    context.ui.notify(
+      "Wait for the current run to settle before switching sessions.",
+      "warning",
+    );
+    return;
+  }
+  const issue = await sessionResumeIssue(runtime, targetId);
+  if (issue !== null) {
+    context.ui.notify(issue, "error");
+    return;
+  }
+  try {
+    const replacement = await state.replaceRuntime({ sessionId: targetId });
+    replacement.context.ui.notify(`resumed session ${targetId}`, "info");
+  } catch (error) {
+    context.ui.notify(
+      `resume failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
+}
+
+async function forkCurrentSession(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null || state.replaceRuntime === undefined) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const session = runtime.host.session;
+  if (session.isStreaming || session.isCompacting) {
+    context.ui.notify(
+      "Wait for the current run to settle before forking.",
+      "warning",
+    );
+    return;
+  }
+  const entryId = argument.trim();
+  if (entryId.length > 0) {
+    const entry = runtime.host.sessionManager.getEntry(entryId);
+    if (entry === undefined) {
+      context.ui.notify(`No session entry ${entryId}.`, "warning");
+      return;
+    }
+  }
+  const parentState = await runtime.host.saveAgentState();
+  if (parentState === null) {
+    context.ui.notify(
+      "the current session has no agent state to fork",
+      "error",
+    );
+    return;
+  }
+  const branch =
+    entryId.length === 0
+      ? parentState.branch
+      : runtime.host.sessionManager.getBranch(entryId);
+  try {
+    const forked = await forkLiveSession({
+      parent: runtime.session,
+      parentState,
+      rootDir: runtime.paths.home,
+      cwd: runtime.paths.cwd,
+      projectRoot: runtime.paths.deliveryRoot,
+      projectId: runtime.paths.projectId,
+      branch,
+      ...(entryId.length === 0 ? {} : { forkEntryId: entryId }),
+    });
+    const replacement = await state.replaceRuntime({
+      sessionId: forked.sessionId,
+    });
+    replacement.context.ui.notify(
+      [
+        `forked ${forked.parentSessionId} -> ${forked.sessionId}`,
+        `entries: ${forked.forkEntries}; parent last seq: ${forked.parentLastSeq}`,
+      ].join("\n"),
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `fork failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
+}
+
+async function navigateSessionTree(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const entryId = argument.trim();
+  if (entryId.length === 0 || entryId === "list") {
+    context.ui.notify(
+      formatSessionTree(
+        runtime.host.sessionManager.getTree() as TreeNodeView[],
+        runtime.host.sessionManager.getLeafId(),
+      ),
+      "info",
+    );
+    return;
+  }
+  const session = runtime.host.session;
+  if (session.isStreaming || session.isCompacting) {
+    context.ui.notify(
+      "Wait for the current run to settle before moving in the tree.",
+      "warning",
+    );
+    return;
+  }
+  const target = runtime.host.sessionManager.getEntry(entryId);
+  if (target === undefined) {
+    context.ui.notify(`No session entry ${entryId}.`, "warning");
+    return;
+  }
+  const from = runtime.host.sessionManager.getLeafId();
+  if (from === target.id) {
+    context.ui.notify(`${entryId} is already the current leaf.`, "info");
+    return;
+  }
+  try {
+    const result = await session.navigateTree(target.id, {
+      summarize: false,
+    });
+    if (result.cancelled) {
+      context.ui.notify("tree navigation was cancelled", "warning");
+      return;
+    }
+    await runtime.host.recordEvent("session/tree", {
+      action: "navigate",
+      from_entry_id: from,
+      to_entry_id: target.id,
+      branch_entries: runtime.host.sessionManager.getBranch().length,
+    });
+    await runtime.host.saveAgentState();
+    context.ui.notify(
+      `moved to ${target.id}; the next prompt continues from this branch`,
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `tree navigation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
+}
+
+async function startNewSession(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null || state.replaceRuntime === undefined) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  if (runtime.host.session.isStreaming || runtime.host.session.isCompacting) {
+    context.ui.notify(
+      "Wait for the current run to settle before starting a new session.",
+      "warning",
+    );
+    return;
+  }
+  const selected = await context.ui.select("Start a new codepunk session?", [
+    "Start new session",
+    "Cancel",
+  ]);
+  if (selected !== "Start new session") {
+    return;
+  }
+  try {
+    const replacement = await state.replaceRuntime({ newSession: true });
+    replacement.context.ui.notify(
+      `started session ${replacement.runtime.session.sessionId}`,
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `new session failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
 }
 
 async function scopedRulesSummary(runtime: CodepunkRuntime): Promise<string> {
@@ -1831,17 +2238,10 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           return true;
         }
         if (trimmed === "/resume" || trimmed.startsWith("/resume ")) {
-          const sessions = await listProjectSessions(
-            runtime.paths.home,
-            runtime.paths.projectId,
-          );
-          context.ui.notify(
-            [
-              "Live resume is not implemented in this TUI.",
-              formatSessionList(sessions),
-              "Restart with `codepunk --session <id>` or `codepunk --continue`.",
-            ].join("\n\n"),
-            "info",
+          await resumeSession(
+            state,
+            context,
+            trimmed.slice("/resume".length).trim(),
           );
           return true;
         }
@@ -1865,10 +2265,7 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           return false;
         }
         if (trimmed === "/new" || trimmed.startsWith("/new ")) {
-          context.ui.notify(
-            "start a new product session with codepunk --new-session",
-            "info",
-          );
+          await startNewSession(state, context);
           return true;
         }
         if (trimmed === "/model" || trimmed.startsWith("/model ")) {
@@ -2003,23 +2400,18 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           isSlashCommand(trimmed, "/fork") ||
           isSlashCommand(trimmed, "/clone")
         ) {
-          context.ui.notify(
-            [
-              `Fork the current session as a new child session: codepunk --fork ${runtime.session.sessionId}`,
-              "The child copies the settled Pi branch and records a session/forked evidence event bound to the parent state.",
-              "A live source session is refused; exit this TUI before forking it.",
-            ].join("\n"),
-            "info",
+          await forkCurrentSession(
+            state,
+            context,
+            trimmed.split(/\s+/u).slice(1).join(" ").trim(),
           );
           return true;
         }
         if (isSlashCommand(trimmed, "/tree")) {
-          context.ui.notify(
-            [
-              "Moving within a Pi session tree is not exposed; codepunk persists one settled branch per session.",
-              "Use /fork in a shell to create a child session from the current branch.",
-            ].join("\n"),
-            "warning",
+          await navigateSessionTree(
+            state,
+            context,
+            trimmed.slice("/tree".length).trim(),
           );
           return true;
         }
@@ -2207,6 +2599,11 @@ export function createTuiExtension(
       pi.on("session_shutdown", async (event) => {
         if (event.reason === "quit" && state.runtime !== null) {
           await persistPiDefaultModel(state.runtime);
+          // Pi's /quit path can terminate the process without returning to the
+          // caller's finally block. Release the session writer here so the
+          // next codepunk process can resume immediately instead of waiting
+          // for the lock lease to expire.
+          await state.runtime.dispose().catch(() => undefined);
         }
       });
       pi.registerCommand("help", {
@@ -2662,4 +3059,17 @@ export function setTuiRuntime(state: TuiState, runtime: CodepunkRuntime): void {
   if (state.context !== null) {
     setupChrome(state, state.context);
   }
+}
+
+export function applyReplacedRuntime(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+): void {
+  state.context = context;
+  state.channel.attach(context);
+  state.ready = true;
+  state.lastRunId = runtime.host.currentRunId;
+  state.lastEvidence = runtime.ledger.all.length;
+  setTuiRuntime(state, runtime);
 }
