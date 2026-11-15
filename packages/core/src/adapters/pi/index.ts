@@ -69,6 +69,7 @@ import {
   createCodepunkToolDefinitions,
   type CodepunkToolName,
 } from "../../tools/index.ts";
+import { MCP_RESOURCE_TOOL_NAMES } from "../../mcp/names.ts";
 import {
   wrapToolDefinitions,
   wrapUserBashCommand,
@@ -136,6 +137,15 @@ export interface PiHost {
     | undefined;
   fallbackModels: readonly string[];
   readonly currentRunId: string;
+  /**
+   * Replace the tool definitions appended after Codepunk's own tool surface.
+   * Pi keeps a reference to the custom-tool array, so callers that then invoke
+   * `session.reload()` get a rebuilt registry without reaching into Pi's
+   * private registry state.
+   */
+  replaceExtraTools(
+    tools: readonly ToolDefinition<any, any, any>[],
+  ): Promise<void>;
   validateToolRegistry(): ToolRegistrySnapshot;
   beginRun(): Promise<void>;
   endRun(
@@ -1587,8 +1597,10 @@ export async function createPiHost(
               await appendEvent("todo/update", event);
             },
           };
-    const definitions = [
-      ...createCodepunkToolDefinitions(cwd, options.sandbox ?? null, {
+    const baseDefinitions = createCodepunkToolDefinitions(
+      cwd,
+      options.sandbox ?? null,
+      {
         mode: options.mode ?? "interactive",
         workspaceRoot: options.workspaceRoot,
         ...(options.additionalRoots !== undefined
@@ -1599,11 +1611,26 @@ export async function createPiHost(
           : {}),
         memory: options.memory ?? null,
         work,
-      }),
-      ...(options.extraTools ?? []),
-    ];
+      },
+    );
+    const definitions = [...baseDefinitions, ...(options.extraTools ?? [])];
     const wrapped = await wrapToolDefinitions(definitions, wrapOptions);
-    const activeNames = wrapped.map((definition) => definition.name);
+    // MCP servers can be added or removed while this session is running. Keep
+    // their name patterns in Pi's allowlist so tools from a reloaded server are
+    // not filtered out as "unknown" before activation. Codepunk still wraps
+    // every registered MCP tool through the normal policy/approval path.
+    const mcpToolPatterns = [
+      "mcp__*",
+      ...[...MCP_RESOURCE_TOOL_NAMES].filter(
+        (name) => !wrapped.some((definition) => definition.name === name),
+      ),
+    ];
+    const activeNames = [
+      ...new Set([
+        ...wrapped.map((definition) => definition.name),
+        ...mcpToolPatterns,
+      ]),
+    ];
     const created = await createAgentSessionFromServices({
       services,
       sessionManager,
@@ -1682,6 +1709,24 @@ export async function createPiHost(
     }
 
     const wrappedToolNames = wrapped.map((definition) => definition.name);
+    const replaceExtraTools = async (
+      tools: readonly ToolDefinition<any, any, any>[],
+    ): Promise<void> => {
+      if (session === null) {
+        throw new HostIsolationError("Pi session is not ready");
+      }
+      const wrappedExtra = await wrapToolDefinitions(tools, wrapOptions);
+      wrapped.splice(
+        baseDefinitions.length,
+        wrapped.length - baseDefinitions.length,
+        ...wrappedExtra,
+      );
+      wrappedToolNames.splice(
+        0,
+        wrappedToolNames.length,
+        ...wrapped.map((definition) => definition.name),
+      );
+    };
     return {
       session,
       services,
@@ -1695,6 +1740,7 @@ export async function createPiHost(
       get currentRunId(): string {
         return currentRunId;
       },
+      replaceExtraTools,
       validateToolRegistry: validate,
       beginRun,
       endRun,

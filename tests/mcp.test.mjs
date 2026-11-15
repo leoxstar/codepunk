@@ -1460,6 +1460,114 @@ test("runtime starts user-scope servers and records the start", async () => {
   });
 });
 
+test("runtime MCP reload swaps servers, tools, and stops the old process", async () => {
+  await withTempDirectory("codepunk-mcp-reload-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const firstPidFile = path.join(root, "first.pid");
+    const secondPidFile = path.join(root, "second.pid");
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(home, "mcp.toml"),
+      serverTable("first", "normal", firstPidFile),
+    );
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      model: TEST_MODEL,
+    });
+    try {
+      assert.deepEqual(runtime.mcpServers, ["first"]);
+      assert.ok(runtime.host.wrappedToolNames.includes("mcp__first__echo"));
+      assert.ok(
+        runtime.host.session.getActiveToolNames().includes("mcp__first__echo"),
+      );
+      const firstPid = await readPid(firstPidFile);
+
+      await writeFile(
+        path.join(home, "mcp.toml"),
+        serverTable("second", "normal", secondPidFile),
+      );
+      const result = await runtime.reloadMcp();
+      assert.equal(result.error, null);
+      assert.equal(result.skipped, null);
+      assert.deepEqual(result.servers, ["second"]);
+      assert.deepEqual(runtime.mcpServers, ["second"]);
+      assert.ok(runtime.host.wrappedToolNames.includes("mcp__second__echo"));
+      assert.equal(
+        runtime.host.wrappedToolNames.some((name) =>
+          name.startsWith("mcp__first__"),
+        ),
+        false,
+      );
+      assert.ok(
+        runtime.host.session.getActiveToolNames().includes("mcp__second__echo"),
+      );
+      assert.equal(
+        runtime.host.session.getActiveToolNames().includes("mcp__first__echo"),
+        false,
+      );
+      await waitForProcessExit(firstPid);
+      const secondPid = await readPid(secondPidFile);
+      assert.ok(secondPid > 0);
+      assert.equal(
+        runtime.session.allEvents.some(
+          (event) =>
+            event.kind === "mcp/server_start" && event.data.server === "second",
+        ),
+        true,
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
+test("runtime MCP reload keeps the previous surface on an invalid config", async () => {
+  await withTempDirectory("codepunk-mcp-reload-bad-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const pidFile = path.join(root, "kept.pid");
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(home, "mcp.toml"),
+      serverTable("kept", "normal", pidFile),
+    );
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      model: TEST_MODEL,
+    });
+    try {
+      const keptPid = await readPid(pidFile);
+      await writeFile(
+        path.join(home, "mcp.toml"),
+        '[servers.broken\ncommand = "node"\n',
+      );
+      const result = await runtime.reloadMcp();
+      assert.match(
+        result.error ?? "",
+        /MCP configuration could not be loaded/u,
+      );
+      assert.deepEqual(result.servers, ["kept"]);
+      assert.deepEqual(runtime.mcpServers, ["kept"]);
+      assert.ok(runtime.host.wrappedToolNames.includes("mcp__kept__echo"));
+      assert.ok(
+        runtime.host.session.getActiveToolNames().includes("mcp__kept__echo"),
+      );
+      process.kill(keptPid, 0);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
 test("a project MCP file is ignored after trust and never starts a server", async () => {
   await withTempDirectory("codepunk-mcp-project-", async (root) => {
     const project = await makeRepo(root);
@@ -1579,9 +1687,47 @@ test("interactive onboarding skips MCP until a model is selected", async () => {
       assert.deepEqual(runtime.mcpServers, []);
       assert.match(
         runtime.loadedConfig.warnings.join("\n"),
-        /select a model and restart the session/u,
+        /select a model with \/model and run \/reload/u,
       );
       await assert.rejects(() => fs.access(pidFile));
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
+test("MCP reload starts servers after onboarding selects a model", async () => {
+  await withTempDirectory("codepunk-mcp-reload-model-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const pidFile = path.join(root, "selected.pid");
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(home, "mcp.toml"),
+      serverTable("echo", "normal", pidFile),
+    );
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      allowMissingModel: true,
+    });
+    try {
+      assert.deepEqual(runtime.mcpServers, []);
+      await assert.rejects(() => fs.access(pidFile));
+      runtime.primaryModel = TEST_MODEL;
+      const result = await runtime.reloadMcp();
+      assert.equal(result.error, null);
+      assert.equal(result.skipped, null);
+      assert.deepEqual(result.servers, ["echo"]);
+      assert.deepEqual(runtime.mcpServers, ["echo"]);
+      assert.ok(runtime.host.wrappedToolNames.includes("mcp__echo__echo"));
+      assert.ok(
+        runtime.host.session.getActiveToolNames().includes("mcp__echo__echo"),
+      );
+      assert.ok((await readPid(pidFile)) > 0);
     } finally {
       await runtime.dispose();
     }

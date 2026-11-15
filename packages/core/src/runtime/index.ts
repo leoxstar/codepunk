@@ -80,6 +80,7 @@ import {
   findProjectMcpConfigs,
   loadMcpTools,
   type McpBundle,
+  type McpServerFailure,
   type McpServerStart,
 } from "../mcp/index.ts";
 import { loadSkills, type SkillSource } from "../skills/index.ts";
@@ -253,7 +254,25 @@ export interface CodepunkRuntime {
     sourceRefs: readonly string[];
     reason: string | null;
   }): Promise<void>;
+  /**
+   * Re-read `$CODEPUNK_HOME/mcp.toml`, replace the MCP tool surface, and let
+   * Pi rebuild its extension/tool registry. This is the `/reload` path; it
+   * does not recreate the Codepunk session or its evidence chain.
+   */
+  reloadMcp(): Promise<McpReloadResult>;
   dispose(): Promise<void>;
+}
+
+export type McpReloadSkip = "disabled" | "no-model" | "read-only";
+
+export interface McpReloadResult {
+  skipped: McpReloadSkip | null;
+  servers: readonly string[];
+  toolCounts: Readonly<Record<string, number>>;
+  resourceServers: readonly string[];
+  failures: readonly McpServerFailure[];
+  warnings: readonly string[];
+  error: string | null;
 }
 
 function executableHash(bytes: Buffer): string {
@@ -784,7 +803,7 @@ export async function createRuntime(
         .catch(() => false)
     ) {
       loadedConfig.warnings.push(
-        "MCP servers are not started because no model is selected; select a model and restart the session to load MCP tools",
+        "MCP servers are not started because no model is selected; select a model with /model and run /reload in the TUI (or restart) to load MCP tools",
       );
     }
   } else if (readOnly) {
@@ -799,7 +818,7 @@ export async function createRuntime(
         .catch(() => false)
     ) {
       loadedConfig.warnings.push(
-        "read-only autonomy does not start MCP servers; their tools are unavailable in this session",
+        "read-only autonomy does not start MCP servers; leave read-only and run /reload in the TUI (or restart) to start them",
       );
     }
   } else {
@@ -1066,7 +1085,9 @@ export async function createRuntime(
       mcp: disableMcp,
       memory: bare,
     },
-    mcpServers: mcp.servers,
+    get mcpServers() {
+      return mcp.servers;
+    },
     workspaceTrust,
     memory,
     session,
@@ -1154,6 +1175,129 @@ export async function createRuntime(
         source_refs: [...input.sourceRefs],
         reason: input.reason,
       });
+    },
+    async reloadMcp() {
+      if (host.session.isStreaming) {
+        throw new Error(
+          "Wait for the current response to finish before reloading.",
+        );
+      }
+      if (host.session.isCompacting) {
+        throw new Error("Wait for compaction to finish before reloading.");
+      }
+      const previous = mcp;
+      const previousTools = [...previous.tools, ...previous.resourceTools];
+      const sessionModel = host.session.model;
+      const hasModel =
+        runtime.primaryModel !== undefined ||
+        (sessionModel !== undefined && !isFallbackModel(sessionModel));
+      const skipped: McpReloadSkip | null = disableMcp
+        ? "disabled"
+        : !hasModel
+          ? "no-model"
+          : config.autonomy.profile === "read-only"
+            ? "read-only"
+            : null;
+      const warnings: string[] = [];
+      const starts: McpServerStart[] = [];
+      let next: McpBundle | null = null;
+      let error: string | null = null;
+
+      if (skipped !== null) {
+        next = emptyMcpBundle();
+      } else {
+        try {
+          next = await loadMcpTools({
+            paths,
+            strict: false,
+            onServerStart: (start) => {
+              starts.push(start);
+            },
+          });
+        } catch (loadError) {
+          error = `MCP configuration could not be loaded: ${
+            loadError instanceof Error ? loadError.message : String(loadError)
+          }`;
+        }
+      }
+
+      let applied = false;
+      if (next !== null) {
+        try {
+          await host.replaceExtraTools([...next.tools, ...next.resourceTools]);
+          applied = true;
+        } catch (replaceError) {
+          error = `MCP tools could not be registered: ${
+            replaceError instanceof Error
+              ? replaceError.message
+              : String(replaceError)
+          }`;
+          await next.close().catch(() => undefined);
+          next = null;
+        }
+      }
+
+      try {
+        await host.session.reload();
+      } catch (reloadError) {
+        const message =
+          reloadError instanceof Error
+            ? reloadError.message
+            : String(reloadError);
+        error =
+          error === null
+            ? `Pi reload failed: ${message}`
+            : `${error}; Pi reload failed: ${message}`;
+        if (applied && next !== null) {
+          try {
+            await host.replaceExtraTools(previousTools);
+          } catch {
+            // The Pi registry may already have been rebuilt. Keep the
+            // original error; the caller is told to restart the process.
+          }
+          applied = false;
+        }
+      }
+
+      if (next === null || !applied) {
+        if (next !== null) {
+          await next.close().catch(() => undefined);
+        }
+        return {
+          skipped: null,
+          servers: [...previous.servers],
+          toolCounts: { ...previous.toolCounts },
+          resourceServers: [...previous.resourceServers],
+          failures: [...previous.failures],
+          warnings,
+          error: error ?? "MCP reload did not apply",
+        };
+      }
+
+      mcp = next;
+      try {
+        await previous.close();
+      } catch (closeError) {
+        warnings.push(
+          `previous MCP servers could not be closed: ${
+            closeError instanceof Error
+              ? closeError.message
+              : String(closeError)
+          }`,
+        );
+      }
+      for (const start of starts) {
+        await host.recordEvent("mcp/server_start", start);
+      }
+      return {
+        skipped,
+        servers: [...next.servers],
+        toolCounts: { ...next.toolCounts },
+        resourceServers: [...next.resourceServers],
+        failures: [...next.failures],
+        warnings,
+        error,
+      };
     },
     async dispose() {
       await mcp.close();
