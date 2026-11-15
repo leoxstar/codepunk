@@ -4094,6 +4094,14 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
         `completed; use /agents result ${childSessionId}`,
         "/subagent completion",
       );
+      assert.match(session.output().slice(startMark), /transcript:/u);
+      assert.match(session.output().slice(startMark), /transcript\.jsonl/u);
+      await runCommandAfter(
+        session,
+        `/agents transcript ${childSessionId}`,
+        "WRITE_DONE",
+      );
+      assert.match(session.output(), /tool write:/u);
       await runCommandAfter(
         session,
         `/agents review ${childSessionId}`,

@@ -239,6 +239,7 @@ export interface BackgroundSubagent {
   result: SubagentHostResult | null;
   error: string | null;
   worktree: string | null;
+  transcriptPath: string | null;
   streamTail: string;
   lastTool: string | null;
   lastStreamUpdate: number;
@@ -365,7 +366,7 @@ export function codepunkHelp(): string {
     "  !<command>                 run a shell command through the same policy gate",
     "  /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
     "                             start a child session from a discovered profile",
-    "  /agents [profiles|result|wait|stop|review|sign|merge|discard <id>]",
+    "  /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard <id>]",
     "                             list profiles or manage child sessions",
     "  /plan                      show the current plan",
     "  /todos                     show the current todo list",
@@ -3254,6 +3255,7 @@ async function runSubagent(
     result: null,
     error: null,
     worktree: null,
+    transcriptPath: null,
     streamTail: "",
     lastTool: null,
     lastStreamUpdate: 0,
@@ -3327,12 +3329,16 @@ async function runSubagent(
       });
       record.status = "completed";
       record.worktree = record.result?.worktree ?? null;
+      record.transcriptPath = record.result?.transcript_path ?? null;
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error);
       if (error instanceof ChildHostError && error.worktree !== null) {
         failureWorktree = error.worktree;
       }
       record.worktree = failureWorktree;
+      if (error instanceof ChildHostError && error.transcript !== null) {
+        record.transcriptPath = error.transcript;
+      }
       stopped =
         error instanceof ChildHostError && error.code === "subagent.stopped";
       record.status = stopped ? "stopped" : "failed";
@@ -3354,6 +3360,7 @@ async function runSubagent(
       profile_sha256: record.result?.profile_sha256 ?? profile?.sha256 ?? null,
       worktree: record.result?.worktree ?? failureWorktree,
       base_commit: record.result?.base_commit ?? null,
+      transcript_path: record.transcriptPath ?? null,
       changed_files: record.result?.changed_files ?? null,
     };
     try {
@@ -3379,6 +3386,10 @@ async function runSubagent(
                 `next: /agents review ${childSessionId} → /agents sign ${childSessionId} → /agents merge ${childSessionId}`,
                 `discard: /agents discard ${childSessionId}`,
               ]),
+          ...(record.result?.transcript_path === null ||
+          record.result?.transcript_path === undefined
+            ? []
+            : [`transcript: ${record.result.transcript_path}`]),
         ].join("\n"),
         "info",
       );
@@ -3390,7 +3401,11 @@ async function runSubagent(
       state.context?.ui.notify(
         `subagent ${childSessionId} ${record.status}${
           record.error === null ? "" : `: ${record.error}`
-        }${worktreeNotice}`,
+        }${worktreeNotice}${
+          record.transcriptPath === null
+            ? ""
+            : `\ntranscript: ${record.transcriptPath}`
+        }`,
         record.status === "stopped" ? "warning" : "error",
       );
     }
@@ -3476,6 +3491,169 @@ async function subagentReviewText(record: BackgroundSubagent): Promise<string> {
       `summary: ${record.result?.summary ?? record.error ?? record.status}`,
     ].join("\n\n"),
   );
+}
+
+interface ChildTranscriptEvent {
+  type?: unknown;
+  message?: {
+    role?: unknown;
+    content?: unknown;
+  };
+  toolName?: unknown;
+  isError?: unknown;
+  result?: {
+    content?: unknown;
+  };
+}
+
+function transcriptContentText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return value
+    .map((part) => {
+      if (
+        part !== null &&
+        typeof part === "object" &&
+        "text" in part &&
+        typeof part.text === "string"
+      ) {
+        return part.text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+function transcriptToolCalls(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((part) => {
+    if (
+      part === null ||
+      typeof part !== "object" ||
+      !("type" in part) ||
+      part.type !== "toolCall" ||
+      !("name" in part) ||
+      typeof part.name !== "string"
+    ) {
+      return [];
+    }
+    const id = "id" in part && typeof part.id === "string" ? ` ${part.id}` : "";
+    const args =
+      "arguments" in part ? JSON.stringify(part.arguments) : "(no arguments)";
+    return [`tool call ${part.name}${id}: ${args}`];
+  });
+}
+
+async function subagentTranscriptText(
+  record: BackgroundSubagent,
+): Promise<string> {
+  const transcriptPath =
+    record.transcriptPath ?? record.result?.transcript_path ?? null;
+  if (transcriptPath === null) {
+    return `subagent ${record.childSessionId} has no transcript`;
+  }
+  const limit = 4 * 1024 * 1024;
+  const handle = await fs.open(transcriptPath, "r");
+  let raw: string;
+  let truncatedFile: boolean;
+  try {
+    const stat = await handle.stat();
+    const size = Math.min(stat.size, limit);
+    const buffer = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        size - offset,
+        offset,
+      );
+      if (bytesRead === 0) {
+        break;
+      }
+      offset += bytesRead;
+    }
+    raw = buffer.subarray(0, offset).toString("utf8");
+    truncatedFile = stat.size > offset;
+  } finally {
+    await handle.close();
+  }
+  const lines = raw.split(/\r?\n/u).filter((line) => line.length > 0);
+  const sections: string[] = [];
+  let parsed = 0;
+  let unparsed = 0;
+  for (const line of lines) {
+    let event: ChildTranscriptEvent;
+    try {
+      event = JSON.parse(line) as ChildTranscriptEvent;
+    } catch {
+      unparsed += 1;
+      sections.push(`raw: ${line}`);
+      continue;
+    }
+    parsed += 1;
+    if (event.type === "message_end") {
+      const role = event.message?.role;
+      const text = transcriptContentText(event.message?.content).trim();
+      if (role === "assistant" || role === "user") {
+        if (text.length > 0) {
+          sections.push(`${String(role)}:\n${text}`);
+        }
+        if (role === "assistant") {
+          sections.push(...transcriptToolCalls(event.message?.content));
+        }
+      }
+      continue;
+    }
+    if (event.type === "tool_execution_end") {
+      const tool = typeof event.toolName === "string" ? event.toolName : "tool";
+      const output = transcriptContentText(event.result?.content).trim();
+      sections.push(
+        `tool ${tool}${event.isError === true ? " (error)" : ""}:\n${
+          output.length > 0 ? output : "(no text output)"
+        }`,
+      );
+    }
+  }
+  return boundedSubagentText(
+    [
+      `subagent ${record.childSessionId} transcript`,
+      `file: ${transcriptPath}`,
+      `events: ${parsed} parsed / ${unparsed} raw lines`,
+      ...(truncatedFile
+        ? [
+            `preview: first ${limit} bytes; open the file for the full transcript`,
+          ]
+        : []),
+      "",
+      ...(sections.length === 0
+        ? ["(the transcript contains no assistant or tool events)"]
+        : sections),
+    ].join("\n"),
+    24_000,
+  );
+}
+
+async function showSubagentTranscript(
+  context: ExtensionCommandContext,
+  record: BackgroundSubagent,
+): Promise<void> {
+  try {
+    context.ui.notify(await subagentTranscriptText(record), "info");
+  } catch (error) {
+    context.ui.notify(
+      `subagent transcript failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+  }
 }
 
 async function childProjectPaths(
@@ -3872,8 +4050,15 @@ function observeSubagentEvent(
   }
   if (event.type === "assistant_delta") {
     record.streamTail = appendSubagentStream(record.streamTail, event.text);
-  } else {
+  } else if (event.type === "tool_start") {
     record.lastTool = event.tool;
+  } else {
+    record.streamTail = appendSubagentStream(
+      record.streamTail,
+      `\n[${event.tool}${event.is_error ? " error" : ""}] ${
+        event.output.trim().slice(0, 800) || "(no text output)"
+      }\n`,
+    );
   }
   const now = Date.now();
   if (now - record.lastStreamUpdate < SUBAGENT_WIDGET_INTERVAL_MS) {
@@ -3925,6 +4110,7 @@ async function manageSubagents(
   }
   if (
     action !== "result" &&
+    action !== "transcript" &&
     action !== "wait" &&
     action !== "stop" &&
     action !== "review" &&
@@ -3933,14 +4119,14 @@ async function manageSubagents(
     action !== "discard"
   ) {
     context.ui.notify(
-      "usage: /agents [profiles|result|wait|stop|review|sign|merge|discard] [child-session-id]",
+      "usage: /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard] [child-session-id]",
       "warning",
     );
     return;
   }
   if (childSessionId === undefined) {
     context.ui.notify(
-      "usage: /agents [profiles|result|wait|stop|review|sign|merge|discard] [id]",
+      "usage: /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard] [id]",
       "warning",
     );
     return;
@@ -3952,6 +4138,10 @@ async function manageSubagents(
   }
   if (action === "review") {
     await reviewSubagent(context, record);
+    return;
+  }
+  if (action === "transcript") {
+    await showSubagentTranscript(context, record);
     return;
   }
   if (action === "sign") {
@@ -4001,6 +4191,12 @@ async function manageSubagents(
               `delivery: ${record.delivery?.state ?? "unreviewed"}`,
               `next: /agents review ${childSessionId}`,
             ]),
+        ...(record.transcriptPath === null
+          ? []
+          : [
+              `transcript: ${record.transcriptPath}`,
+              `show: /agents transcript ${childSessionId}`,
+            ]),
         summary,
       ].join("\n"),
       "info",
@@ -4010,7 +4206,11 @@ async function manageSubagents(
   context.ui.notify(
     `subagent ${childSessionId} is ${record.status}${
       record.error === null ? "" : `: ${record.error}`
-    }${record.worktree === null ? "" : `\nworktree: ${record.worktree}`}`,
+    }${record.worktree === null ? "" : `\nworktree: ${record.worktree}`}${
+      record.transcriptPath === null
+        ? ""
+        : `\ntranscript: ${record.transcriptPath}`
+    }`,
     record.status === "failed" ? "error" : "warning",
   );
 }
