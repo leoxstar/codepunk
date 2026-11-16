@@ -188,9 +188,23 @@ export class ModelActionReviewer implements ActionReviewer {
     const payload = reviewPayload(input);
     const actionSha256 = reviewActionSha256(input);
     const started = this.now();
-    const timeout = AbortSignal.timeout(this.timeoutMs);
+    // AbortSignal.timeout() arms an unref'd timer, so when the review is the
+    // only work left pending the event loop drains and the process exits
+    // before the deadline can fire. A ref'd timer makes the deadline hold on
+    // its own; the finally block releases it as soon as the review settles.
+    const timeoutController = new AbortController();
+    const timeoutTimer = setTimeout(() => {
+      timeoutController.abort(
+        new DOMException(
+          `review timed out after ${this.timeoutMs} ms`,
+          "TimeoutError",
+        ),
+      );
+    }, this.timeoutMs);
     const combined =
-      signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+      signal === undefined
+        ? timeoutController.signal
+        : AbortSignal.any([signal, timeoutController.signal]);
     try {
       const message = await this.runtime.completeSimple(
         this.reviewerModel,
@@ -280,6 +294,8 @@ export class ModelActionReviewer implements ActionReviewer {
           error: boundedMessage,
         },
       };
+    } finally {
+      clearTimeout(timeoutTimer);
     }
   }
 }
