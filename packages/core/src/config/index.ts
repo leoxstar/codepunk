@@ -1079,7 +1079,7 @@ export async function loadConfig(
   const userFloor = structuredClone(config);
   const projectSafety =
     options.projectTrusted === false
-      ? "workspace is not trusted"
+      ? "project config resource is not trusted"
       : await assertProjectConfigSafe(paths);
   if (projectSafety !== null) {
     warnings.push(`project config ignored: ${projectSafety}`);

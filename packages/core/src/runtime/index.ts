@@ -108,6 +108,7 @@ import {
   resolveWorkspaceTrust,
   skippedProjectResources,
   type WorkspaceTrust,
+  type WorkspaceTrustGrants,
   type WorkspaceTrustSource,
 } from "../trust/index.ts";
 import { listProjectSessions, resolveSession } from "../session/ops.ts";
@@ -136,7 +137,12 @@ export interface RuntimeOptions {
   headless?: boolean;
   headlessPolicyPath?: string;
   allowUnsandboxedShell?: boolean;
-  projectTrusted?: boolean;
+  /**
+   * Per-resource workspace decision captured before the host starts. It
+   * overrides saved decisions for this runtime only. Consumers must read the
+   * matching grant instead of a single boolean.
+   */
+  projectTrust?: WorkspaceTrustGrants;
   projectTrustSource?: WorkspaceTrustSource;
   allowMissingModel?: boolean;
   disableMcp?: boolean;
@@ -607,23 +613,25 @@ export async function createRuntime(
     home: paths.home,
     includeSkills: !disableSkills,
     includeInstructions: !bare,
-    ...(options.projectTrusted === undefined
+    ...(options.projectTrust === undefined
       ? {}
       : {
-          override: options.projectTrusted,
+          override: options.projectTrust,
           source: options.projectTrustSource ?? ("flag" as const),
         }),
   });
-  const projectConfigSafety = workspaceTrust.trusted
+  const projectResourceRequested =
+    workspaceTrust.grants.config || workspaceTrust.grants.policy;
+  const projectConfigSafety = projectResourceRequested
     ? await assertProjectConfigSafe(paths)
-    : "workspace is not trusted";
+    : "project config and policy are not trusted";
   await ensureCodepunkHome(paths.home);
   await ensureProjectRegistration(project, paths);
-  if (projectConfigSafety === null && workspaceTrust.trusted) {
+  if (projectConfigSafety === null && projectResourceRequested) {
     await ensureProjectConfigDir(paths);
   }
   const loadedConfig = await loadConfig(paths, environment, configOverrides, {
-    projectTrusted: workspaceTrust.trusted,
+    projectTrusted: workspaceTrust.grants.config,
   });
   const config = loadedConfig.config;
   const disableContext = bare;
@@ -670,7 +678,7 @@ export async function createRuntime(
     throw new Error(filesystemIssue);
   }
   const policy = await loadPolicyFiles(paths, {
-    projectTrusted: workspaceTrust.trusted,
+    projectTrusted: workspaceTrust.grants.policy,
   });
   loadedConfig.warnings.push(...policy.warnings);
   for (const projectMcpConfig of await findProjectMcpConfigs(paths)) {
@@ -681,11 +689,18 @@ export async function createRuntime(
       )} is ignored; MCP configuration is user-scope only`,
     );
   }
-  if (!workspaceTrust.trusted && workspaceTrust.resources.length > 0) {
+  const skippedTrustResources = skippedProjectResources(workspaceTrust);
+  if (skippedTrustResources.length > 0) {
     loadedConfig.warnings.push(
-      `workspace is untrusted; skipped ${skippedProjectResources(
-        workspaceTrust,
-      ).join(", ")}. Run codepunk trust grant to trust ${workspaceTrust.root}.`,
+      workspaceTrust.mode === "none"
+        ? `workspace is not trusted; skipped ${skippedTrustResources.join(
+            ", ",
+          )}. Run codepunk trust grant to trust ${workspaceTrust.root}.`
+        : `workspace trust is custom; skipped ${skippedTrustResources.join(
+            ", ",
+          )}. Run codepunk trust grant --resources <kinds> to change ${
+            workspaceTrust.root
+          }.`,
     );
   }
   let headlessPolicy: HeadlessPolicy | null = null;
@@ -733,7 +748,7 @@ export async function createRuntime(
     : await loadSkills({
         deliveryRoot: paths.deliveryRoot,
         codepunkHome: paths.home,
-        projectTrusted: workspaceTrust.trusted,
+        projectTrusted: workspaceTrust.grants.skills,
       });
   const readableSkillFiles = skills.skills.map((skill) => skill.path);
   const skillState: { current: SkillBundle } = { current: skills };
@@ -952,7 +967,7 @@ export async function createRuntime(
     appendText: config.context.append,
     replaceSystemPrompt: config.context.replace_system_prompt,
     systemPromptFile: config.context.system_prompt_file,
-    projectTrusted: workspaceTrust.trusted,
+    projectTrusted: workspaceTrust.grants.instructions,
   });
   let state = await session.readAgentState().catch((error: unknown) => {
     throw new Error(
@@ -1137,9 +1152,12 @@ export async function createRuntime(
     cwd: workspaceTrust.cwd,
     root: workspaceTrust.root,
     decision: workspaceTrust.trusted ? "trusted" : "untrusted",
+    mode: workspaceTrust.mode,
     source: workspaceTrust.source,
     resources: [...workspaceTrust.resources],
     skipped: skippedProjectResources(workspaceTrust),
+    grants: { ...workspaceTrust.grants },
+    available: [...workspaceTrust.available],
   });
   if (skills.skills.length > 0) {
     await host.recordEvent("skill/loaded", {
@@ -1279,7 +1297,7 @@ export async function createRuntime(
         throw new Error("Wait for compaction to finish before reloading.");
       }
       const loaded = await loadConfig(paths, environment, configOverrides, {
-        projectTrusted: workspaceTrust.trusted,
+        projectTrusted: workspaceTrust.grants.config,
       });
       const next = loaded.config;
       const changedSections = CONFIG_SECTIONS.filter(
@@ -1435,7 +1453,7 @@ export async function createRuntime(
           : await loadSkills({
               deliveryRoot: paths.deliveryRoot,
               codepunkHome: paths.home,
-              projectTrusted: workspaceTrust.trusted,
+              projectTrusted: workspaceTrust.grants.skills,
             });
       } catch (error) {
         return {

@@ -182,7 +182,7 @@ export async function loadPolicyFiles(
   const userContent = await readOptional(userPath);
   const projectSafety =
     options.projectTrusted === false
-      ? "workspace is not trusted"
+      ? "project policy resource is not trusted"
       : await assertProjectConfigSafe(paths);
   if (projectSafety !== null) {
     warnings.push(`project policy ignored: ${projectSafety}`);

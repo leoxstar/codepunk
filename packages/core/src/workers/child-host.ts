@@ -17,6 +17,7 @@ import {
   resolveCodepunkHome,
 } from "../platform/paths.ts";
 import { spawnGuardedHost } from "./sandbox.ts";
+import type { WorkspaceTrustGrants } from "../trust/index.ts";
 import {
   Subagent,
   SubagentError,
@@ -85,7 +86,7 @@ export interface ReadOnlySubagentOptions {
    * when the parent is using a saved decision so the child resolves the same
    * store itself.
    */
-  workspaceTrustOverride?: "trust" | "no-trust";
+  workspaceTrustOverride?: "trust" | "no-trust" | WorkspaceTrustGrants;
   bare?: boolean;
   noSkills?: boolean;
   budget?: {
@@ -638,6 +639,15 @@ async function runChild(
       try {
         const policyPath = await writeChildPolicy(temporaryRoot, toolMask);
         const token = randomBytes(16).toString("hex");
+        const trustOverride = options.workspaceTrustOverride;
+        const trustResourceKinds =
+          trustOverride === undefined ||
+          trustOverride === "trust" ||
+          trustOverride === "no-trust"
+            ? null
+            : Object.entries(trustOverride)
+                .filter(([, granted]) => granted)
+                .map(([kind]) => kind);
         const argv = [
           ...options.hostArgv,
           "--guarded-host-launch",
@@ -669,8 +679,12 @@ async function runChild(
           ]),
           ...(options.bare === true ? ["--bare"] : []),
           ...(options.noSkills === true ? ["--no-skills"] : []),
-          ...(options.workspaceTrustOverride === "trust" ? ["--trust"] : []),
-          ...(options.workspaceTrustOverride === "no-trust"
+          ...(trustOverride === "trust" ? ["--trust"] : []),
+          ...(trustOverride === "no-trust" ? ["--no-trust"] : []),
+          ...(trustResourceKinds !== null && trustResourceKinds.length > 0
+            ? ["--trust-resources", trustResourceKinds.join(",")]
+            : []),
+          ...(trustResourceKinds !== null && trustResourceKinds.length === 0
             ? ["--no-trust"]
             : []),
           ...(model !== undefined ? ["--model", model] : []),
