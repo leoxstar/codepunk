@@ -93,6 +93,8 @@ test("the built CLI reports version and help", async () => {
     "--help",
   ]);
   assert.match(sessionsHelp.stdout, /codepunk sessions prune \[--apply\]/u);
+  assert.match(sessionsHelp.stdout, /codepunk sessions tree \[session-id\]/u);
+  assert.match(sessionsHelp.stdout, /codepunk sessions graph \[--json\]/u);
   assert.doesNotMatch(sessionsHelp.stdout, /codepunk \[options\]/u);
   const memoryHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
@@ -420,13 +422,114 @@ test("sessions emit machine-readable lists and prune plans", async () => {
     assert.equal(sessions[0].pinned, false);
     assert.ok(sessions[0].last_seq > 0);
 
+    const realProject = await fs.realpath(project);
+    const projectId = core.projectIdFor(realProject);
+    const parent = await core.SessionStore.create({
+      rootDir: home,
+      cwd: realProject,
+      projectRoot: realProject,
+      projectId,
+      heartbeatMs: 60_000,
+    });
+    const parentWriter = await parent.acquireWriter();
+    const rootEntry = {
+      id: "cli-root",
+      parentId: null,
+      timestamp: "2026-11-12T00:00:00.000Z",
+      type: "message",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "cli root prompt" }],
+      },
+    };
+    const activeEntry = {
+      id: "cli-active",
+      parentId: rootEntry.id,
+      timestamp: "2026-11-12T00:00:01.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "cli active answer" }],
+      },
+    };
+    const siblingEntry = {
+      id: "cli-sibling",
+      parentId: rootEntry.id,
+      timestamp: "2026-11-12T00:00:02.000Z",
+      type: "message",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "cli sibling prompt" }],
+      },
+    };
+    await parent.saveAgentState(
+      {
+        type: "session",
+        id: "pi-cli-tree",
+        cwd: realProject,
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      [rootEntry, activeEntry],
+      {
+        entries: [rootEntry, activeEntry, siblingEntry],
+        leafId: activeEntry.id,
+      },
+    );
+    await parentWriter.release();
+    const child = await core.SessionStore.create({
+      rootDir: home,
+      cwd: realProject,
+      projectRoot: realProject,
+      projectId,
+      parentSessionId: parent.sessionId,
+      forkEntryId: siblingEntry.id,
+      heartbeatMs: 60_000,
+    });
+
+    const treeResult = await runCli(
+      ["sessions", "tree", parent.sessionId, "--json"],
+      { cwd: project, home },
+    );
+    const tree = JSON.parse(treeResult.stdout);
+    assert.equal(tree.session_id, parent.sessionId);
+    assert.equal(tree.leaf_id, activeEntry.id);
+    assert.deepEqual(
+      tree.entries.map((entry) => [entry.id, entry.active]),
+      [
+        [rootEntry.id, true],
+        [activeEntry.id, true],
+        [siblingEntry.id, false],
+      ],
+    );
+    const treeText = await runCli(["sessions", "tree", parent.sessionId], {
+      cwd: project,
+      home,
+    });
+    assert.match(treeText.stdout, /cli active answer/u);
+
+    const graphResult = await runCli(["sessions", "graph", "--json"], {
+      cwd: project,
+      home,
+    });
+    const graph = JSON.parse(graphResult.stdout);
+    const parentGraph = graph.sessions.find(
+      (session) => session.id === parent.sessionId,
+    );
+    const childGraph = graph.sessions.find(
+      (session) => session.id === child.sessionId,
+    );
+    assert.equal(parentGraph.depth, 0);
+    assert.equal(childGraph.depth, 1);
+    assert.equal(childGraph.parent_session_id, parent.sessionId);
+    assert.equal(childGraph.fork_entry_id, siblingEntry.id);
+
     const prune = await runCli(["sessions", "prune", "--json"], {
       cwd: project,
       home,
     });
     const plan = JSON.parse(prune.stdout);
     assert.equal(plan.dryRun, true);
-    assert.equal(plan.retainedCounts.sessions, 1);
+    assert.equal(plan.retainedCounts.sessions, 3);
     assert.deepEqual(plan.actions, []);
     assert.deepEqual(plan.warnings, []);
   });
