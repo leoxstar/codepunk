@@ -1,8 +1,8 @@
 # Daemon protocol v1
 
-A local daemon provides a second, read-only surface. The wire contract is owned
-by `packages/protocol`; the CLI remains a client and does not implement policy
-or tool execution.
+A local daemon provides a second observation surface plus one metadata write.
+The wire contract is owned by `packages/protocol`; the CLI remains a client and
+does not implement policy or tool execution.
 
 ## Transport
 
@@ -35,13 +35,20 @@ same envelope and payload schemas before sending and after receiving.
 The schemas and limits are exported from `packages/protocol/src/daemon.ts`.
 Generated artifacts are never hand-edited.
 
-## Read-only methods
+## Methods
 
 | Method         | Parameters                                           | Result                                     |
 | -------------- | ---------------------------------------------------- | ------------------------------------------ |
 | `daemon/hello` | none                                                 | protocol version, methods, pid, start time |
 | `session/list` | none                                                 | session summaries for this project         |
 | `session/read` | `session_id`, optional `after_seq`, optional `limit` | one ordered page of session events         |
+| `session/pin`  | `session_id`, `pinned`                               | the session's stored `pinned` value        |
+
+`session/pin` is the only method that mutates stored state. It rewrites the
+`pinned` flag of one session's metadata and nothing else: it does not append
+events, write files, or acquire the session writer lock. `hello.read_only`
+therefore reports `false` while the `session/read` result keeps its own
+`read_only: true`, which describes that snapshot rather than the wire surface.
 
 There is no method for a file write, session append, approval answer, verdict
 sign-off, work dispatch, or merge. A request using one of those method names
@@ -94,7 +101,7 @@ Error response:
   "ok": false,
   "error": {
     "code": "daemon.read_only",
-    "message": "daemon method session/append is not available; the wire surface is read-only"
+    "message": "daemon method session/append is not available; it is not one of the advertised methods"
   }
 }
 ```

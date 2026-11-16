@@ -940,8 +940,9 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Add a bidirectional local protocol. The current daemon is a read-only
-   projection; the terminal title and OSC 7501 app identity are already
+1. Add a bidirectional local protocol. The daemon is a read-only projection
+   plus one metadata write (`session/pin`); approvals and event append are
+   still missing, and the terminal title and OSC 7501 app identity are already
    product-owned.
 2. Add a remote approval channel and bounded per-category approval controls.
    The current static table and optional reviewer are deliberately narrow, and

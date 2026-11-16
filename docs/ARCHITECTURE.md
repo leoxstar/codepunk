@@ -75,10 +75,11 @@ commit policy requires explicit review before implementation.
 
 ## Daemon protocol
 
-The in-process v1 surface remains the execution path. A local, read-only daemon
-adds a second observation surface. `packages/protocol` owns the envelopes,
-payload schemas, limits, and version; `packages/core` owns the Unix-socket
-server and client; `packages/cli` exposes the `daemon` and `view` surfaces. The
-wire surface accepts only `daemon/hello`, `session/list`, and `session/read`;
-approval, sign-off, append, and write methods are absent. Details are in
-[`PROTOCOL.md`](PROTOCOL.md).
+The in-process v1 surface remains the execution path. A local daemon adds a
+second observation surface plus one metadata write. `packages/protocol` owns
+the envelopes, payload schemas, limits, and version; `packages/core` owns the
+Unix-socket server and client; `packages/cli` exposes the `daemon` and `view`
+surfaces. The wire surface accepts `daemon/hello`, `session/list`,
+`session/read`, and `session/pin`; `session/pin` is the only method that mutates
+stored state, and file writes, approvals, sign-off, append, and work methods
+remain absent. Details are in [`PROTOCOL.md`](PROTOCOL.md).
