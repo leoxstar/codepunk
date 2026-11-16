@@ -20,7 +20,9 @@ import { spawnGuardedHost } from "./sandbox.ts";
 import {
   Subagent,
   SubagentError,
+  assertSubagentWithinParentPolicy,
   type SubagentPermissionMode,
+  type SubagentParentPolicy,
   type SubagentToolMask,
 } from "./subagent.ts";
 
@@ -58,6 +60,12 @@ export class ChildHostError extends Error {
 export interface ReadOnlySubagentOptions {
   hostArgv: readonly string[];
   cwd: string;
+  /**
+   * Permission and tool ceiling of the parent session. The child may narrow
+   * this policy but cannot enable a mutating capability the parent forbids or
+   * a tool the parent disabled.
+   */
+  parentPolicy: SubagentParentPolicy;
   /**
    * Extra file roots granted to the parent with `--add-dir`. They are only
    * read roots: the child still runs with `--filesystem workspace` and
@@ -532,6 +540,18 @@ async function runChild(
   const permissionMode: SubagentPermissionMode = hasMutatingTools(toolMask)
     ? "ask"
     : "read-only";
+  try {
+    assertSubagentWithinParentPolicy(
+      toolMask,
+      permissionMode,
+      options.parentPolicy,
+    );
+  } catch (error) {
+    if (error instanceof SubagentError) {
+      throw new ChildHostError(error.code, error.message);
+    }
+    throw error;
+  }
   const isolation =
     options.isolation ??
     (options.profile !== undefined && hasMutatingTools(toolMask)
@@ -602,6 +622,7 @@ async function runChild(
     isolation,
     tool_mask: toolMask,
     permission_mode: permissionMode,
+    parent_policy: options.parentPolicy,
     depth: 0,
     worktree,
     parent_worktree: options.cwd,

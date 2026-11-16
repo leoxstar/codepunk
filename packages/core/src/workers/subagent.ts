@@ -16,6 +16,12 @@ export interface SubagentToolMask {
 
 export type SubagentPermissionMode = "ask" | "read-only" | "scoped";
 
+export interface SubagentParentPolicy {
+  approval: "ask" | "deny" | "auto" | "allow";
+  autonomy: "read-only" | "ask" | "scoped";
+  tools: readonly string[];
+}
+
 export interface SubagentRequest {
   parent_session_id: string;
   child_session_id: string;
@@ -23,6 +29,11 @@ export interface SubagentRequest {
   isolation: "worktree" | "shared";
   tool_mask: SubagentToolMask;
   permission_mode: SubagentPermissionMode;
+  /**
+   * Ceiling of the parent session. A child may narrow this policy but cannot
+   * enable a mutating capability or a tool the parent disabled.
+   */
+  parent_policy: SubagentParentPolicy;
   depth: number;
   worktree?: string;
   parent_worktree?: string;
@@ -117,6 +128,45 @@ export function assertSubagentMask(
     throw new SubagentError(
       "subagent.scoped_empty",
       "scoped permission requires an explicit mutating capability",
+    );
+  }
+}
+
+export function assertSubagentWithinParentPolicy(
+  mask: SubagentToolMask,
+  permission: SubagentPermissionMode,
+  parent: SubagentParentPolicy,
+): void {
+  const mutating = mask.write || mask.edit || mask.shell;
+  if (
+    mutating &&
+    (parent.autonomy === "read-only" || parent.approval === "deny")
+  ) {
+    throw new SubagentError(
+      "subagent.parent_read_only",
+      `a ${parent.autonomy === "read-only" ? "read-only" : "deny-approval"} parent cannot spawn a mutating subagent`,
+    );
+  }
+  const parentTools = new Set(parent.tools);
+  const ceiling: ReadonlyArray<readonly [keyof SubagentToolMask, string]> = [
+    ["read", "read"],
+    ["search", "search"],
+    ["write", "write"],
+    ["edit", "edit"],
+    ["shell", "shell"],
+  ];
+  for (const [key, tool] of ceiling) {
+    if (mask[key] && !parentTools.has(tool)) {
+      throw new SubagentError(
+        "subagent.parent_tool_ceiling",
+        `subagent tool ${tool} exceeds the parent's enabled tools`,
+      );
+    }
+  }
+  if (permission === "read-only" && mutating) {
+    throw new SubagentError(
+      "subagent.read_only_mask",
+      "read-only subagents cannot mutate or execute shell",
     );
   }
 }
@@ -216,6 +266,19 @@ export class Subagent {
       );
     }
     assertSubagentMask(this.request.tool_mask, this.request.permission_mode);
+    const parentPolicy: SubagentParentPolicy | undefined =
+      this.request.parent_policy;
+    if (parentPolicy === undefined) {
+      throw new SubagentError(
+        "subagent.parent_policy_required",
+        "subagent requires an explicit parent policy",
+      );
+    }
+    assertSubagentWithinParentPolicy(
+      this.request.tool_mask,
+      this.request.permission_mode,
+      parentPolicy,
+    );
     const worktree = this.request.worktree;
     if (worktree === undefined || worktree.trim().length === 0) {
       throw new SubagentError(
