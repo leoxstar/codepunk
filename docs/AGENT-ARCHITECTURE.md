@@ -647,7 +647,7 @@ product puts the model, context, and trust boundaries.
 | Claude Code  | `/model <alias-or-name>` with a picker; Enter saves the default, `s` applies to the session.                                                     | Enter persists the default; `s` is session-only; `/permissions` lists effective rules with source. | Permission mode plus rules; `deny > ask > allow`. A clock read ran in `manual` mode with no approval surface.                                                                                              |
 | OpenCode     | `/models` opens a picker; `fuzzysort` over display name and provider, no query argument.                                                         | Picker selection changes the session; recent/favorite metadata is separate.                        | Base policy is `*: allow`; routine reads and shell commands do not prompt without user rules.                                                                                                              |
 | OMP          | `/model [query]` ignores the query; `/switch <query>` is the fuzzy, session-only path.                                                           | `/switch` is explicitly temporary; CLI `--model` is fuzzy.                                         | Schema default is `yolo`; `always-ask` auto-approves read-only tools and asks for write/exec.                                                                                                              |
-| Kimi Code    | `/model` picker with search, provider tabs, capability chips, and favorites.                                                                     | Selection persists per session; `[secondary_model]` holds a sub-agent pool.                        | Three named modes. `auto` (Never Ask) is the broadest; `yolo` (Ask When Needed) still asks a recognized dangerous Bash command. File tools hard-block sensitive paths, but Bash does not reuse that check. |
+| Kimi Code    | `/model` picker with search and provider tabs; no recent/favorite list.                                                                          | Selection persists per session; `[secondary_model]` holds a sub-agent pool.                        | Three named modes. `auto` (Never Ask) is the broadest; `yolo` (Ask When Needed) still asks a recognized dangerous Bash command. File tools hard-block sensitive paths, but Bash does not reuse that check. |
 | MiniMax Code | `/model` picker with search and an add-provider row; `←/→` changes thinking effort.                                                              | Picker persists; `mcode provider` manages keys with rotation.                                      | `ask / auto / full`, with a warning glyph on full access; the approval panel offers allow-once, always-allow, and deny-with-guidance.                                                                      |
 | Pi `1.5.2`   | Blank `/model` opens the picker; a query tries exact first, else pre-fills the picker. Search covers provider, `provider/id`, bare id, and name. | Picker Enter changes the session; Ctrl+S writes the global default.                                | No built-in per-call approval; `read,bash,edit,write` run without asking unless the project is untrusted or tools are restricted.                                                                          |
 
@@ -955,7 +955,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 610 tests, 610 pass
+# 611 tests, 611 pass
 # repository check: 540 files, 3 packages
 ```
 
