@@ -70,6 +70,7 @@ import {
   mergeHandoff,
   projectPaths,
   removeMergedWorktree,
+  searchProjectSessions,
   SessionStore,
   createUlid,
   runSubagentHost,
@@ -105,6 +106,7 @@ import {
   type SkillReloadResult,
   type SubagentHostResult,
   type SubagentStreamEvent,
+  type SessionSearchHit,
   type WorkspaceCommitPreview,
   type WorkspaceDiff,
   type WorkspaceTrust,
@@ -436,7 +438,7 @@ export function codepunkHelp(): string {
     "",
     "Sessions and evidence",
     "  /cp-sessions, /session     list sessions or show the current one",
-    "  /resume [id|latest]        switch to another session in this TUI",
+    "  /resume [id|latest|text]   switch by id, latest, or a title/content match",
     "  /fork [entry-id], /clone   fork at the leaf or entry and switch to the child",
     "  /tree [entry-id]           list the session tree or move to an entry",
     "  /evidence, /budget         show evidence and model usage",
@@ -1312,6 +1314,34 @@ function matchSessionChoice(
   return matches.length === 1 ? matches[0]! : null;
 }
 
+function sessionSearchChoiceLabels(
+  hits: readonly SessionSearchHit[],
+  entries: Awaited<ReturnType<typeof listProjectSessions>>,
+  currentId: string,
+): { ids: string[]; labels: string[] } {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  const labels: string[] = [];
+  for (const hit of hits) {
+    if (seen.has(hit.session_id)) {
+      continue;
+    }
+    const entry = byId.get(hit.session_id);
+    if (entry === undefined) {
+      continue;
+    }
+    seen.add(hit.session_id);
+    ids.push(hit.session_id);
+    const excerpt =
+      hit.excerpt.length <= 96 ? hit.excerpt : `${hit.excerpt.slice(0, 95)}…`;
+    labels.push(
+      `${sessionChoiceLabel(entry, currentId)}  ${hit.kind}  ${excerpt}`,
+    );
+  }
+  return { ids, labels };
+}
+
 /**
  * Pi tears down the current host session before it builds the replacement.
  * A target that cannot be opened or locked therefore costs the live TUI
@@ -1379,21 +1409,55 @@ async function resumeSession(
     targetId = entries[0]!.id;
   } else if (query.length > 0) {
     const matched = matchSessionChoice(entries, query);
-    if (matched === null) {
-      context.ui.notify(
-        `No unique session matches ${query}. Use /cp-sessions to list exact ids.`,
-        "warning",
+    if (matched !== null) {
+      targetId = matched.id;
+    } else {
+      const result = await searchProjectSessions({
+        rootDir: runtime.paths.home,
+        projectId: runtime.paths.projectId,
+        query,
+        limit: 60,
+      });
+      if (result.warnings.length > 0) {
+        context.ui.notify(result.warnings.join("\n"), "warning");
+      }
+      const choices = sessionSearchChoiceLabels(
+        result.matches,
+        entries,
+        runtime.session.sessionId,
       );
-      return;
+      if (choices.ids.length === 0) {
+        context.ui.notify(
+          `No session id, title, or event excerpt matches ${query}.`,
+          "warning",
+        );
+        return;
+      }
+      if (choices.ids.length === 1) {
+        targetId = choices.ids[0];
+      } else {
+        const selected = await context.ui.select(
+          "Resume matching session",
+          choices.labels,
+        );
+        if (selected === undefined) {
+          return;
+        }
+        targetId = choices.ids[choices.labels.indexOf(selected)];
+      }
     }
-    targetId = matched.id;
   } else if (entries.length === 1) {
     targetId = entries[0]!.id;
   } else {
-    const labels = entries
-      .slice(0, 20)
-      .map((entry) => sessionChoiceLabel(entry, runtime.session.sessionId));
-    const selected = await context.ui.select("Resume session", labels);
+    const visible = entries.slice(0, 20);
+    const labels = visible.map((entry) =>
+      sessionChoiceLabel(entry, runtime.session.sessionId),
+    );
+    const title =
+      entries.length > visible.length
+        ? `Resume session (showing 20 of ${entries.length}; type /resume <text> to search)`
+        : "Resume session";
+    const selected = await context.ui.select(title, labels);
     if (selected === undefined) {
       return;
     }

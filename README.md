@@ -25,10 +25,12 @@ explicit policy boundary around file and shell actions.
   branch graph with labels and the active leaf; `codepunk sessions graph` links
   product sessions by parent and fork point; `codepunk sessions search <query>`
   searches saved titles and bounded event excerpts in the current project,
-  redacts secrets before output, and accepts `--limit` plus `--json`. All three
-  accept `--json`. A checkpoint is evidence about the compaction boundary, not a
-  user-visible session rewind. The first prompt seeds a redacted title, later Pi
-  title changes are mirrored, and `pin <id> [--unpin]` controls retention. The
+  redacts secrets before output, and accepts `--limit` and `--json`. In the TUI,
+  `/resume <id|latest|text>` falls back to the same search, shows a chooser when
+  several sessions match, and resumes the selected session in place. A
+  checkpoint is evidence about the compaction boundary, not a user-visible
+  session rewind. The first prompt seeds a redacted title, later Pi title
+  changes are mirrored, and `pin <id> [--unpin]` controls retention. The
   `/tree` snapshot stores every Pi entry and the active leaf, so sibling
   branches survive resume without a separate Pi session file.
 - Project context from `AGENTS.md`, local memory, skills, and gated MCP

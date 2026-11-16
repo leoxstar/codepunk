@@ -3896,6 +3896,14 @@ test("a real pty resumes another session without restarting the CLI", async () =
         await waitForOutput(first, "codepunk · local/chat", "first startup");
         first.child.stdin.write("first question\r");
         await waitForOutput(first, "CHILD_OK", "first model reply");
+        const firstMarker = first.output().length;
+        first.child.stdin.write("unique-body-marker\r");
+        await waitForOutputAfter(
+          first,
+          firstMarker,
+          "CHILD_OK",
+          "first marker reply",
+        );
         await runCommandAfter(first, "/session", "session: ");
         const ids = [...first.output().matchAll(/session: ([0-9A-Z]{10,})/gu)];
         firstId = ids.at(-1)?.[1];
@@ -3931,7 +3939,7 @@ test("a real pty resumes another session without restarting the CLI", async () =
 
         await runCommandAfter(
           second,
-          `/resume ${firstId}`,
+          "/resume unique-body-marker",
           `resumed session ${firstId}`,
         );
         await runCommandAfter(second, "/session", `session: ${firstId}`);
