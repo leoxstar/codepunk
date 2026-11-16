@@ -119,8 +119,8 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. The TUI also covers `/init` guard and model-prompt
 injection, `/status`, skill hot reload, and the Pi-native trust selector.
-On 2026-11-16, the local suite reported 582 tests and the repository check
-reported 512 files across 3 packages.
+On 2026-11-16, the local suite reported 591 tests and the repository check
+reported 518 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
 Pi's fuzzy selector with no usage warning, an exact `provider/id` selection
@@ -347,6 +347,13 @@ in the comparison.
     parent checkout. A Markdown agent profile can add write/edit tools, a
     model pool, a thinking level, and a system prompt; a mutating profile runs
     in a detached worktree, and `--worktree` can isolate a read-only profile.
+    The child cannot widen the parent's declared tool or execution boundary: a
+    read-only or `approval = "deny"` parent cannot spawn a mutating profile,
+    every child tool must be in the parent's enabled set, and the child always
+    uses the required sandbox with a workspace filesystem and no MCP, plugins,
+    or memory. A mutating child runs with `--approval allow` inside its
+    detached worktree, so the human review/sign/merge gate is the compensating
+    boundary rather than inherited per-call approval.
     Up to four children run in the background and are managed with `/agents`.
     A human can review the child worktree, sign it complete or incomplete,
     merge only the signed exact commit, or discard it. Bounded child progress
@@ -389,11 +396,14 @@ in the comparison.
 
 Ordered by expected value for the next iteration:
 
-1. A full-screen transcript browser and live streaming of complete tool
-   output for profile-driven `/subagent` sessions.
-2. Session fork/clone with explicit parent-child evidence links, and one
-   visible session command surface.
-3. Product-branded out-of-terminal run state and notifications.
+1. A durable cross-session branch graph, so sibling Pi branches survive a
+   restart as inspectable product history instead of only the active branch.
+2. Per-resource workspace trust, so a person can trust instructions while
+   skipping project config or skills instead of treating the workspace as one
+   block.
+3. A bidirectional local protocol and product-branded out-of-terminal run
+   state; the current daemon is read-only and OSC 7501 still reports Pi's app
+   identity.
 4. Windows ConPTY and sandbox verification before any support claim.
 
 ## Limits

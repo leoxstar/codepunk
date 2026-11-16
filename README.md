@@ -468,6 +468,15 @@ and `edit`. `shell` is rejected until a profile can declare an exact command
 allowlist. `model` and `fallback` use exact `provider/model` references; a
 per-run `--model` must belong to the profile's pool.
 
+The child cannot widen the parent's declared tool or execution boundary. A
+read-only parent, or one with `approval = "deny"`, cannot spawn a mutating
+profile; every enabled child tool must also be present in the parent's
+`tools.enabled` list. The child always runs with `sandbox = "required"`,
+`filesystem = "workspace"`, no MCP, no plugins, and no memory. A mutating child
+runs with `--approval allow` inside its detached worktree, so its writes are
+not individually approved in the parent; worktree isolation and the explicit
+review/sign/merge gate are the compensating human boundary.
+
 Without a profile, the child is a read-only `read`/`search` session in the
 parent checkout. A profile that enables `write` or `edit` always runs in a
 detached worktree; `--shared` is rejected for that profile. `--worktree` can

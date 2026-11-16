@@ -122,6 +122,17 @@ receive `memory_search`. `model` and every fallback use exact
 `provider/model` references. A fallback requires a primary model and cannot
 repeat it. A per-run `--model` must be in the profile's model pool.
 
+Before creating a worktree or spawning a child, Codepunk checks the profile
+against an explicit parent policy. A read-only parent or one with
+`approval = "deny"` cannot spawn a mutating profile, and every child tool must
+be present in the parent's `tools.enabled` list. The child always receives
+`sandbox = "required"`, `filesystem = "workspace"`, no MCP, no plugins, and no
+memory. The profile is a declaration inside that ceiling, not a way to widen
+the parent session. A mutating child still runs with `--approval allow` inside
+its detached worktree: it does not inherit the parent's per-call approval or
+scoped shell rules. Worktree isolation plus the explicit review/sign/merge
+gate is the compensating human boundary.
+
 ### Isolation and lifecycle
 
 - A read-only child (the default, or a profile containing only read/search)

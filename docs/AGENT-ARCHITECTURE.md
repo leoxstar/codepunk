@@ -818,12 +818,17 @@ These are real gaps, not hidden fallbacks:
     shows a discovery list before the decision. Codepunk now shows a bounded
     type, size, and digest preview before the decision, but still lacks
     per-resource choices such as "trust instructions but skip project config".
-11. Subagents use a declared tool mask rather than a privilege ladder. A
-    profile can enable read/search/write/edit, but cannot express "inherit my
-    mode, but never exceed `standard`". Claude resolves child modes against a
-    ladder; Codex carries a per-agent sandbox policy. Codepunk keeps the
-    profile declaration inside the child process policy instead of treating
-    the profile as authority.
+11. Subagents now enforce a parent capability ceiling: a read-only or
+    `approval = "deny"` parent cannot spawn a mutating profile, and every child
+    tool must be in the parent's `tools.enabled` list. The child is always
+    `sandbox = "required"` and `filesystem = "workspace"` with MCP, plugins,
+    and memory disabled. A mutating child still runs with `--approval allow`
+    inside its detached worktree, so it does not inherit the parent's per-call
+    approval or scoped shell rules; worktree isolation plus human
+    review/sign/merge is the documented compensation. A profile still cannot
+    declare its own numeric maximum such as "never exceed `standard`"
+    independently of the parent; that remains a future profile-level policy,
+    not an authority source.
 12. The five named profiles carry no network dimension. `network_allow` and
     `network_deny` are independent user-scope lists, so switching
     `--permission-mode` never changes egress. Codex folds network into
@@ -870,12 +875,18 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Make session identity first-class: one visible command name per surface,
-   and a fork flow with explicit parent-child evidence links.
-2. Add a full-screen transcript browser and live streaming of complete tool
-   output, then a bidirectional protocol and out-of-terminal status signals.
-   The complete transcript artifact, worktree review, human sign-off, merge
-   handoff, and discard are already exposed through `/agents`.
+1. Make the branch graph durable across process restarts. The live transcript
+   browser, complete tool output, worktree review, human sign-off, merge
+   handoff, and discard are already exposed through `/agents`; sibling Pi
+   branches still exist only in the in-memory session.
+2. Add per-resource workspace trust so instructions, project config, policy,
+   and skills can be decided separately without weakening the exact-root rule.
+3. Add a bidirectional local protocol and product-branded out-of-terminal
+   status signals. The current daemon is a read-only projection, and OSC 7501
+   still carries Pi's app identity.
+4. Add a profile-level permission ceiling and a network dimension to agent
+   profiles. The parent ceiling is now enforced, but a profile cannot declare
+   "never exceed standard" independently of the parent.
 
 ## Local evidence
 
@@ -883,8 +894,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 582 tests, 582 pass
-# repository check: 512 files, 3 packages
+# 591 tests, 591 pass
+# repository check: 518 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only
