@@ -687,3 +687,47 @@ test("persisted approval rules reject shells, globs, escapes, and unsafe config"
     },
   );
 });
+
+/**
+ * Windows has no group or world write bit: Node synthesizes mode 0o666 for any
+ * writable file. The guard must stay on POSIX and stand down on win32, so the
+ * same file is exercised under both platforms.
+ */
+function withPlatform(platform, run) {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    enumerable: true,
+    value: platform,
+  });
+  return Promise.resolve()
+    .then(run)
+    .finally(() => {
+      Object.defineProperty(process, "platform", original);
+    });
+}
+
+test(
+  "a group or world writable scoped rules file is rejected on POSIX and read on Windows",
+  { skip: process.platform === "win32" },
+  async () => {
+    await withTempDirectory("codepunk-autonomy-mode-", async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const digest = await executableSha("/bin/mkdir");
+      const file = await rulesFile(root, [
+        "version = 1",
+        ...ruleBlock("make-one", ["mkdir", "made"], projectRoot, digest),
+      ]);
+      await fs.chmod(file, 0o666);
+      await assert.rejects(
+        () => core.loadScopedRules(file, paths),
+        /must not be group or world writable/u,
+      );
+      const loaded = await withPlatform("win32", () =>
+        core.loadScopedRules(file, paths),
+      );
+      assert.equal(loaded.rules.length, 1);
+      assert.equal(loaded.rules[0].id, "make-one");
+    });
+  },
+);

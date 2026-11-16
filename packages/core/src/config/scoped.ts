@@ -159,7 +159,10 @@ export async function loadScopedRules(
       "autonomy.scoped_rules",
     );
   }
-  if ((linkStat.mode & 0o022) !== 0) {
+  // Windows synthesizes mode 0o666 for any writable file, so the bit test
+  // would reject every rules file there. The project-config checks in
+  // platform/paths.ts skip the same bits for the same reason.
+  if (process.platform !== "win32" && (linkStat.mode & 0o022) !== 0) {
     throw new ConfigError(
       "scoped rules file must not be group or world writable",
       "autonomy.scoped_rules",
