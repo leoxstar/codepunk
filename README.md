@@ -50,6 +50,8 @@ explicit policy boundary around file and shell actions.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
   yet. The local daemon is read-only.
+- `codepunk completion bash|zsh|fish` prints a static completion script for
+  the product commands, nested subcommands, and main permission/trust options.
 
 ## Workspace trust
 
