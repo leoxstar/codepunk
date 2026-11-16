@@ -105,6 +105,7 @@ import {
   type SubagentStreamEvent,
   type WorkspaceCommitPreview,
   type WorkspaceDiff,
+  type WorkspaceTrust,
 } from "@codepunk/core";
 import type {
   ApprovalAnswer,
@@ -976,7 +977,7 @@ function formatStatusSummary(runtime: CodepunkRuntime): string {
     }`,
     `permissions: ${profile} · approval ${runtime.config.approval.mode} · autonomy ${runtime.config.autonomy.profile}`,
     `sandbox: ${runtime.config.sandbox.mode} · filesystem ${runtime.config.filesystem.mode}`,
-    `trust: ${trust.trusted ? "trusted" : "untrusted"} (${trust.source}) · ${trust.storePath}`,
+    `trust: ${trustDisplay(trust)} · ${trust.storePath}`,
     `capabilities: ${runtime.skills.length} skill(s) · ${runtime.mcpServers.length} MCP server(s) · plugins ${runtime.plugins.enabled ? "enabled" : "disabled"}`,
     `evidence: ${evidenceCount(runtime)} record(s) · head ${runtime.ledger.head ?? "none"}`,
     `usage: ${totals.total_tokens} tokens · $${totals.cost_total.toFixed(6)} · ${totals.calls} call(s)`,
@@ -984,6 +985,20 @@ function formatStatusSummary(runtime: CodepunkRuntime): string {
     `config: ${runtime.paths.home}/config.toml`,
     `sessions: ${runtime.paths.sessionsDir}`,
   ].join("\n");
+}
+
+function trustDisplay(trust: WorkspaceTrust): string {
+  const value = trust.trusted ? "trusted" : "untrusted";
+  if (trust.source === "prompt" && trust.savedPath === null) {
+    return `${value} (session only)`;
+  }
+  if (trust.source === "flag") {
+    return `${value} (one run)`;
+  }
+  if (trust.source === "saved" || trust.savedPath !== null) {
+    return `${value} (saved)`;
+  }
+  return value;
 }
 
 async function findRootInstructionFile(root: string): Promise<string | null> {
@@ -2434,7 +2449,7 @@ function renderStatus(state: TuiState): string {
   return [
     modelStatus(runtime),
     `project ${runtime.paths.projectId} · session ${runtime.session.sessionId.slice(0, 12)} · next sandbox ${runtime.config.sandbox.mode} · fs ${runtime.config.filesystem.mode}`,
-    `permissions ${profile} · trust ${runtime.workspaceTrust.trusted ? "trusted" : "untrusted"} · shell ${currentShellStatus(runtime)} · evidence ${evidenceCount(runtime)} · ${formatBudgetStatus(budget)}`,
+    `permissions ${profile} · trust ${trustDisplay(runtime.workspaceTrust)} · shell ${currentShellStatus(runtime)} · evidence ${evidenceCount(runtime)} · ${formatBudgetStatus(budget)}`,
   ].join("\n");
 }
 

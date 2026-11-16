@@ -40,6 +40,7 @@ import {
   formatPermissionExplanation,
   formatSessionList,
   importProviderModels,
+  inspectSavedWorkspaceTrust,
   installSkill,
   installPackage,
   installUserPlugin,
@@ -1033,12 +1034,45 @@ async function resolveRunWorkspaceTrust(
     project.cwd,
     resourceOptions,
   );
+  const savedDecision = (() => {
+    try {
+      const saved = inspectSavedWorkspaceTrust(paths.home, resolved.root);
+      if (saved === null) {
+        return "none for this checkout or an ancestor";
+      }
+      const label = saved.entry.decision ? "trusted" : "untrusted";
+      return saved.inherited
+        ? `${label} for parent ${saved.entry.path}; this checkout needs its own decision`
+        : `${label} for this checkout (${saved.entry.path})`;
+    } catch (error) {
+      return `unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  })();
+  const excluded = [
+    options.bare ? "project instructions and skills (--bare)" : null,
+    options.noSkills ? "project skills (--no-skills)" : null,
+  ].filter((entry): entry is string => entry !== null);
   process.stderr.write(
     [
       "",
+      "Workspace trust",
+      `  cwd: ${project.cwd}`,
+      `  checkout root: ${resolved.root}`,
+      "",
       "This workspace contains project resources that can change Codepunk's instructions or tools:",
-      ...previews.map(formatWorkspaceTrustResourcePreview),
-      `root: ${resolved.root}`,
+      ...previews.map((preview) =>
+        formatWorkspaceTrustResourcePreview(preview, {
+          compactDigest: true,
+        }),
+      ),
+      ...(excluded.length === 0
+        ? []
+        : [`excluded for this run: ${excluded.join(", ")}`]),
+      "",
+      "Trust only controls project config, policy, skills, and instruction files.",
+      "It does not change approval, sandbox, or filesystem permissions.",
       "",
     ].join("\n"),
   );
@@ -1073,8 +1107,15 @@ async function resolveRunWorkspaceTrust(
       },
     ],
     {
-      contextLines: ["saved decision", "  none for this exact checkout"],
-      footerNote: formatBuildLabel(build),
+      contextLines: [
+        `cwd: ${project.cwd}`,
+        `checkout root: ${resolved.root}`,
+        `saved decision: ${savedDecision}`,
+        ...(excluded.length === 0
+          ? []
+          : [`excluded for this run: ${excluded.join(", ")}`]),
+      ],
+      ...(build.stale === true ? { footerNote: formatBuildLabel(build) } : {}),
     },
   ).catch((error: unknown) => {
     if (error instanceof TerminalSelectCancelledError) {
