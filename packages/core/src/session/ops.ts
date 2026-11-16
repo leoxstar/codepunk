@@ -20,6 +20,7 @@ import {
 export interface SessionListEntry {
   id: string;
   parent_session_id: string | null;
+  fork_entry_id: string | null;
   created_at: string;
   updated_at: string;
   title: string | null;
@@ -165,6 +166,7 @@ export async function listProjectSessions(
     output.push({
       id: entry.sessionId,
       parent_session_id: entry.header.parent_session_id ?? null,
+      fork_entry_id: entry.header.fork_entry_id ?? null,
       created_at: entry.header.created_at,
       updated_at: meta?.updated_at ?? entry.header.created_at,
       title: meta?.title ?? null,

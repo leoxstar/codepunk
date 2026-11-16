@@ -346,6 +346,16 @@ export {
   type SessionListEntry,
 } from "./session/ops.ts";
 export {
+  formatSessionGraph,
+  formatSessionTree,
+  readSessionGraph,
+  readSessionTree,
+  type SessionGraph,
+  type SessionGraphEntry,
+  type SessionTree,
+  type SessionTreeEntry,
+} from "./session/tree.ts";
+export {
   appendEvidenceIndex,
   deriveAndWriteVerdict,
   evidenceIndexPath,
