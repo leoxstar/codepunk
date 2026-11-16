@@ -4692,3 +4692,74 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
     }
   });
 });
+
+test("a read-only parent rejects a mutating subagent profile", async () => {
+  await withTempDirectory("codepunk-tui-subagent-ceiling-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(path.join(home, "agents"), { recursive: true });
+    await fs.writeFile(
+      path.join(home, "agents", "worker.md"),
+      [
+        "---",
+        "name: worker",
+        "description: Write in a child worktree",
+        "tools: read, write",
+        "---",
+        "Write the requested file.",
+        "",
+      ].join("\n"),
+    );
+    await fs.writeFile(path.join(project, "hello.txt"), "hello\n");
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await execFileAsync("git", ["config", "user.email", "child@example.test"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["config", "user.name", "Child Test"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["add", "hello.txt"], { cwd: project });
+    await execFileAsync("git", ["commit", "-qm", "fixture"], {
+      cwd: project,
+    });
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--permission-mode", "read-only"],
+      {
+        cwd: project,
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+          PI_OFFLINE: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      const mark = session.output().length;
+      session.child.stdin.write(
+        "/subagent --profile worker write child-output.txt\r",
+      );
+      await waitForOutputAfter(
+        session,
+        mark,
+        "failed: a read-only parent cannot spawn a mutating subagent",
+        "parent ceiling rejection",
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
