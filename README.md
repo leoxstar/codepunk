@@ -9,8 +9,9 @@ explicit policy boundary around file and shell actions.
 ## Features
 
 - Interactive TUI plus print and JSON modes.
-- Exact, short-lived approvals bound to the session, worker, tool call, and
-  request nonce, with once, session, and persistent exact-action choices.
+- Exact, short-lived approvals correlated by request nonce, session, worker, and
+  tool call, with once, session, and persistent exact-action choices; a reused
+  session or persistent grant names the request that created it.
 - Scoped autonomy rules and an explicit interactive unsandboxed-shell path.
 - Per-resource workspace trust for project config, policy, skills, and
   instruction files, with Pi's boolean store as the exact-root fallback;
@@ -371,11 +372,12 @@ Persistent approval first opens a separate rule preview
 showing the exact argv, cwd, match scope, and storage location; cancelling the
 preview writes nothing. Confirming rewrites the scoped rule file with the same
 argv, cwd, and executable digest, then selects the `scoped` autonomy profile
-for the next session. The current session receives an exact grant; the written
-rule is visible through `/permissions rules`. Switching to `ask` preserves the
-rules file, and switching back to `scoped` reloads and revalidates the rules
-from disk. Shell launchers, globs, variable expansion, redirections, and
-complex shell syntax are not eligible for reuse.
+for the next session. The current session receives an exact grant; a reused
+grant records `reused_from_request_id` in its approval evidence, and the
+written rule is visible through `/permissions rules`. Switching to `ask`
+preserves the rules file, and switching back to `scoped` reloads and
+revalidates the rules from disk. Shell launchers, globs, variable expansion,
+redirections, and complex shell syntax are not eligible for reuse.
 
 `/permissions why -- <command>` is an execution-free policy check. It runs the
 same policy, scoped-rule, approval, and shell-availability chain as a real

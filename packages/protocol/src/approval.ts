@@ -72,6 +72,10 @@ export const ApprovalEvidenceSchema = Type.Object(
     answer: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
     scope: Type.Optional(ApprovalScopeSchema),
     guidance: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
+    // Present when an earlier session or persistent grant answered this
+    // request. It names the request the human actually approved, so the
+    // ledger never presents a reused grant as a fresh human answer.
+    reused_from_request_id: Type.Optional(NonEmptyStringSchema),
     args_sha256: Type.Optional(Sha256Schema),
     diff_sha256: Type.Optional(Sha256Schema),
   },

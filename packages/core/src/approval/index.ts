@@ -46,6 +46,8 @@ interface SessionGrant {
   cwd: string;
   scope: Exclude<ApprovalScope, "once">;
   channel: ApprovalAnswer["channel"];
+  // The request a human actually answered. Reused grants name it in evidence.
+  requestId: string;
 }
 
 export class ApprovalBroker {
@@ -170,7 +172,7 @@ export class ApprovalBroker {
       return {
         approved: true,
         answer,
-        evidence: approvalEvidence(request, answer),
+        evidence: approvalEvidence(request, answer, grant.requestId),
         reason: `approval reused for this session (${grant.scope})`,
         failure: null,
       };
@@ -261,6 +263,7 @@ export class ApprovalBroker {
           cwd: normalizeAbsolute(request.cwd),
           scope,
           channel: answer.channel,
+          requestId: request.request_id,
         });
       }
     }
@@ -300,6 +303,7 @@ export class ApprovalBroker {
 function approvalEvidence(
   request: ApprovalRequest,
   answer: ApprovalAnswer,
+  reusedFromRequestId: string | null = null,
 ): ApprovalEvidence {
   return {
     channel: answer.channel,
@@ -312,6 +316,9 @@ function approvalEvidence(
     answer: answer.answer,
     scope: answer.scope ?? "once",
     ...(answer.guidance === undefined ? {} : { guidance: answer.guidance }),
+    ...(reusedFromRequestId === null
+      ? {}
+      : { reused_from_request_id: reusedFromRequestId }),
     ...(request.args_sha256 === undefined
       ? {}
       : { args_sha256: request.args_sha256 }),

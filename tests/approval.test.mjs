@@ -298,6 +298,11 @@ test("session scope reuses only the exact tool, argv, and cwd", async () => {
   assert.equal(calls, 1);
   assert.match(reused.reason, /reused for this session/u);
   assert.equal(reused.evidence.scope, "session");
+  assert.equal(first.evidence.reused_from_request_id, undefined);
+  assert.equal(
+    reused.evidence.reused_from_request_id,
+    first.evidence.request_id,
+  );
 
   await broker.request({
     ...input,
