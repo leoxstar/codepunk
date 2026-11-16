@@ -93,6 +93,11 @@ export interface SessionWriter {
   release(): Promise<void>;
 }
 
+export interface AgentStateTree {
+  entries: readonly unknown[];
+  leafId: string | null;
+}
+
 export interface ResumeResult {
   header: SessionHeader;
   events: SessionEvent[];
@@ -748,9 +753,44 @@ export class SessionStore {
   async saveAgentState(
     header: unknown,
     branch: unknown[],
+    tree?: AgentStateTree,
   ): Promise<AgentState> {
     if (this.writer === null) {
       throw new SessionLockedError("agent-state save requires the writer lock");
+    }
+    if (tree !== undefined) {
+      const entryIds = new Set<string>();
+      for (const entry of tree.entries) {
+        if (
+          entry !== null &&
+          typeof entry === "object" &&
+          !Array.isArray(entry)
+        ) {
+          const id = (entry as Record<string, unknown>)["id"];
+          if (typeof id === "string" && id.length > 0) {
+            entryIds.add(id);
+          }
+        }
+      }
+      if (tree.leafId !== null && !entryIds.has(tree.leafId)) {
+        throw new SessionError(
+          "agent-state leaf is not present in the saved entry tree",
+        );
+      }
+      for (const entry of branch) {
+        if (
+          entry !== null &&
+          typeof entry === "object" &&
+          !Array.isArray(entry)
+        ) {
+          const id = (entry as Record<string, unknown>)["id"];
+          if (typeof id === "string" && id.length > 0 && !entryIds.has(id)) {
+            throw new SessionError(
+              "agent-state branch is not present in the saved entry tree",
+            );
+          }
+        }
+      }
     }
     const state: AgentState = {
       version: 1,
@@ -760,6 +800,9 @@ export class SessionStore {
       saved_at: timestamp(this.now),
       header,
       branch,
+      ...(tree === undefined
+        ? {}
+        : { entries: [...tree.entries], leaf_id: tree.leafId }),
     };
     const validation = validateSchema(AgentStateSchema, state);
     if (!validation.ok) {

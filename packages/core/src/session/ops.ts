@@ -401,6 +401,10 @@ export async function forkSession(options: {
         timestamp: forkedAt,
       }),
       snapshot.parentState.branch,
+      {
+        entries: snapshot.parentState.branch,
+        leafId: snapshot.forkEntryId ?? null,
+      },
     );
   } finally {
     await writer.release();
@@ -486,6 +490,10 @@ export async function forkLiveSession(options: {
         timestamp: forkedAt,
       }),
       [...branch],
+      {
+        entries: branch,
+        leafId: forkEntryId ?? null,
+      },
     );
   } finally {
     await writer.release();

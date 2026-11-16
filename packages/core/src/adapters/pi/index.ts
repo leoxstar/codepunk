@@ -288,7 +288,17 @@ function assertHostResources(
 
 interface RestoredPiEntries {
   entries: unknown[];
+  activeBranch: unknown[];
+  leafId?: string | null;
   migratedHeaderId: boolean;
+}
+
+function sessionEntryId(entry: unknown): string | null {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+  const id = (entry as Record<string, unknown>)["id"];
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 function restoreEntries(state: AgentState, cwd: string): RestoredPiEntries {
@@ -338,10 +348,48 @@ function restoreEntries(state: AgentState, cwd: string): RestoredPiEntries {
       "agent-state header belongs to a different workspace",
     );
   }
+  if ((state.entries === undefined) !== (state.leaf_id === undefined)) {
+    throw new HostIsolationError(
+      "agent-state entry tree and leaf must be saved together",
+    );
+  }
+  const entries = state.entries ?? state.branch;
   return {
-    entries: [restoredHeader, ...state.branch],
+    entries: [restoredHeader, ...entries],
+    activeBranch: state.branch,
+    ...(state.leaf_id === undefined ? {} : { leafId: state.leaf_id }),
     migratedHeaderId,
   };
+}
+
+function restoreSessionLeaf(
+  sessionManager: SessionManager,
+  restored: RestoredPiEntries,
+): void {
+  if (restored.leafId !== undefined) {
+    if (restored.leafId === null) {
+      sessionManager.resetLeaf();
+    } else {
+      if (sessionManager.getEntry(restored.leafId) === undefined) {
+        throw new HostIsolationError(
+          "agent-state leaf is not present in the saved entry tree",
+        );
+      }
+      sessionManager.branch(restored.leafId);
+    }
+  }
+  const actual = sessionManager.getBranch().map(sessionEntryId);
+  const expected = restored.activeBranch.map(sessionEntryId);
+  if (
+    actual.length !== expected.length ||
+    actual.some((id) => id === null) ||
+    expected.some((id) => id === null) ||
+    actual.some((id, index) => id !== expected[index])
+  ) {
+    throw new HostIsolationError(
+      "agent-state active branch does not match the saved tree and leaf",
+    );
+  }
 }
 
 async function exists(candidate: string): Promise<boolean> {
@@ -1395,7 +1443,10 @@ export async function createPiHost(
     if (header === null) {
       throw new HostIsolationError("Pi session header is missing");
     }
-    return store.saveAgentState(header, session.sessionManager.getBranch());
+    return store.saveAgentState(header, session.sessionManager.getBranch(), {
+      entries: session.sessionManager.getEntries(),
+      leafId: session.sessionManager.getLeafId(),
+    });
   };
 
   try {
@@ -1588,6 +1639,9 @@ export async function createPiHost(
       store === null ? undefined : { id: store.sessionId },
       restored?.entries as Parameters<typeof SessionManager.inMemory>[2],
     );
+    if (restored !== undefined) {
+      restoreSessionLeaf(sessionManager, restored);
+    }
     if (sessionManager.isPersisted()) {
       throw new HostIsolationError("Pi session manager is persisted");
     }
