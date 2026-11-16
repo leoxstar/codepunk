@@ -63,6 +63,7 @@ test("the built CLI reports version and help", async () => {
   assert.match(help.stdout, /--bare\s+disable instructions/u);
   assert.match(help.stdout, /--no-skills\s+do not load skills/u);
   assert.match(help.stdout, /--no-plugins\s+do not load user plugins/u);
+  assert.match(help.stdout, /codepunk completion <bash\|zsh\|fish>/u);
   const permissionsHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
     "permissions",
@@ -96,6 +97,12 @@ test("the built CLI reports version and help", async () => {
   assert.match(sessionsHelp.stdout, /codepunk sessions tree \[session-id\]/u);
   assert.match(sessionsHelp.stdout, /codepunk sessions graph \[--json\]/u);
   assert.doesNotMatch(sessionsHelp.stdout, /codepunk \[options\]/u);
+  const completionHelp = await execFileAsync(process.execPath, [
+    await ensureBuilt(),
+    "completion",
+    "--help",
+  ]);
+  assert.match(completionHelp.stdout, /codepunk completion bash\|zsh\|fish/u);
   const memoryHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
     "memory",
@@ -109,6 +116,41 @@ test("the built CLI reports version and help", async () => {
   assert.match(
     memoryHelp.stdout,
     /codepunk memory edit <id> <text> \[--scope user\|project\]/u,
+  );
+});
+
+test("completion prints scripts for the supported shells", async () => {
+  const cli = await ensureBuilt();
+  const bash = await execFileAsync(process.execPath, [
+    cli,
+    "completion",
+    "bash",
+  ]);
+  assert.match(bash.stdout, /complete -F _codepunk_completion codepunk/u);
+  assert.match(bash.stdout, /compgen -W "tree graph prune"/u);
+  const zsh = await execFileAsync(process.execPath, [cli, "completion", "zsh"]);
+  assert.match(zsh.stdout, /^#compdef codepunk$/mu);
+  assert.match(zsh.stdout, /'sessions:.*'/u);
+  const fish = await execFileAsync(process.execPath, [
+    cli,
+    "completion",
+    "fish",
+  ]);
+  assert.match(fish.stdout, /complete -c codepunk -f/u);
+  assert.match(fish.stdout, /-a 'sessions'/u);
+  await assert.rejects(
+    () =>
+      execFileAsync(process.execPath, [cli, "completion", "cmd"], {
+        env: { ...process.env, NO_COLOR: "1" },
+      }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(
+        error.stderr,
+        /completion requires one shell: bash, zsh, fish/u,
+      );
+      return true;
+    },
   );
 });
 
