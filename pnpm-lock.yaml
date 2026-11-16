@@ -226,10 +226,10 @@ importers:
   packages/cli:
     dependencies:
       "@codepunk/core":
-        specifier: 0.0.0
+        specifier: 0.1.0
         version: link:../core
       "@codepunk/protocol":
-        specifier: 0.0.0
+        specifier: 0.1.0
         version: link:../protocol
       "@earendil-works/pi-coding-agent":
         specifier: 1.5.2
@@ -244,7 +244,7 @@ importers:
         specifier: 0.0.82
         version: 0.0.82
       "@codepunk/protocol":
-        specifier: 0.0.0
+        specifier: 0.1.0
         version: link:../protocol
       "@earendil-works/pi-ai":
         specifier: 1.5.2

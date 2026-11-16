@@ -1,6 +1,6 @@
 {
   "name": "@codepunk/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Engine, host integration, policy, sandbox, evidence, and sessions.",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.82",
-    "@codepunk/protocol": "0.0.0",
+    "@codepunk/protocol": "0.1.0",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@earendil-works/pi-mcp": "1.5.2"

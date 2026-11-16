@@ -7,6 +7,8 @@ import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
   ensureBuilt,
+  escapeRegExp,
+  PRODUCT_VERSION,
   REPO_ROOT,
   withTempDirectory,
 } from "./support/helpers.mjs";
@@ -122,7 +124,10 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
     const version = await execFileAsync(bin, ["--version"]);
     assert.match(
       version.stdout,
-      /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+      new RegExp(
+        `^codepunk ${escapeRegExp(PRODUCT_VERSION)}\\nentry: .+\\nbuilt: .+\\nsource: .+\\n$`,
+        "u",
+      ),
     );
 
     const project = path.join(root, "project");

@@ -677,9 +677,9 @@ The repository is a pnpm workspace. Package scripts, dependency pins, CI, and
 testing conventions are documented in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 The CLI's `install`, `upgrade`, and `uninstall` commands use npm as the
 user-facing package manager; that is separate from repository development.
-This checkout is version `0.0.0` and `@codepunk/cli` is not published, so
-`install` now fails with an explicit message instead of attempting an install
-that cannot resolve.
+This checkout is version `0.1.0`. `install` still refuses the `0.0.0`
+placeholder, which no registry can resolve, and names the version it would
+fetch otherwise.
 
 ## Packages
 

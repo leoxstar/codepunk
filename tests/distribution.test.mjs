@@ -8,6 +8,8 @@ import {
   classifyCommandFailure,
   describeInstallFailure,
   ensureBuilt,
+  escapeRegExp,
+  PRODUCT_VERSION,
   REPO_ROOT,
   resolveBuildTimeoutMs,
   resolveInstallTimeoutMs,
@@ -88,7 +90,10 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
     );
     assert.match(
       version.stdout,
-      /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+      new RegExp(
+        `^codepunk ${escapeRegExp(PRODUCT_VERSION)}\\nentry: .+\\nbuilt: .+\\nsource: .+\\n$`,
+        "u",
+      ),
     );
     const installed = await fs.readdir(
       path.join(install, "node_modules", "@codepunk", "cli"),

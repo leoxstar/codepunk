@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   ensureBuilt,
+  escapeRegExp,
+  PRODUCT_VERSION,
   REPO_ROOT,
   trustWorkspace,
   withTempDirectory,
@@ -1833,7 +1835,10 @@ test("a real pty asks before a project instruction file is trusted", async () =>
       );
       assert.doesNotMatch(
         stripAnsi(session.output()),
-        /codepunk 0\.0\.0 · dist .+ · source current/u,
+        new RegExp(
+          `codepunk ${escapeRegExp(PRODUCT_VERSION)} · dist .+ · source current`,
+          "u",
+        ),
       );
       assert.match(
         stripAnsi(session.output()),

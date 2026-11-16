@@ -8,6 +8,8 @@ import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
   ensureBuilt,
+  escapeRegExp,
+  PRODUCT_VERSION,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -511,7 +513,10 @@ try {
       assert.equal(guardedCli.code, 0, guardedCli.stderr);
       assert.match(
         guardedCli.stdout,
-        /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+        new RegExp(
+          `^codepunk ${escapeRegExp(PRODUCT_VERSION)}\\nentry: .+\\nbuilt: .+\\nsource: .+\\n$`,
+          "u",
+        ),
       );
       assert.doesNotMatch(
         `${guardedCli.stdout}${guardedCli.stderr}`,

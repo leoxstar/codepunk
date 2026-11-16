@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +9,19 @@ import {
 } from "../../packages/core/src/platform/paths.ts";
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+/**
+ * The version the built CLI must report. Reading the manifest keeps the
+ * release bump to one edit instead of one edit per assertion.
+ */
+export const PRODUCT_VERSION = JSON.parse(
+  readFileSync(path.join(REPO_ROOT, "packages", "cli", "package.json"), "utf8"),
+).version;
+
+/** `0.1.0` becomes `0\.1\.0` so it can be dropped into a RegExp. */
+export function escapeRegExp(value) {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
 
 /**
  * Ambient provider credentials make Pi resolve a model before any config

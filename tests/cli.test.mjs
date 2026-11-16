@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   ensureBuilt,
+  escapeRegExp,
+  PRODUCT_VERSION,
   REPO_ROOT,
   trustWorkspace,
   withTempDirectory,
@@ -56,7 +58,10 @@ test("the built CLI reports version and help", async () => {
   ]);
   assert.match(
     stdout,
-    /^codepunk 0\.0\.0\nentry: .+\nbuilt: .+\nsource: .+\n$/u,
+    new RegExp(
+      `^codepunk ${escapeRegExp(PRODUCT_VERSION)}\\nentry: .+\\nbuilt: .+\\nsource: .+\\n$`,
+      "u",
+    ),
   );
   const help = await execFileAsync(process.execPath, [
     await ensureBuilt(),
@@ -1074,20 +1079,33 @@ test("permission commands show effective modes, explain commands, and persist pr
   });
 });
 
-test("install refuses an unpublished checkout version", async () => {
+test("install refuses the unpublished placeholder version", async () => {
   await withTempDirectory("codepunk-cli-install-", async (root) => {
     const { project, home } = await makeProject(root);
     await assert.rejects(
-      () => runCli(["install", "--dry-run"], { cwd: project, home }),
+      () =>
+        runCli(["install", "--dry-run", "--package-version", "0.0.0"], {
+          cwd: project,
+          home,
+        }),
       (error) => {
         assert.equal(error.code, 1);
         assert.match(
           error.stderr,
-          /this checkout is version 0\.0\.0 and @codepunk\/cli is not published/u,
+          /0\.0\.0 is the unpublished placeholder version/u,
         );
         assert.match(error.stderr, /--package-version <published-version>/u);
         return true;
       },
+    );
+
+    const ownVersion = await runCli(["install", "--dry-run"], {
+      cwd: project,
+      home,
+    });
+    assert.match(
+      ownVersion.stdout,
+      new RegExp(`@codepunk/cli@${escapeRegExp(PRODUCT_VERSION)}`, "u"),
     );
 
     const dryRun = await runCli(

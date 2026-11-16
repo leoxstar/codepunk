@@ -69,7 +69,7 @@ const PACKAGE_SPECS = [
     external: {
       typebox: "1.3.27",
     },
-    internal: {},
+    internal: [],
   },
   {
     dir: "packages/core",
@@ -84,9 +84,7 @@ const PACKAGE_SPECS = [
       "@earendil-works/pi-coding-agent": "1.5.2",
       "@earendil-works/pi-mcp": "1.5.2",
     },
-    internal: {
-      "@codepunk/protocol": "0.0.0",
-    },
+    internal: ["@codepunk/protocol"],
   },
   {
     dir: "packages/cli",
@@ -100,10 +98,7 @@ const PACKAGE_SPECS = [
       "@earendil-works/pi-coding-agent": "1.5.2",
       "@earendil-works/pi-tui": "1.5.2",
     },
-    internal: {
-      "@codepunk/core": "0.0.0",
-      "@codepunk/protocol": "0.0.0",
-    },
+    internal: ["@codepunk/core", "@codepunk/protocol"],
   },
 ];
 
@@ -159,13 +154,13 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "fa709211c981d12fe40e570f05d3ba260026cc5731dcf9ed5001d7b9949ea1f7";
+  "180e75ea6ecdee97126746c6b345fdfe7109a97c2fcc48a6e85f2c245847e196";
 
 const EXPECTED_CI_SHA256 =
   "fa4e1b35a0a4bceeedd626e56a4e32202295521bbb411a936c8a6187eddb8b3b";
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "1fe33248f61a353cfab7b73c06c4d2934e2e6e7799ceeedaeb8fddc4fef912b7";
+  "56d01914ec4e8cfd27b7a5258b1b97acb338741e0172e159515193face9e4071";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -1052,16 +1047,25 @@ function checkExports(root, spec, manifest, add) {
   }
 }
 
-function checkPackageManifest(root, spec, manifest, add) {
+function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   const relativeManifest = `${spec.dir}/package.json`;
   if (manifest.name !== spec.name) {
     add("pkg.manifest", relativeManifest, `expected package name ${spec.name}`);
   }
-  if (manifest.version !== "0.0.0") {
+  if (!isExactVersion(manifest.version)) {
     add(
       "pkg.manifest",
       relativeManifest,
-      "initial package version must be 0.0.0",
+      "package version must be an exact semantic version",
+    );
+  } else if (
+    typeof workspaceVersion === "string" &&
+    manifest.version !== workspaceVersion
+  ) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      `package version must match the workspace version ${workspaceVersion}`,
     );
   }
   if (manifest.license !== "MIT") {
@@ -1162,11 +1166,13 @@ function checkPackageManifest(root, spec, manifest, add) {
   const dependencies = manifest.dependencies ?? {};
   const expectedDependencies = {
     ...spec.external,
-    ...spec.internal,
+    ...Object.fromEntries(
+      spec.internal.map((name) => [name, workspaceVersion]),
+    ),
   };
   const expectedNames = Object.keys(expectedDependencies);
   const actualNames = Object.keys(dependencies);
-  const internalNames = Object.keys(spec.internal);
+  const internalNames = spec.internal;
   const internalPrefix = "@codepunk/";
 
   for (const name of actualNames) {
@@ -1404,10 +1410,10 @@ function hasComputedModuleCall(content, ranges, reviewed = null) {
 async function checkSourceImports(root, files, add) {
   for (const spec of PACKAGE_SPECS) {
     const packageRoot = path.join(root, spec.dir);
-    const allowedInternal = new Set(Object.keys(spec.internal));
+    const allowedInternal = new Set(spec.internal);
     const declaredDependencies = new Set([
       ...Object.keys(spec.external),
-      ...Object.keys(spec.internal),
+      ...spec.internal,
     ]);
 
     for (const relativePath of sourceFilesForPackage(files, spec.dir)) {
@@ -1664,7 +1670,7 @@ function relativeWorkspaceLink(fromDirectory, toDirectory) {
   return `link:${path.posix.relative(fromDirectory, toDirectory)}`;
 }
 
-function checkLockfile(lock, lockfileDigest, add) {
+function checkLockfile(lock, lockfileDigest, add, workspaceVersion) {
   const relativeLock = "pnpm-lock.yaml";
   if (lock.lockfileVersion !== "9.0") {
     add("deps.lock", relativeLock, "lockfileVersion must be 9.0");
@@ -1724,7 +1730,8 @@ function checkLockfile(lock, lockfileDigest, add) {
         );
       }
     }
-    for (const [name, version] of Object.entries(spec.internal)) {
+    for (const name of spec.internal) {
+      const version = workspaceVersion;
       const internalSpec = PACKAGE_BY_NAME.get(name);
       if (!internalSpec) {
         continue;
@@ -1789,6 +1796,13 @@ function checkLockfile(lock, lockfileDigest, add) {
 function checkRootManifest(manifest, add) {
   if (manifest.name !== "codepunk") {
     add("pkg.manifest", "package.json", "root package name must be codepunk");
+  }
+  if (!isExactVersion(manifest.version)) {
+    add(
+      "pkg.manifest",
+      "package.json",
+      "root version must be an exact semantic version",
+    );
   }
   if (manifest.private !== true) {
     add("pkg.manifest", "package.json", "root package must be private");
@@ -2055,6 +2069,7 @@ export async function checkRepository({
   await checkRootEntries(normalizedRoot, add);
 
   const rootManifest = await readJson(normalizedRoot, "package.json", add);
+  const workspaceVersion = rootManifest?.version;
   if (rootManifest) {
     checkRootManifest(rootManifest, add);
   }
@@ -2088,7 +2103,13 @@ export async function checkRepository({
       add,
     );
     if (manifest) {
-      checkPackageManifest(normalizedRoot, spec, manifest, add);
+      checkPackageManifest(
+        normalizedRoot,
+        spec,
+        manifest,
+        add,
+        workspaceVersion,
+      );
     }
   }
 
@@ -2111,7 +2132,12 @@ export async function checkRepository({
     lockfileDigest = undefined;
   }
   if (lockfileContent) {
-    checkLockfile(parsePnpmLock(lockfileContent), lockfileDigest, add);
+    checkLockfile(
+      parsePnpmLock(lockfileContent),
+      lockfileDigest,
+      add,
+      workspaceVersion,
+    );
   }
 
   await checkSourceImports(normalizedRoot, scanned, add);

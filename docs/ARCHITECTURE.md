@@ -50,8 +50,10 @@ The reviewed runtime set is:
 | `@anthropic-ai/sandbox-runtime`   | `0.0.82`      | core      | Apache-2.0 |
 | `typebox`                         | `1.3.27`      | protocol  | MIT        |
 
-Internal workspace dependencies use exact version `0.0.0`. Any external runtime
-dependency outside this table requires an ADR and a matching checker update.
+Internal workspace dependencies use the exact version declared in the root
+`package.json`, and all three packages carry that same version. Any external
+runtime dependency outside this table requires an ADR and a matching checker
+update.
 
 ## Runtime data boundary
 

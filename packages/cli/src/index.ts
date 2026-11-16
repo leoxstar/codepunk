@@ -150,9 +150,9 @@ import {
   formatBuildIdentity,
   formatBuildLabel,
   inspectCliBuild,
+  readCliVersion,
+  UNPUBLISHED_VERSION,
 } from "./build-info.ts";
-
-const VERSION = "0.0.0";
 
 interface CliOptions {
   print: boolean;
@@ -3892,10 +3892,10 @@ async function commandPackage(
   options: CliOptions,
   verb: "install" | "upgrade" | "uninstall",
 ): Promise<number> {
-  const targetVersion = options.packageVersion ?? VERSION;
-  if (verb === "install" && targetVersion === "0.0.0") {
+  const targetVersion = options.packageVersion ?? (await readCliVersion());
+  if (verb === "install" && targetVersion === UNPUBLISHED_VERSION) {
     throw new Error(
-      "this checkout is version 0.0.0 and @codepunk/cli is not published; install from the repository checkout or pass --package-version <published-version>",
+      "0.0.0 is the unpublished placeholder version and @codepunk/cli is not published at it; install from the repository checkout or pass --package-version <published-version>",
     );
   }
   const base = {

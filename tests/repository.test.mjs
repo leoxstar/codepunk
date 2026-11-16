@@ -169,6 +169,26 @@ const NEGATIVE_CASES = [
     },
   },
   {
+    name: "package version drift",
+    rule: "pkg.manifest",
+    path: "packages/core/package.json",
+    async apply(root) {
+      return mutateJson(root, "packages/core/package.json", (manifest) => {
+        manifest.version = "0.0.1";
+      });
+    },
+  },
+  {
+    name: "internal dependency pin drift",
+    rule: "deps.pin",
+    path: "packages/cli/package.json",
+    async apply(root) {
+      return mutateJson(root, "packages/cli/package.json", (manifest) => {
+        manifest.dependencies["@codepunk/protocol"] = "0.0.0";
+      });
+    },
+  },
+  {
     name: "broken local Markdown link",
     rule: "docs.link",
     path: "README.md",

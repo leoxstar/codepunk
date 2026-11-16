@@ -232,7 +232,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         ? "package version was not provided to doctor"
         : options.packageVersion === "0.0.0"
           ? "local checkout version is 0.0.0; npm distribution is not published"
-          : `installed package version ${options.packageVersion}`,
+          : `package version ${options.packageVersion}`,
     hint:
       options.packageVersion === undefined || options.packageVersion === "0.0.0"
         ? "publish @codepunk/cli or install from the repository checkout"

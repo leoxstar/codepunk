@@ -6,6 +6,33 @@ import type { DoctorCheck, DoctorReport } from "@codepunk/core";
 const BUILD_PACKAGES = ["protocol", "core", "cli"] as const;
 const MTIME_TOLERANCE_MS = 1_000;
 
+/**
+ * Version reported when the package manifest cannot be read. It is the
+ * placeholder npm refuses to resolve, never a released version.
+ */
+export const UNPUBLISHED_VERSION = "0.0.0";
+
+/**
+ * Reads the CLI package version without walking `dist` against `src`.
+ * `install` needs the local version to name the package it would fetch, and a
+ * full build inspection would be wasted work there.
+ */
+export async function readCliVersion(
+  entryUrl: string = import.meta.url,
+): Promise<string> {
+  const cliRoot = path.dirname(path.dirname(fileURLToPath(entryUrl)));
+  try {
+    const packageJson = JSON.parse(
+      await fs.readFile(path.join(cliRoot, "package.json"), "utf8"),
+    ) as { version?: unknown };
+    return typeof packageJson.version === "string"
+      ? packageJson.version
+      : UNPUBLISHED_VERSION;
+  } catch {
+    return UNPUBLISHED_VERSION;
+  }
+}
+
 export interface CliBuildInfo {
   version: string;
   entryPath: string;
