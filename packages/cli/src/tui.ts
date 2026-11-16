@@ -440,7 +440,8 @@ export function codepunkHelp(): string {
     "  /cp-sessions, /session     list sessions or show the current one",
     "  /resume [id|latest|text]   switch by id, latest, or a title/content match",
     "  /fork [entry-id], /clone   fork at the leaf or entry and switch to the child",
-    "  /tree [entry-id]           list the session tree or move to an entry",
+    "  /tree                     open Pi's branch selector",
+    "  /tree list|<entry-id>     print the tree or move directly to an entry",
     "  /evidence, /budget         show evidence and model usage",
     "  /cp-export, /export        write a redacted transcript and manifest",
     "  /sign                      sign the current settled run",
@@ -1571,7 +1572,14 @@ async function navigateSessionTree(
     return;
   }
   const entryId = argument.trim();
-  if (entryId.length === 0 || entryId === "list") {
+  if (entryId.length === 0) {
+    context.ui.notify(
+      "usage: /tree (Pi branch selector) | /tree list | /tree <entry-id>",
+      "warning",
+    );
+    return;
+  }
+  if (entryId === "list") {
     context.ui.notify(
       formatSessionTree(
         runtime.host.sessionManager.getTree() as TreeNodeView[],
@@ -1607,13 +1615,6 @@ async function navigateSessionTree(
       context.ui.notify("tree navigation was cancelled", "warning");
       return;
     }
-    await runtime.host.recordEvent("session/tree", {
-      action: "navigate",
-      from_entry_id: from,
-      to_entry_id: target.id,
-      branch_entries: runtime.host.sessionManager.getBranch().length,
-    });
-    await runtime.host.saveAgentState();
     context.ui.notify(
       `moved to ${target.id}; the next prompt continues from this branch`,
       "info",
@@ -5054,7 +5055,10 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           );
           return true;
         }
-        if (isSlashCommand(trimmed, "/tree")) {
+        if (trimmed === "/tree") {
+          return false;
+        }
+        if (trimmed.startsWith("/tree ")) {
           await navigateSessionTree(
             state,
             context,

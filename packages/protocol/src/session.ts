@@ -90,7 +90,8 @@ export const SessionTreeEventSchema = Type.Object(
       {
         action: Type.Literal("navigate"),
         from_entry_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
-        to_entry_id: NonEmptyStringSchema,
+        to_entry_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
+        target_entry_id: Type.Optional(NonEmptyStringSchema),
         branch_entries: Type.Integer({ minimum: 0 }),
       },
       { additionalProperties: false },

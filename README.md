@@ -20,7 +20,9 @@ explicit policy boundary around file and shell actions.
 - Shell confinement through `srt`, with coverage reported per execution surface.
 - Append-only evidence with a hash chain and human sign-off.
 - Codepunk-owned sessions with live `/resume`, `/new`, `/fork`, `/clone`, and
-  `/tree` in the TUI, plus CLI listing, export, retention, and compaction
+  `/tree` in the TUI, where the bare command opens Pi's searchable branch
+  selector and `/tree list` prints the full tree, plus CLI listing, export,
+  retention, and compaction
   checkpoints. `codepunk sessions tree [id]` projects the saved Pi entries as a
   branch graph with labels and the active leaf; `codepunk sessions graph` links
   product sessions by parent and fork point; `codepunk sessions search <query>`

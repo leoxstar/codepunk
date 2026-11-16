@@ -19,8 +19,10 @@ import {
   type InlineExtension,
   type ModelRuntime,
   type SessionBeforeCompactEvent,
+  type SessionBeforeTreeEvent,
   type SessionCompactEvent,
   type SessionCompactFailedEvent,
+  type SessionTreeEvent,
   type ToolDefinition,
   type UserBashEvent,
   type UserBashEventResult,
@@ -1068,6 +1070,7 @@ export async function createPiHost(
     session: null,
     assertRegistry: () => {},
   };
+  let pendingTreeTarget: string | null = null;
 
   const productExtension: InlineExtension = {
     name: "codepunk-product",
@@ -1160,6 +1163,21 @@ export async function createPiHost(
           return;
         }
         await store.writeMeta({ title }).catch(() => undefined);
+      });
+      pi.on("session_before_tree", async (event: SessionBeforeTreeEvent) => {
+        pendingTreeTarget = event.preparation.targetId;
+      });
+      pi.on("session_tree", async (event: SessionTreeEvent) => {
+        const targetEntryId = pendingTreeTarget;
+        pendingTreeTarget = null;
+        await appendEvent("session/tree", {
+          action: "navigate",
+          from_entry_id: event.oldLeafId,
+          to_entry_id: event.newLeafId,
+          ...(targetEntryId === null ? {} : { target_entry_id: targetEntryId }),
+          branch_entries: session!.sessionManager.getBranch().length,
+        });
+        await saveHostAgentState();
       });
       pi.on("model_select", async (event) => {
         await appendEvent("model/change", {

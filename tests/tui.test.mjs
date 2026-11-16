@@ -3751,7 +3751,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "run /reload after changing MCP configuration",
       );
       await runCommandAfter(session, "/fork", "forked ");
-      await runCommandAfter(session, "/tree", "Session tree");
+      await runCommandAfter(session, "/tree list", "Session tree");
       await runCommandAfter(
         session,
         "/definitely-not-a-command",
@@ -4089,7 +4089,10 @@ test("a real pty navigates the session tree and forks into a child session", asy
         );
         assert.ok(firstEntry);
 
-        await runCommandAfter(session, "/tree", "Session tree");
+        session.child.stdin.write("/tree\r");
+        await waitForOutput(session, "Session Tree", "Pi tree selector");
+        session.child.stdin.write("\u001b");
+        await new Promise((resolve) => setTimeout(resolve, 250));
         await runCommandAfter(
           session,
           `/tree ${firstEntry.id}`,
@@ -4109,8 +4112,15 @@ test("a real pty navigates the session tree and forks into a child session", asy
           logRecords.some(
             (record) =>
               record.kind === "session/tree" &&
-              record.data?.to_entry_id === firstEntry.id,
+              record.data?.target_entry_id === firstEntry.id &&
+              record.data?.to_entry_id === (firstEntry.parentId ?? null),
           ),
+          JSON.stringify({
+            firstEntryId: firstEntry.id,
+            treeRecords: logRecords.filter(
+              (record) => record.kind === "session/tree",
+            ),
+          }),
         );
 
         session.child.stdin.write("third branch prompt\r");
