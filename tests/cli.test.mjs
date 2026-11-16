@@ -96,6 +96,10 @@ test("the built CLI reports version and help", async () => {
   assert.match(sessionsHelp.stdout, /codepunk sessions prune \[--apply\]/u);
   assert.match(sessionsHelp.stdout, /codepunk sessions tree \[session-id\]/u);
   assert.match(sessionsHelp.stdout, /codepunk sessions graph \[--json\]/u);
+  assert.match(
+    sessionsHelp.stdout,
+    /codepunk sessions search <query> \[--limit n\]/u,
+  );
   assert.doesNotMatch(sessionsHelp.stdout, /codepunk \[options\]/u);
   const completionHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
@@ -127,7 +131,7 @@ test("completion prints scripts for the supported shells", async () => {
     "bash",
   ]);
   assert.match(bash.stdout, /complete -F _codepunk_completion codepunk/u);
-  assert.match(bash.stdout, /compgen -W "tree graph prune"/u);
+  assert.match(bash.stdout, /compgen -W "tree graph prune search"/u);
   const zsh = await execFileAsync(process.execPath, [cli, "completion", "zsh"]);
   assert.match(zsh.stdout, /^#compdef codepunk$/mu);
   assert.match(zsh.stdout, /'sessions:.*'/u);
@@ -504,6 +508,10 @@ test("sessions emit machine-readable lists and prune plans", async () => {
         content: [{ type: "text", text: "cli sibling prompt" }],
       },
     };
+    await parent.append("user/input", {
+      run_id: "cli-search-run",
+      text: "search needle for sessions",
+    });
     await parent.saveAgentState(
       {
         type: "session",
@@ -564,6 +572,27 @@ test("sessions emit machine-readable lists and prune plans", async () => {
     assert.equal(childGraph.depth, 1);
     assert.equal(childGraph.parent_session_id, parent.sessionId);
     assert.equal(childGraph.fork_entry_id, siblingEntry.id);
+
+    const searchResult = await runCli(
+      ["sessions", "search", "needle", "--json"],
+      { cwd: project, home },
+    );
+    const search = JSON.parse(searchResult.stdout);
+    assert.equal(search.query, "needle");
+    assert.equal(search.truncated, false);
+    assert.ok(
+      search.matches.some(
+        (match) =>
+          match.session_id === parent.sessionId &&
+          match.kind === "user/input" &&
+          match.excerpt.includes("search needle"),
+      ),
+    );
+    const searchText = await runCli(["sessions", "search", "needle"], {
+      cwd: project,
+      home,
+    });
+    assert.match(searchText.stdout, /Found 1 match\(es\)/u);
 
     const prune = await runCli(["sessions", "prune", "--json"], {
       cwd: project,

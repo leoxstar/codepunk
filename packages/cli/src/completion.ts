@@ -62,6 +62,7 @@ const OPTIONS: ReadonlyArray<readonly [string, string]> = [
   ["--verdict", "set the sign-off verdict"],
   ["--actor", "set the sign-off label"],
   ["--json", "emit machine-readable output"],
+  ["--limit", "search result limit"],
   ["--socket", "set the daemon socket"],
   ["--help", "show help"],
   ["--version", "show version and build identity"],
@@ -101,6 +102,7 @@ const VALUE_OPTIONS = new Set([
   "--api",
   "--api-key",
   "--socket",
+  "--limit",
   "--url",
   "--header",
   "--cwd",
@@ -134,7 +136,7 @@ _codepunk_completion() {
       return 0
       ;;
     sessions)
-      COMPREPLY=( $(compgen -W "tree graph prune" -- "$cur") )
+      COMPREPLY=( $(compgen -W "tree graph prune search" -- "$cur") )
       return 0
       ;;
     trust)
@@ -247,7 +249,7 @@ _codepunk() {
     args)
       case $words[1] in
         completion) _values 'shell' bash zsh fish ;;
-        sessions) _values 'session command' tree graph prune ;;
+        sessions) _values 'session command' tree graph prune search ;;
         trust) _values 'trust command' status grant revoke ;;
         permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules why ;;
         mcp) _values 'mcp command' list add remove test login logout status ;;
@@ -272,7 +274,7 @@ function fishScript(): string {
   }
   const nested: ReadonlyArray<readonly [string, string]> = [
     ["completion", "bash zsh fish"],
-    ["sessions", "tree graph prune"],
+    ["sessions", "tree graph prune search"],
     ["trust", "status grant revoke"],
     [
       "permissions",

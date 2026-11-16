@@ -41,6 +41,7 @@ import {
   formatPermissionExplanation,
   formatSessionGraph,
   formatSessionList,
+  formatSessionSearch,
   formatSessionTree,
   importProviderModels,
   inspectSavedWorkspaceTrust,
@@ -84,6 +85,7 @@ import {
   resolveSession,
   readSessionGraph,
   readSessionTree,
+  searchProjectSessions,
   runDoctor,
   setConfiguredModel,
   signStandalone,
@@ -199,6 +201,7 @@ interface CliOptions {
   dryRun: boolean;
   json: boolean;
   socket: string | undefined;
+  limit: number | undefined;
   env: string[];
   url: string | undefined;
   headers: string[];
@@ -226,6 +229,7 @@ function usage(): string {
     "  codepunk sessions [prune] [--apply]",
     "  codepunk sessions tree [session-id] [--json]",
     "  codepunk sessions graph [--json]",
+    "  codepunk sessions search <query> [--limit n] [--json]",
     "  codepunk export [session-id] [--output path]",
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
@@ -336,6 +340,7 @@ function usage(): string {
     "      --auth-header        send the key as Authorization: Bearer",
     "      --dry-run            print the package command without running it",
     "      --json               emit machine-readable command output",
+    "      --limit <n>          search result limit (1-100, default 20)",
     "      --socket <path>      daemon socket under CODEPUNK_HOME",
     "  -h, --help",
     "  -v, --version",
@@ -353,6 +358,7 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "  codepunk sessions prune [--apply]",
           "  codepunk sessions tree [session-id] [--json]",
           "  codepunk sessions graph [--json]",
+          "  codepunk sessions search <query> [--limit n] [--json]",
           "  codepunk export [session-id] [--output path]",
           "  codepunk pin <session-id>",
           "  codepunk pin <session-id> --unpin",
@@ -534,6 +540,7 @@ function parseCli(argv: string[]): CliOptions {
       "dry-run": { type: "boolean" },
       json: { type: "boolean" },
       socket: { type: "string" },
+      limit: { type: "string" },
       env: { type: "string", multiple: true },
       url: { type: "string" },
       header: { type: "string", multiple: true },
@@ -827,6 +834,13 @@ function parseCli(argv: string[]): CliOptions {
   if (scope !== undefined && scope !== "user" && scope !== "project") {
     throw new Error("--scope must be user or project");
   }
+  const limit = values.limit === undefined ? undefined : Number(values.limit);
+  if (
+    limit !== undefined &&
+    (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+  ) {
+    throw new Error("--limit must be an integer from 1 to 100");
+  }
   const verdict = values.verdict;
   if (
     verdict !== undefined &&
@@ -893,6 +907,7 @@ function parseCli(argv: string[]): CliOptions {
     dryRun: values["dry-run"] === true,
     json: values.json === true,
     socket: values.socket,
+    limit,
     env: values.env ?? [],
     url: values.url,
     headers: values.header ?? [],
@@ -1769,6 +1784,24 @@ async function commandSessions(options: CliOptions): Promise<number> {
     return 0;
   }
   const subcommand = options.positionals[1];
+  if (subcommand === "search") {
+    const query = options.positionals[2];
+    if (query === undefined) {
+      throw new Error("sessions search requires a query");
+    }
+    const result = await searchProjectSessions({
+      rootDir: paths.home,
+      projectId: paths.projectId,
+      query,
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    });
+    process.stdout.write(
+      options.json
+        ? `${JSON.stringify(result)}\n`
+        : `${formatSessionSearch(result)}\n`,
+    );
+    return 0;
+  }
   if (subcommand === "tree") {
     const requested = options.positionals[2];
     const store = await resolveSession({
