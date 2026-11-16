@@ -99,7 +99,7 @@ test("the built CLI reports version and help", async () => {
   assert.match(sessionsHelp.stdout, /codepunk sessions graph \[--json\]/u);
   assert.match(
     sessionsHelp.stdout,
-    /codepunk sessions search <query> \[--limit n\]/u,
+    /codepunk sessions search <query> \[--limit n\] \[--all-projects\]/u,
   );
   assert.doesNotMatch(sessionsHelp.stdout, /codepunk \[options\]/u);
   const completionHelp = await execFileAsync(process.execPath, [
@@ -445,6 +445,70 @@ test("sessions and memory commands work through the product surface", async () =
     );
     assert.match(exported.stdout, new RegExp(manifest.session_id, "u"));
     assert.ok(Array.isArray(manifest.records));
+  });
+});
+
+test("sessions search can scan every project store", async () => {
+  await withTempDirectory("codepunk-cli-cross-project-", async (root) => {
+    const project = path.join(root, "project");
+    const other = path.join(root, "other");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(other, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    for (const [cwd, text] of [
+      [project, "cross-project needlestack alpha"],
+      [other, "cross-project needlestack beta"],
+    ]) {
+      const store = await core.SessionStore.create({
+        rootDir: home,
+        cwd,
+        projectId: core.projectIdFor(cwd),
+      });
+      const writer = await store.acquireWriter();
+      await store.append("user/input", {
+        run_id: `${core.projectIdFor(cwd)}-run`,
+        text,
+      });
+      await writer.release();
+    }
+
+    const result = await runCli(
+      ["sessions", "search", "needlestack", "--all-projects", "--json"],
+      { cwd: project, home },
+    );
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.scanned_projects, 2);
+    assert.equal(payload.matches.length, 2);
+    assert.deepEqual(
+      [...new Set(payload.matches.map((match) => match.project_id))].sort(),
+      [core.projectIdFor(project), core.projectIdFor(other)].sort(),
+    );
+
+    const limited = await runCli(
+      [
+        "sessions",
+        "search",
+        "needlestack",
+        "--all-projects",
+        "--limit",
+        "1",
+        "--json",
+      ],
+      { cwd: project, home },
+    );
+    const limitedPayload = JSON.parse(limited.stdout);
+    assert.equal(limitedPayload.matches.length, 1);
+    assert.equal(limitedPayload.truncated, true);
+
+    await assert.rejects(
+      () => runCli(["sessions", "--all-projects"], { cwd: project, home }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--all-projects only applies/u);
+        return true;
+      },
+    );
   });
 });
 

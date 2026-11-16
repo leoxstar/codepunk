@@ -1,3 +1,5 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { redactOutputPreview } from "../artifacts/index.ts";
 import { readSessionSnapshot } from "./index.ts";
 import { listProjectSessions } from "./ops.ts";
@@ -6,6 +8,7 @@ const SEARCH_EXCERPT_MAX_CHARS = 180;
 const MAX_MATCHES_PER_SESSION = 3;
 
 export interface SessionSearchHit {
+  project_id?: string;
   session_id: string;
   title: string | null;
   updated_at: string;
@@ -19,10 +22,29 @@ export interface SessionSearchHit {
 export interface SessionSearchResult {
   query: string;
   limit: number;
+  scanned_projects?: number;
   scanned_sessions: number;
   truncated: boolean;
   warnings: string[];
   matches: SessionSearchHit[];
+}
+
+function validateSearchOptions(options: { query: string; limit?: number }): {
+  query: string;
+  limit: number;
+} {
+  const query = options.query.trim();
+  if (query.length === 0) {
+    throw new Error("session search requires a non-empty query");
+  }
+  if (query.length > 200) {
+    throw new Error("session search query must be at most 200 characters");
+  }
+  const limit = options.limit ?? 20;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("session search limit must be an integer from 1 to 100");
+  }
+  return { query, limit };
 }
 
 function boundedExcerpt(value: string): string {
@@ -60,17 +82,7 @@ export async function searchProjectSessions(options: {
   query: string;
   limit?: number;
 }): Promise<SessionSearchResult> {
-  const query = options.query.trim();
-  if (query.length === 0) {
-    throw new Error("session search requires a non-empty query");
-  }
-  if (query.length > 200) {
-    throw new Error("session search query must be at most 200 characters");
-  }
-  const limit = options.limit ?? 20;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new Error("session search limit must be an integer from 1 to 100");
-  }
+  const { query, limit } = validateSearchOptions(options);
   // Use the locale-independent lowercasing so a Turkish or other locale
   // default does not change which sessions match on the same machine.
   const needle = query.toLowerCase();
@@ -157,12 +169,81 @@ export async function searchProjectSessions(options: {
   };
 }
 
+async function listProjectDirectories(rootDir: string): Promise<string[]> {
+  const projectsDir = path.join(rootDir, "projects");
+  try {
+    const entries = await fs.readdir(projectsDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+/**
+ * Search every product project store below one Codepunk home. Each project
+ * gets the same bounded substring scan as the single-project command; results
+ * are merged, ordered by pinned/recent session metadata, and capped globally.
+ */
+export async function searchAllProjectSessions(options: {
+  rootDir: string;
+  query: string;
+  limit?: number;
+}): Promise<SessionSearchResult> {
+  const { query, limit } = validateSearchOptions(options);
+  const projectIds = await listProjectDirectories(options.rootDir);
+  const matches: SessionSearchHit[] = [];
+  const warnings: string[] = [];
+  let scannedSessions = 0;
+  let truncated = false;
+  const perProjectLimit = Math.min(100, Math.max(limit, 20));
+  for (const projectId of projectIds) {
+    const result = await searchProjectSessions({
+      rootDir: options.rootDir,
+      projectId,
+      query,
+      limit: perProjectLimit,
+    });
+    scannedSessions += result.scanned_sessions;
+    truncated ||= result.truncated;
+    warnings.push(
+      ...result.warnings.map((warning) => `project ${projectId}: ${warning}`),
+    );
+    for (const match of result.matches) {
+      matches.push({ ...match, project_id: projectId });
+    }
+  }
+  matches.sort(
+    (left, right) =>
+      Number(right.pinned) - Number(left.pinned) ||
+      Date.parse(right.updated_at) - Date.parse(left.updated_at),
+  );
+  return {
+    query,
+    limit,
+    scanned_projects: projectIds.length,
+    scanned_sessions: scannedSessions,
+    truncated: truncated || matches.length > limit,
+    warnings,
+    matches: matches.slice(0, limit),
+  };
+}
+
 export function formatSessionSearch(result: SessionSearchResult): string {
+  const projectSuffix =
+    result.scanned_projects === undefined
+      ? ""
+      : ` across ${result.scanned_projects} project(s)`;
   if (result.matches.length === 0) {
-    return `No matches for "${result.query}" in ${result.scanned_sessions} session(s).`;
+    return `No matches for "${result.query}" in ${result.scanned_sessions} session(s)${projectSuffix}.`;
   }
   const lines = [
-    `Found ${result.matches.length}${result.truncated ? "+" : ""} match(es) for "${result.query}" in ${result.scanned_sessions} session(s).`,
+    `Found ${result.matches.length}${result.truncated ? "+" : ""} match(es) for "${result.query}" in ${result.scanned_sessions} session(s)${projectSuffix}.`,
   ];
   let currentSession: string | null = null;
   for (const match of result.matches) {
@@ -172,8 +253,10 @@ export function formatSessionSearch(result: SessionSearchResult): string {
         match.title === null || match.title.length === 0
           ? "(untitled)"
           : match.title;
+      const project =
+        match.project_id === undefined ? "" : `${match.project_id}  `;
       lines.push(
-        `${match.pinned ? "*" : " "} ${match.session_id}  ${match.updated_at}  ${title}`,
+        `${match.pinned ? "*" : " "} ${project}${match.session_id}  ${match.updated_at}  ${title}`,
       );
     }
     lines.push(

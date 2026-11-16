@@ -64,6 +64,7 @@ const OPTIONS: ReadonlyArray<readonly [string, string]> = [
   ["--actor", "set the sign-off label"],
   ["--json", "emit machine-readable output"],
   ["--limit", "search result limit"],
+  ["--all-projects", "search every project store"],
   ["--socket", "set the daemon socket"],
   ["--help", "show help"],
   ["--version", "show version and build identity"],

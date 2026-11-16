@@ -71,9 +71,11 @@ for inspection. `codepunk sessions graph` joins product sessions by their
 recorded parent and fork entry, so a child session can be traced back to the
 exact branch point. `codepunk sessions search` reads the same snapshots, matches
 saved titles and bounded event excerpts, redacts every excerpt, and never reads
-the unbounded shell output that the product log does not store. These are
-read-only views; none of these commands mutates Pi state or appends a product
-event.
+the unbounded shell output that the product log does not store. The default
+scan stays inside the current project; `--all-projects` enumerates direct
+project directories under `CODEPUNK_HOME`, labels hits with their project id,
+and merges the per-project results under one global limit. These are read-only
+views; none of these commands mutates Pi state or appends a product event.
 
 The Pi runtime factory admits only explicit Codepunk session targets. `/resume`
 and `/new` dispose the old host, build a new Codepunk runtime for the selected
@@ -794,9 +796,10 @@ These are real gaps, not hidden fallbacks:
    full Pi entry tree and the active leaf, so sibling branches survive restart
    and `/tree` can inspect them again. `sessions tree`, `sessions graph`, and
    `sessions search` expose saved branches, fork links, and bounded substring
-   matches across product sessions. What remains is ranked or semantic
-   retrieval and a cross-project view. Shell stdout is not stored, so search
-   cannot retrieve it, and every excerpt is redacted before output.
+   matches across product sessions. `--all-projects` adds a bounded
+   cross-project view. What remains is ranked or semantic retrieval. Shell
+   stdout is not stored, so search cannot retrieve it, and every excerpt is
+   redacted before output.
 2. MCP has user-scope `list/add/remove/test/login/logout/status` and `/mcp`
    over Pi's MCP client; both stdio and Streamable HTTP transports are wired,
    and the TUI add/remove form uses the same validated config writer as the
@@ -941,9 +944,10 @@ The next work should follow the trust boundary, not the feature count:
 3. Add a `codepunk work` surface for `WorkerPool` and swarm tasks. The
    underlying delivery primitives exist, but today only `/subagent` has a
    product entry point.
-4. Decide whether session search needs ranked or cross-project retrieval.
-   Substring search is the auditable baseline because it has no hidden model
-   call and its excerpts stay bounded and redacted.
+4. Add ranked or semantic session retrieval. Cross-project substring search is
+   now available through `--all-projects`; the remaining search baseline stays
+   auditable because it has no hidden model call and its excerpts stay bounded
+   and redacted.
 
 ## Local evidence
 
@@ -951,7 +955,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 608 tests, 608 pass
+# 610 tests, 610 pass
 # repository check: 540 files, 3 packages
 ```
 

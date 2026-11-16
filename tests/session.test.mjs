@@ -977,3 +977,59 @@ test("session search finds titles and redacted event excerpts", async () => {
     assert.match(core.formatSessionSearch(missing), /No matches/u);
   });
 });
+
+test("session search can scan every project with a global limit", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const now = advancingClock();
+    for (const [projectId, title, text] of [
+      ["project-alpha", "Alpha handoff", "cross-project needlestack alpha"],
+      ["project-beta", "Beta handoff", "cross-project needlestack beta"],
+    ]) {
+      const store = await core.SessionStore.create({
+        rootDir,
+        cwd: `/workspace/${projectId}`,
+        projectId,
+        now,
+        heartbeatMs: 60_000,
+      });
+      const writer = await store.acquireWriter();
+      await store.writeMeta({ title });
+      await store.append("user/input", {
+        run_id: `${projectId}-run`,
+        text,
+      });
+      await writer.release();
+    }
+
+    const result = await core.searchAllProjectSessions({
+      rootDir,
+      query: "needlestack",
+    });
+    assert.equal(result.scanned_projects, 2);
+    assert.equal(result.scanned_sessions, 2);
+    assert.equal(result.matches.length, 2);
+    assert.deepEqual(
+      [...new Set(result.matches.map((match) => match.project_id))].sort(),
+      ["project-alpha", "project-beta"],
+    );
+    assert.match(core.formatSessionSearch(result), /across 2 project\(s\)/u);
+
+    const limited = await core.searchAllProjectSessions({
+      rootDir,
+      query: "needlestack",
+      limit: 1,
+    });
+    assert.equal(limited.matches.length, 1);
+    assert.equal(limited.truncated, true);
+
+    const empty = await withTempDirectory(async (home) => {
+      return await core.searchAllProjectSessions({
+        rootDir: home,
+        query: "needlestack",
+      });
+    });
+    assert.equal(empty.scanned_projects, 0);
+    assert.equal(empty.matches.length, 0);
+    assert.match(core.formatSessionSearch(empty), /No matches/u);
+  });
+});

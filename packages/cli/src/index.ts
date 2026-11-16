@@ -87,6 +87,7 @@ import {
   resolveSession,
   readSessionGraph,
   readSessionTree,
+  searchAllProjectSessions,
   searchProjectSessions,
   runDoctor,
   setConfiguredModel,
@@ -191,6 +192,7 @@ interface CliOptions {
   headlessPolicy: string | undefined;
   apply: boolean;
   unpin: boolean;
+  allProjects: boolean;
   verdict: "complete" | "incomplete" | undefined;
   actor: string | undefined;
   output: string | undefined;
@@ -232,7 +234,7 @@ function usage(): string {
     "  codepunk sessions [prune] [--apply]",
     "  codepunk sessions tree [session-id] [--json]",
     "  codepunk sessions graph [--json]",
-    "  codepunk sessions search <query> [--limit n] [--json]",
+    "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
     "  codepunk export [session-id] [--output path]",
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
@@ -348,6 +350,7 @@ function usage(): string {
     "      --dry-run            print the package command without running it",
     "      --json               emit machine-readable command output",
     "      --limit <n>          search result limit (1-100, default 20)",
+    "      --all-projects       search every project under CODEPUNK_HOME",
     "      --socket <path>      daemon socket under CODEPUNK_HOME",
     "  -h, --help",
     "  -v, --version",
@@ -365,7 +368,7 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "  codepunk sessions prune [--apply]",
           "  codepunk sessions tree [session-id] [--json]",
           "  codepunk sessions graph [--json]",
-          "  codepunk sessions search <query> [--limit n] [--json]",
+          "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
           "  codepunk export [session-id] [--output path]",
           "  codepunk pin <session-id>",
           "  codepunk pin <session-id> --unpin",
@@ -540,6 +543,7 @@ function parseCli(argv: string[]): CliOptions {
       "headless-policy": { type: "string" },
       apply: { type: "boolean" },
       unpin: { type: "boolean" },
+      "all-projects": { type: "boolean" },
       verdict: { type: "string" },
       actor: { type: "string" },
       output: { type: "string" },
@@ -907,6 +911,7 @@ function parseCli(argv: string[]): CliOptions {
     headlessPolicy: values["headless-policy"],
     apply: values.apply === true,
     unpin: values.unpin === true,
+    allProjects: values["all-projects"] === true,
     verdict,
     actor: values.actor,
     output: values.output,
@@ -1798,17 +1803,26 @@ async function commandSessions(options: CliOptions): Promise<number> {
     return 0;
   }
   const subcommand = options.positionals[1];
+  if (options.allProjects && subcommand !== "search") {
+    throw new Error("--all-projects only applies to sessions search");
+  }
   if (subcommand === "search") {
     const query = options.positionals[2];
     if (query === undefined) {
       throw new Error("sessions search requires a query");
     }
-    const result = await searchProjectSessions({
-      rootDir: paths.home,
-      projectId: paths.projectId,
-      query,
-      ...(options.limit !== undefined ? { limit: options.limit } : {}),
-    });
+    const result = options.allProjects
+      ? await searchAllProjectSessions({
+          rootDir: paths.home,
+          query,
+          ...(options.limit !== undefined ? { limit: options.limit } : {}),
+        })
+      : await searchProjectSessions({
+          rootDir: paths.home,
+          projectId: paths.projectId,
+          query,
+          ...(options.limit !== undefined ? { limit: options.limit } : {}),
+        });
     process.stdout.write(
       options.json
         ? `${JSON.stringify(result)}\n`

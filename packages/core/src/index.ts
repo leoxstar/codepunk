@@ -358,6 +358,7 @@ export {
   type SessionTreeEntry,
 } from "./session/tree.ts";
 export {
+  searchAllProjectSessions,
   formatSessionSearch,
   searchProjectSessions,
   type SessionSearchHit,

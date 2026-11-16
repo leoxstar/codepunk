@@ -27,7 +27,9 @@ explicit policy boundary around file and shell actions.
   branch graph with labels and the active leaf; `codepunk sessions graph` links
   product sessions by parent and fork point; `codepunk sessions search <query>`
   searches saved titles and bounded event excerpts in the current project,
-  redacts secrets before output, and accepts `--limit` and `--json`. In the TUI,
+  redacts secrets before output, and accepts `--limit` and `--json`.
+  `--all-projects` scans every project store under `CODEPUNK_HOME`, labels each
+  match with its project id, and applies the same bounded result cap. In the TUI,
   `/resume <id|latest|text>` falls back to the same search, shows a chooser when
   several sessions match, and resumes the selected session in place. A
   checkpoint is evidence about the compaction boundary, not a user-visible
