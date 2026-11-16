@@ -203,7 +203,9 @@ given. It also refuses to write through an instruction-file symlink.
 
 `/permissions` (also `/permission`) shows the effective
 profile, trust decision, approval, autonomy, and sandbox modes and the user
-config path.
+config path. Omitting the value after `profile`, `approval`, `autonomy`,
+`sandbox`, or `filesystem` opens an arrow-key picker with the current value
+marked.
 
 ```text
 /permissions profile read-only|standard|auto|auto-approve|full-access

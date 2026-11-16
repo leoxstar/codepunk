@@ -332,6 +332,7 @@ const FILESYSTEM_MODES = ["workspace", "full"] as const;
 function permissionUsage(): string {
   return [
     "usage:",
+    "  /permissions profile|approval|autonomy|sandbox|filesystem  choose with arrows",
     `  /permissions profile ${PERMISSION_PROFILE_NAMES.join("|")}`,
     `  /permissions approval ${APPROVAL_MODE_NAMES.join("|")} · reviewer off|model`,
     "  /permissions autonomy read-only|ask|scoped",
@@ -342,6 +343,41 @@ function permissionUsage(): string {
     "  /permissions why -- <shell command>",
     "  /trust [status|grant|revoke] [config,policy,skills,instructions]",
   ].join("\n");
+}
+
+function permissionPicker(
+  runtime: CodepunkRuntime,
+  group: string,
+): { values: readonly string[]; current: string } | null {
+  switch (group) {
+    case "profile":
+      return {
+        values: PERMISSION_PROFILE_NAMES,
+        current: permissionProfileFor(runtime.config),
+      };
+    case "approval":
+      return {
+        values: APPROVAL_MODE_NAMES,
+        current: runtime.config.approval.mode,
+      };
+    case "autonomy":
+      return {
+        values: AUTONOMY_PROFILES,
+        current: runtime.config.autonomy.profile,
+      };
+    case "sandbox":
+      return {
+        values: SANDBOX_MODES,
+        current: runtime.config.sandbox.mode,
+      };
+    case "filesystem":
+      return {
+        values: FILESYSTEM_MODES,
+        current: runtime.config.filesystem.mode,
+      };
+    default:
+      return null;
+  }
 }
 
 export function parsePermissionWhyCommand(argument: string): string | null {
@@ -375,7 +411,7 @@ export function codepunkHelp(): string {
     "  /scoped-models             explain the file-backed model scope",
     "",
     "Permissions and work",
-    "  /permissions               show or change profile, approval, autonomy, sandbox",
+    "  /permissions               show status; /permissions <group> opens a picker",
     "  /permissions reviewer [off|model [provider/model]|timeout <ms>]  configure auto-mode review",
     "  /permissions sandbox network [allow|deny <domain>...|clear]  set the sandbox egress lists",
     "  /permissions rules         list persisted exact-command rules",
@@ -1663,6 +1699,24 @@ async function configurePermissions(
     return;
   }
   const [group, value, ...rest] = trimmed.split(/\s+/u);
+  if (group !== undefined && value === undefined && rest.length === 0) {
+    const picker = permissionPicker(runtime, group);
+    if (picker !== null) {
+      const labels = picker.values.map(
+        (candidate) =>
+          `${candidate === picker.current ? "\u2713" : " "} ${candidate}`,
+      );
+      const selected = await context.ui.select(`Permission ${group}`, labels);
+      if (selected === undefined) {
+        return;
+      }
+      const chosen = picker.values[labels.indexOf(selected)];
+      if (chosen !== undefined) {
+        await configurePermissions(state, context, `${group} ${chosen}`);
+      }
+      return;
+    }
+  }
   if (group === "sandbox" && value === "network") {
     const formatNetwork = (): string =>
       [

@@ -3471,8 +3471,16 @@ test("a real pty shows and persists permission modes", async () => {
       );
       await runCommandAfter(
         session,
-        "/permission approval deny",
+        "/permissions approval",
+        "Permission approval",
+      );
+      const approvalMark = session.output().length;
+      session.child.stdin.write("\u001b[B\r");
+      await waitForOutputAfter(
+        session,
+        approvalMark,
         "approvals set to deny",
+        "approval picker",
       );
       const deniedMark = session.output().length;
       session.child.stdin.write("!touch denied-by-permission.txt\r");
