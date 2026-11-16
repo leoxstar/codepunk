@@ -134,6 +134,11 @@ import {
   TerminalSelectCancelledError,
 } from "./terminal-select.ts";
 import {
+  COMPLETION_SHELLS,
+  completionScript,
+  isCompletionShell,
+} from "./completion.ts";
+import {
   appendBuildDoctorCheck,
   formatBuildIdentity,
   formatBuildLabel,
@@ -282,6 +287,7 @@ function usage(): string {
     "",
     "Operations:",
     "  codepunk doctor",
+    "  codepunk completion <bash|zsh|fish>",
     "  codepunk install|upgrade|uninstall",
     "  codepunk install [--prefix <dir>] [--package-version <v>] [--dry-run]",
     "",
@@ -369,6 +375,11 @@ function subcommandUsage(command: string | undefined): string | undefined {
         return [
           "usage:",
           "  codepunk view [session-id] [--json] [--socket path]",
+        ];
+      case "completion":
+        return [
+          "usage:",
+          `  codepunk completion ${COMPLETION_SHELLS.join("|")}`,
         ];
       case "memory":
         return [
@@ -1892,6 +1903,17 @@ async function commandView(options: CliOptions): Promise<number> {
       ? `${JSON.stringify(result)}\n`
       : `${formatDaemonSession(result)}\n`,
   );
+  return 0;
+}
+
+async function commandCompletion(options: CliOptions): Promise<number> {
+  const shell = options.positionals[1];
+  if (shell === undefined || !isCompletionShell(shell)) {
+    throw new Error(
+      `completion requires one shell: ${COMPLETION_SHELLS.join(", ")}`,
+    );
+  }
+  process.stdout.write(completionScript(shell));
   return 0;
 }
 
@@ -3678,6 +3700,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "view") {
     return commandView(options);
+  }
+  if (command === "completion") {
+    return commandCompletion(options);
   }
   if (
     command === "install" ||
