@@ -1828,8 +1828,8 @@ test("a real pty asks before a project instruction file is trusted", async () =>
         session.output(),
         /\u2192 Trust this workspace and remember/u,
       );
-      assert.match(session.output(), /Load resources · remember/u);
-      assert.match(session.output(), /Skip now · ask again next start/u);
+      assert.match(session.output(), /Load all resources · remember/u);
+      assert.match(session.output(), /Skip all now · ask again next start/u);
       assert.doesNotMatch(
         session.output(),
         /1\. Trust this workspace and remember/u,
@@ -1929,6 +1929,97 @@ test("a real pty remembers the default trust choice", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(second);
+    }
+  });
+});
+
+test("a real pty applies a custom per-resource trust decision", async () => {
+  await withTempDirectory("codepunk-tui-trust-custom-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(path.join(project, ".codepunk", "skills", "team"), {
+      recursive: true,
+    });
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, ".codepunk", "config.toml"),
+      "[memory]\nmax_tokens = 400\n",
+    );
+    await fs.writeFile(
+      path.join(project, ".codepunk", "skills", "team", "SKILL.md"),
+      "---\nname: team\ndescription: team\n---\nbody\n",
+    );
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "CUSTOM_TRUST_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "Project trust", "trust prompt");
+      assert.match(session.output(), /Customize resources/u);
+      assert.doesNotMatch(
+        session.output(),
+        /1\. Trust this workspace and remember/u,
+      );
+      session.child.stdin.write("\u001b[B\u001b[B\r");
+      await waitForOutput(
+        session,
+        "Load project resources",
+        "resource checkbox",
+      );
+      assert.match(session.output(), /\[x\] Project configuration/u);
+      assert.match(session.output(), /\[x\] Project skills/u);
+      assert.match(session.output(), /\[x\] Project instructions/u);
+      assert.match(session.output(), /space toggle  enter apply  esc back/u);
+      // Turn config and skills off, leaving only project instructions.
+      session.child.stdin.write(" \u001b[B \r");
+      await waitForOutput(session, "Apply custom trust", "custom scope");
+      assert.match(session.output(), /selected: instructions/u);
+      session.child.stdin.write("\u001b[B\r");
+      await waitForOutput(session, "codepunk · auto/auto", "custom startup");
+      assert.match(session.output(), /trust custom \(instructions\)/u);
+      const saved = JSON.parse(
+        await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
+      );
+      assert.deepEqual(saved.workspaces[await fs.realpath(project)].grants, {
+        config: false,
+        policy: false,
+        skills: false,
+        instructions: true,
+      });
+      const mark = session.output().length;
+      session.child.stdin.write("/trust status\r");
+      await waitForOutputAfter(
+        session,
+        mark,
+        "saved resources:",
+        "trust status",
+      );
+      assert.match(
+        stripAnsi(session.output().slice(mark)),
+        /config=skipped, policy=skipped, skills=skipped, instructions=allowed/u,
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
     }
   });
 });
