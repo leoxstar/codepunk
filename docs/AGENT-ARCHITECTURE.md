@@ -61,8 +61,10 @@ Provider endpoint
 The authoritative product record is Codepunk's append-only session event log.
 Pi's session manager is deliberately in memory in this adapter; Codepunk does
 not write a second Pi session file. That avoids two competing session truths,
-so the Pi branch is an execution surface, not a second durable product tree.
-Codepunk records `/tree` navigation and snapshots the active branch.
+so the Pi tree is an execution surface, not a second durable product tree.
+Codepunk records `/tree` navigation and stores the full Pi entry tree plus the
+active leaf inside `agent-state.json`; the product event log remains the
+authority, and the snapshot is opaque host state used for resume.
 
 The Pi runtime factory admits only explicit Codepunk session targets. `/resume`
 and `/new` dispose the old host, build a new Codepunk runtime for the selected
@@ -562,7 +564,7 @@ would leave the next process with a route that has not been registered yet.
 | Sandbox                          | Keep in Codepunk                     | Pi has no built-in containment. `srt` coverage must remain a Codepunk claim.                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Session event log and evidence   | Keep in Codepunk                     | Pi can persist a JSONL session and custom entries, but its ordering and format are not a tamper-evident product ledger. Hash-linked events, writer leases, redaction boundaries, and sign-off are Codepunk requirements, so the Pi manager runs in memory and Codepunk persists the event/state pair.                                                                                                                                                                                         |
 | Compaction mechanics             | Delegate to Pi                       | The host owns the context window and summary format. Codepunk should record a checkpoint reference, not invent a second compactor.                                                                                                                                                                                                                                                                                                                                                            |
-| Compaction checkpoint and memory | Keep in Codepunk                     | Pi appends the summary and kept boundary; Codepunk records hashes, counts, model, and tool loadout, then persists the Pi branch immediately.                                                                                                                                                                                                                                                                                                                                                  |
+| Compaction checkpoint and memory | Keep in Codepunk                     | Pi appends the summary and kept boundary; Codepunk records hashes, counts, model, and tool loadout, then persists the full Pi entry tree and active leaf immediately.                                                                                                                                                                                                                                                                                                                         |
 | Turn-boundary tool omission      | Keep in Codepunk, bounded            | Codepunk may replace an old tool result with a hash marker at `context.truncation_threshold`, independently of Pi's `context.compaction_threshold`. Pi still decides when to summarize; this is an artifact-retention rule, not a second compactor.                                                                                                                                                                                                                                           |
 | Context file discovery           | Bounded discovery in Codepunk        | Pi's `loadProjectContextFiles` walks to the filesystem root and reads before Codepunk can filter. `platform/context-files.ts` keeps Pi's filename precedence but walks only cwd-to-delivery-root, so an untrusted or ancestor file is never read. Codepunk sets `noContextFiles` and assembles the final instruction block, authority order, and hashes itself.                                                                                                                               |
 | Skill discovery                  | Pi discovery, hardened by Codepunk   | Codepunk uses Pi's `loadSkillsFromDir`, `parseFrontmatter`, and `formatSkillsForPrompt`, then rechecks containment, symlinks, regular files, NUL bytes, byte caps, frontmatter identity, duplicate names, and hashes before building the untrusted envelope. The prompt lists name, description, and location only; the body is read on demand. Pi remains the discovery walker and formatter; Codepunk remains the trust gate.                                                               |
@@ -570,7 +572,7 @@ would leave the next process with a route that has not been registered yet.
 | MCP                              | Gate in Codepunk                     | Pi supplies the protocol client, `createMcpToolName`, `normalizeMcpInputSchema`, and the OAuth sign-in/refresh flow; Codepunk keeps user-scope config only, ignores project MCP files with a warning at every trust level, stores credentials at `mcp-auth.json`, requires explicit login, fails closed on unwrapped tools, and offers `--no-mcp`/`--bare` as one-session escape hatches. Startup resolves the model and session before any stdio server runs.                                |
 | TUI layout and editor            | Delegate to Pi                       | Codepunk registers an extension and adds header/footer/status/commands; it does not render a second TUI.                                                                                                                                                                                                                                                                                                                                                                                      |
 | Session fork/clone               | Codepunk state, Pi branch            | `codepunk --fork <id>` is the settled cold path: it takes the parent writer lock and refuses a live writer or `state_covers_seq != last_seq` before copying the Pi branch. In the TUI, `/fork [entry]` and `/clone` validate the live agent state, write a child product session plus `session/forked` (`mode: "live"`), and switch to it. The product header carries the parent id and state hash; Pi's `parentSession` path field is not reused as a product link.                          |
-| Session tree navigation          | Pi branch, recorded by Codepunk      | `/tree` lists the in-memory branch tree; `/tree <entry-id>` calls Pi's `navigateTree`, writes `session/tree` with the from/to entry ids and active branch length, and saves the agent-state snapshot. This is live navigation inside one session, not a second durable event tree: only the active branch is snapshotted, so sibling branches do not survive a process restart as separate product sessions.                                                                                  |
+| Session tree navigation          | Pi branch, recorded by Codepunk      | `/tree` lists the branch tree; `/tree <entry-id>` calls Pi's `navigateTree`, writes `session/tree` with the from/to entry ids and active branch length, and saves the agent-state snapshot. The snapshot stores all Pi entries and the active leaf, so sibling branches survive a process restart as inspectable history inside the same product session. This is still one opaque host tree per session, not a queryable graph across product sessions.                                      |
 | User-visible sub-agents          | Profile-driven child Pi sessions     | `/subagent` launches a separate Codepunk/Pi child with its own session, parent session id, evidence namespace, tool mask, model pool, and optional detached worktree. Pi has no first-class delegation surface, so Codepunk supplies the link, not a second loop.                                                                                                                                                                                                                             |
 | Model fallback                   | Pi virtual model, policy in Codepunk | Pi owns request routing and retry timing; Codepunk supplies the ordered chain, provider boundary, fallback event, and `model/retry_start`/`model/retry_end` evidence for Pi's automatic retries. No second request loop.                                                                                                                                                                                                                                                                      |
 | Cost budget                      | Keep in Codepunk, implemented        | `config.budget.max_tokens` / `max_cost_usd` combine assistant and compaction usage with Pi's `getSessionStats()` totals, then add direct summary calls separately by `model/usage.source`. A larger Pi total can no longer hide summary tokens. The host aborts and blocks further input with a `budget/exceeded` event. This is product policy over the host's accounting, not a second retry loop.                                                                                          |
@@ -738,10 +740,11 @@ fails with the expected path rather than silently rejecting a legal command.
 These are real gaps, not hidden fallbacks:
 
 1. Live `/resume`, `/new`, `/fork`, `/clone`, and `/tree` now run through Pi's
-   session replacement and branch APIs. The remaining branch gap is durability:
-   the agent-state snapshot stores the active branch, while sibling branches
-   exist only in the in-memory Pi session for the current process. There is no
-   queryable cross-session branch graph yet.
+   session replacement and branch APIs. The agent-state snapshot stores the
+   full Pi entry tree and the active leaf, so sibling branches survive restart
+   and `/tree` can inspect them again. What remains is a product-level,
+   queryable branch graph across sessions; the tree is still opaque host state
+   inside one session snapshot.
 2. MCP has user-scope `list/add/remove/test/login/logout/status` and `/mcp`
    over Pi's MCP client; both stdio and Streamable HTTP transports are wired,
    and the TUI add/remove form uses the same validated config writer as the
@@ -856,15 +859,16 @@ the first architecture pass. The audit looked for places where a host failure
 would be recorded as a product success, or where Codepunk kept a second copy of
 host state. The current status of each finding is:
 
-| Finding                                                                  | Status | Current guard                                                                                                                                  |
-| ------------------------------------------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pi could discover `SYSTEM.md` outside the Codepunk context authority     | Closed | `systemPrompt: ""` suppresses discovery, `assertHostResources` rejects any discovered source, and a host test uses sentinel files.             |
-| Pi's extension runner could swallow a product handler failure            | Closed | `bindExtensions({ onError })` records the failure; `before_agent_start`, `input`, `tool_call`, and `transformContext` fail closed.             |
-| Resume could restore a Pi branch older than the append-only event log    | Closed | `SessionStore.resume()` rejects any nonzero `uncommittedEvents` instead of silently discarding the crash window.                               |
-| A failed or cancelled tool call was recorded as `decision: "allow"`      | Closed | Evidence now carries `outcome: completed/failed/cancelled/denied`; verdict treats failed and cancelled records as incomplete.                  |
-| Artifact truncation replaced image or multi-block tool results with text | Closed | Bounded output replaces text blocks only; non-text content and other structured fields survive.                                                |
-| The host and the startup model resolver used different `ModelRuntime`s   | Closed | `createRuntime` creates one runtime, passes it through model/fallback resolution, and hands the same instance to `createAgentSessionServices`. |
-| An invalid configured model left a header-only session behind            | Closed | Model resolution happens before `openSession`; print mode now fails before writing a session.                                                  |
+| Finding                                                                  | Status | Current guard                                                                                                                                            |
+| ------------------------------------------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pi could discover `SYSTEM.md` outside the Codepunk context authority     | Closed | `systemPrompt: ""` suppresses discovery, `assertHostResources` rejects any discovered source, and a host test uses sentinel files.                       |
+| Pi's extension runner could swallow a product handler failure            | Closed | `bindExtensions({ onError })` records the failure; `before_agent_start`, `input`, `tool_call`, and `transformContext` fail closed.                       |
+| Resume could restore a Pi branch older than the append-only event log    | Closed | `SessionStore.resume()` rejects any nonzero `uncommittedEvents` instead of silently discarding the crash window.                                         |
+| Pi sibling branches disappeared from the product snapshot                | Closed | `agent-state.json` stores every Pi entry plus the active leaf; restore rebuilds the tree and rejects a leaf that disagrees with the saved active branch. |
+| A failed or cancelled tool call was recorded as `decision: "allow"`      | Closed | Evidence now carries `outcome: completed/failed/cancelled/denied`; verdict treats failed and cancelled records as incomplete.                            |
+| Artifact truncation replaced image or multi-block tool results with text | Closed | Bounded output replaces text blocks only; non-text content and other structured fields survive.                                                          |
+| The host and the startup model resolver used different `ModelRuntime`s   | Closed | `createRuntime` creates one runtime, passes it through model/fallback resolution, and hands the same instance to `createAgentSessionServices`.           |
+| An invalid configured model left a header-only session behind            | Closed | Model resolution happens before `openSession`; print mode now fails before writing a session.                                                            |
 
 The plugin boundary remains intentionally separate: enabled plugins are trusted
 in-process code and can call host filesystem or process APIs without passing
@@ -875,10 +879,9 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Make the branch graph durable across process restarts. The live transcript
-   browser, complete tool output, worktree review, human sign-off, merge
-   handoff, and discard are already exposed through `/agents`; sibling Pi
-   branches still exist only in the in-memory session.
+1. Expose the persisted per-session Pi tree as a product-level branch graph
+   that can be searched and compared across sessions. Sibling branches now
+   survive restart inside one session, but there is no cross-session query.
 2. Add per-resource workspace trust so instructions, project config, policy,
    and skills can be decided separately without weakening the exact-root rule.
 3. Add a bidirectional local protocol and product-branded out-of-terminal
@@ -894,7 +897,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 591 tests, 591 pass
+# 593 tests, 593 pass
 # repository check: 518 files, 3 packages
 ```
 

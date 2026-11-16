@@ -23,6 +23,8 @@ explicit policy boundary around file and shell actions.
   checkpoints. A checkpoint is evidence about the compaction boundary, not a
   user-visible session rewind. The first prompt seeds a redacted title, later
   Pi title changes are mirrored, and `pin <id> [--unpin]` controls retention.
+  The `/tree` snapshot stores every Pi entry and the active leaf, so sibling
+  branches survive resume without a separate Pi session file.
 - Project context from `AGENTS.md`, local memory, skills, and gated MCP
   servers, including resource listing and reads through Pi's MCP tools.
 - `/init` bootstraps `AGENTS.md` from repository evidence through a normal

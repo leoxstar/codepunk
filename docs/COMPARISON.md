@@ -119,7 +119,7 @@ auto-approve/full-access matrix, one-session `--no-skills`/`--no-plugins`/
 live `/resume`/`/new`/`/tree`/`/fork` and streaming steering, and repository
 negative controls. The TUI also covers `/init` guard and model-prompt
 injection, `/status`, skill hot reload, and the Pi-native trust selector.
-On 2026-11-16, the local suite reported 591 tests and the repository check
+On 2026-11-16, the local suite reported 593 tests and the repository check
 reported 518 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
@@ -236,13 +236,13 @@ per-capability rationale is in `docs/AGENT-ARCHITECTURE.md`.
 | Workspace trust store       | `ProjectTrustStore`                                                                                                                    | exact-root policy, protected-resource list, bounded pre-trust preview, skipped-class reporting                                                |
 | Skills                      | `loadSkillsFromDir`, `parseFrontmatter`, `formatSkillsForPrompt`                                                                       | containment, symlink/NUL checks, byte caps, identity and hash checks                                                                          |
 | MCP                         | `@earendil-works/pi-mcp` client, transports, schema normalization, resource methods, `limitMcpContent`, `pi-mcp/oauth` sign-in/refresh | user-scope config, inert project MCP, wrapped-tool requirement, resource-tool approval/evidence, credential store, explicit login, `--no-mcp` |
-| Compaction                  | host context window and summary                                                                                                        | checkpoint hashes and durable Pi branch persistence                                                                                           |
+| Compaction                  | host context window and summary                                                                                                        | checkpoint hashes and durable Pi entry-tree persistence                                                                                       |
 | TUI                         | Pi editor and pickers                                                                                                                  | header/footer, product commands, approval channel                                                                                             |
 | Search, plan/todo, memory   | grep/find inputs and `truncateHead`/`truncateLine`; Pi's tools may download and cannot hash the binary                                 | `search`, `plan`, `todo`, `memory_search` with a pinned binary and sensitive-path gate                                                        |
 | Policy, approval, autonomy  | `ModelRuntime.completeSimple` for the optional reviewer; no approval loop                                                              | presets, scoped exact-argv rules, approval broker, reviewer eligibility, explanations                                                         |
 | Sandbox                     | none                                                                                                                                   | `srt` profiles, coverage descriptors, read-only write removal                                                                                 |
 | File roots                  | tool `cwd` for relative paths; no project trust side effect for extra roots                                                            | `--add-dir` canonical roots, path containment, symlink recheck, srt write set                                                                 |
-| Sessions, evidence, workers | Pi's in-memory branch tree and `navigateTree`; Codepunk records tree moves and snapshots the active branch                             | durable product session log, cold and live forks, evidence chain, worktrees                                                                   |
+| Sessions, evidence, workers | Pi's in-memory branch tree and `navigateTree`; Codepunk records tree moves and snapshots all entries plus the active leaf              | durable product session log, durable per-session branch tree, cold and live forks, evidence chain, worktrees                                  |
 
 ## Architecture observations
 
@@ -295,8 +295,8 @@ in the comparison.
    trusted.
 5. Manual and automatic compaction produce a product checkpoint. The event
    binds the compaction entry, first kept entry, summary hash, model, tool
-   loadout, and before/after message counts, and the Pi branch is persisted
-   immediately so resume sees the same boundary.
+   loadout, and before/after message counts, and the Pi entry tree is persisted
+   immediately so resume sees the same boundary and sibling branches.
 6. Approval prompts now show the exact argv, cwd, and a hashed proposed diff,
    and offer allow-once, allow-for-session, always-allow-exact-argv, and
    deny-with-guidance choices. Persistent grants reuse the existing scoped
@@ -338,8 +338,9 @@ in the comparison.
 9. Session continuity is live: `/resume` and `/new` rebuild the host,
    `/fork` and `/clone` write a child product session and switch to it, and
    `/tree` lists or navigates Pi's branch. Codepunk records `session/forked`
-   and `session/tree` and snapshots the active branch. Sibling branches are
-   still in-memory only, so there is no durable cross-session branch graph.
+   and `session/tree` and snapshots all Pi entries plus the active leaf, so
+   sibling branches survive resume. There is still no queryable cross-session
+   branch graph.
    `/export` aliases `/cp-export`.
 10. `/subagent` gives a child Pi process its own Codepunk session, run id, and
     evidence head, linked from the parent through a `subagent/result` event.
@@ -385,8 +386,8 @@ in the comparison.
     writes the redacted title. `codepunk pin <id>` and `pin <id> --unpin`
     control retention, and TUI `/session` reports the id, effective model,
     thinking level, Pi context usage, run id, evidence count, and session
-    directory. `/tree` exposes Pi's live branch tree and records each move, but
-    only the active branch is snapshotted into the product store.
+    directory. `/tree` records each move, and the product store snapshots the
+    full Pi entry tree plus the active leaf; sibling branches survive resume.
 17. `--add-dir` adds explicit file roots without treating them as trusted
     project roots. Each root is canonicalized and symlink-rechecked; `.codepunk`
     and Git control paths stay protected in every root; project config, policy,
@@ -396,8 +397,8 @@ in the comparison.
 
 Ordered by expected value for the next iteration:
 
-1. A durable cross-session branch graph, so sibling Pi branches survive a
-   restart as inspectable product history instead of only the active branch.
+1. A queryable branch graph over the now-durable per-session Pi trees, so
+   branches can be searched and compared across product sessions.
 2. Per-resource workspace trust, so a person can trust instructions while
    skipping project config or skills instead of treating the workspace as one
    block.
