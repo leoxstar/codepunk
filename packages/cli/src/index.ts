@@ -180,6 +180,8 @@ interface CliOptions {
   dangerouslyBypass: boolean;
   sandbox: "required" | "uncovered" | undefined;
   filesystem: FilesystemMode | undefined;
+  networkAllow: string[] | undefined;
+  networkDeny: string[] | undefined;
   trust: "trusted" | "untrusted" | undefined;
   trustResources: WorkspaceTrustResourceKind[] | undefined;
   resources: WorkspaceTrustResourceKind[] | undefined;
@@ -326,6 +328,8 @@ function usage(): string {
     "      --scoped-rules <path>   exact argv allowlist for scoped autonomy",
     "      --sandbox required|uncovered",
     "      --filesystem workspace|full   full requires the dangerous flag",
+    "      --network-allow <domains>     per-process egress allowlist for child hosts",
+    "      --network-deny <domains>      per-process egress deny list for child hosts",
     "      --add-dir <dir>      extra file root; never loads its project config",
     "      --allow-unsandboxed-shell  interactive only; requires --sandbox uncovered",
     "      --dangerously-bypass-approvals-and-sandbox",
@@ -530,6 +534,8 @@ function parseCli(argv: string[]): CliOptions {
       "dangerously-bypass-approvals-and-sandbox": { type: "boolean" },
       sandbox: { type: "string" },
       filesystem: { type: "string" },
+      "network-allow": { type: "string" },
+      "network-deny": { type: "string" },
       trust: { type: "boolean" },
       "no-trust": { type: "boolean" },
       "trust-resources": { type: "string" },
@@ -614,6 +620,24 @@ function parseCli(argv: string[]): CliOptions {
   ) {
     throw new Error("--filesystem must be workspace or full");
   }
+  const domainList = (
+    value: string | undefined,
+    flag: string,
+  ): string[] | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    const entries = value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    if (value.trim().length > 0 && entries.length === 0) {
+      throw new Error(`${flag} needs at least one domain`);
+    }
+    return entries;
+  };
+  const networkAllow = domainList(values["network-allow"], "--network-allow");
+  const networkDeny = domainList(values["network-deny"], "--network-deny");
   const autonomy = values.autonomy;
   if (
     autonomy !== undefined &&
@@ -894,6 +918,8 @@ function parseCli(argv: string[]): CliOptions {
     dangerouslyBypass,
     sandbox,
     filesystem,
+    networkAllow,
+    networkDeny,
     trust,
     trustResources: trustResources?.filter(
       (kind): kind is WorkspaceTrustResourceKind =>
@@ -984,6 +1010,12 @@ function configOverrides(options: CliOptions): ConfigOverrides {
       : {}),
     ...(sandbox !== undefined ? { sandbox } : {}),
     ...(filesystem !== undefined ? { filesystem } : {}),
+    ...(options.networkAllow !== undefined
+      ? { networkAllow: options.networkAllow }
+      : {}),
+    ...(options.networkDeny !== undefined
+      ? { networkDeny: options.networkDeny }
+      : {}),
     ...(options.bare
       ? { memory: false }
       : options.memory !== undefined
@@ -1524,9 +1556,6 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
     throw new Error(
       "--dangerously-bypass-approvals-and-sandbox is interactive only",
     );
-  }
-  if (options.autonomy === "scoped") {
-    throw new Error("--autonomy scoped is interactive only");
   }
   if (options.allowPlugins) {
     throw new Error("--allow-plugins is interactive only");

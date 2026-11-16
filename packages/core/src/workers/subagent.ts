@@ -16,10 +16,27 @@ export interface SubagentToolMask {
 
 export type SubagentPermissionMode = "ask" | "read-only" | "scoped";
 
+export type SubagentPermissionCeiling = "read-only" | "standard";
+
+export interface SubagentProfilePolicy {
+  permission: SubagentPermissionCeiling;
+  networkAllow: readonly string[];
+  networkDeny: readonly string[];
+}
+
 export interface SubagentParentPolicy {
   approval: "ask" | "deny" | "auto" | "allow";
   autonomy: "read-only" | "ask" | "scoped";
   tools: readonly string[];
+  /**
+   * Maximum execution ceiling of the parent. It defaults to read-only when
+   * autonomy is read-only or approval is deny; otherwise it is standard.
+   */
+  permission?: SubagentPermissionCeiling;
+  /** Operator egress allowlist that bounds every child profile. */
+  networkAllow?: readonly string[];
+  /** Operator egress deny list inherited by every child. */
+  networkDeny?: readonly string[];
 }
 
 export interface SubagentRequest {
@@ -34,6 +51,8 @@ export interface SubagentRequest {
    * enable a mutating capability or a tool the parent disabled.
    */
   parent_policy: SubagentParentPolicy;
+  /** Profile-declared ceiling and network policy, checked against the parent. */
+  profile_policy?: SubagentProfilePolicy;
   depth: number;
   worktree?: string;
   parent_worktree?: string;
@@ -136,6 +155,7 @@ export function assertSubagentWithinParentPolicy(
   mask: SubagentToolMask,
   permission: SubagentPermissionMode,
   parent: SubagentParentPolicy,
+  profile?: SubagentProfilePolicy,
 ): void {
   const mutating = mask.write || mask.edit || mask.shell;
   if (
@@ -169,6 +189,119 @@ export function assertSubagentWithinParentPolicy(
       "read-only subagents cannot mutate or execute shell",
     );
   }
+  const parentPermission =
+    parent.permission ??
+    (parent.autonomy === "read-only" || parent.approval === "deny"
+      ? "read-only"
+      : "standard");
+  if (profile?.permission === "standard" && parentPermission === "read-only") {
+    throw new SubagentError(
+      "subagent.parent_permission_ceiling",
+      "a read-only parent cannot accept a standard agent profile",
+    );
+  }
+  if (profile === undefined) {
+    return;
+  }
+  if (
+    !mask.shell &&
+    (profile.networkAllow.length > 0 || profile.networkDeny.length > 0)
+  ) {
+    throw new SubagentError(
+      "subagent.network_without_shell",
+      "a child network policy requires the shell tool",
+    );
+  }
+  const parentAllow = parent.networkAllow ?? [];
+  const parentDeny = parent.networkDeny ?? [];
+  for (const entry of profile.networkAllow) {
+    if (!parentAllow.some((allowed) => domainCovered(entry, allowed))) {
+      throw new SubagentError(
+        "subagent.parent_network_ceiling",
+        `child network entry ${entry} exceeds the parent allowlist`,
+      );
+    }
+    if (parentDeny.some((denied) => domainsOverlap(entry, denied))) {
+      throw new SubagentError(
+        "subagent.parent_network_deny",
+        `child network entry ${entry} is denied by the parent`,
+      );
+    }
+  }
+}
+
+function splitDomain(entry: string): { host: string; port: string | null } {
+  const match = /^(.*?)(?::(\d+))?$/u.exec(entry.toLowerCase())!;
+  return { host: match[1]!, port: match[2] ?? null };
+}
+
+/**
+ * True when every host matched by `entry` is also matched by `ceiling`.
+ * This is intentionally conservative; a profile may narrow a wildcard, but it
+ * cannot invent a host or port outside the operator allowlist.
+ */
+function domainCovered(entry: string, ceiling: string): boolean {
+  if (entry === ceiling) {
+    return true;
+  }
+  const candidate = splitDomain(entry);
+  const limit = splitDomain(ceiling);
+  if (limit.port !== null && candidate.port !== limit.port) {
+    return false;
+  }
+  if (limit.host === "*" || candidate.host === limit.host) {
+    return true;
+  }
+  if (!limit.host.startsWith("*.")) {
+    return false;
+  }
+  const base = limit.host.slice(2);
+  if (candidate.host.startsWith("*.")) {
+    const candidateBase = candidate.host.slice(2);
+    return candidateBase === base || candidateBase.endsWith(`.${base}`);
+  }
+  return candidate.host.endsWith(`.${base}`);
+}
+
+/**
+ * True when the two patterns can match the same destination. A parent deny
+ * entry wins over a wider child allow wildcard, so a subset check alone is not
+ * enough here.
+ */
+function domainsOverlap(left: string, right: string): boolean {
+  const first = splitDomain(left);
+  const second = splitDomain(right);
+  if (
+    first.port !== null &&
+    second.port !== null &&
+    first.port !== second.port
+  ) {
+    return false;
+  }
+  if (first.host === "*" || second.host === "*") {
+    return true;
+  }
+  if (first.host === second.host) {
+    return true;
+  }
+  const firstWildcard = first.host.startsWith("*.");
+  const secondWildcard = second.host.startsWith("*.");
+  if (firstWildcard && secondWildcard) {
+    const firstBase = first.host.slice(2);
+    const secondBase = second.host.slice(2);
+    return (
+      firstBase === secondBase ||
+      firstBase.endsWith(`.${secondBase}`) ||
+      secondBase.endsWith(`.${firstBase}`)
+    );
+  }
+  if (firstWildcard) {
+    return second.host.endsWith(`.${first.host.slice(2)}`);
+  }
+  if (secondWildcard) {
+    return first.host.endsWith(`.${second.host.slice(2)}`);
+  }
+  return false;
 }
 
 function relativeWritePath(value: string): string {
@@ -278,6 +411,7 @@ export class Subagent {
       this.request.tool_mask,
       this.request.permission_mode,
       parentPolicy,
+      this.request.profile_policy,
     );
     const worktree = this.request.worktree;
     if (worktree === undefined || worktree.trim().length === 0) {

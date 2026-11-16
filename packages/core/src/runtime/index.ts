@@ -13,6 +13,7 @@ import { loadContext } from "../context/index.ts";
 import {
   AutonomyController,
   isShellLauncher,
+  resolveExecutable,
   type AutonomyRegistration,
   type ScopedRule,
 } from "../autonomy/index.ts";
@@ -366,9 +367,11 @@ async function verifyHeadlessExec(
   if (rule === undefined) {
     return "argv is not approved by the headless policy";
   }
-  const executable = normalizeAbsolute(
-    path.isAbsolute(argv[0]!) ? argv[0]! : path.resolve(rule.cwd, argv[0]!),
-  );
+  const resolved = await resolveExecutable(argv[0]!, rule.cwd);
+  if (resolved === null) {
+    return "approved executable cannot be resolved";
+  }
+  const executable = normalizeAbsolute(resolved);
   let resolvedExecutable: string;
   try {
     resolvedExecutable = normalizeAbsolute(await fs.realpath(executable));
@@ -758,8 +761,14 @@ export async function createRuntime(
   const writeSetWithAdditionalRoots = [
     ...new Set([...writeSet, ...paths.additionalRoots]),
   ];
-  if (options.headless === true && config.autonomy.profile === "scoped") {
-    throw new Error("scoped autonomy is not available in headless mode");
+  if (
+    options.headless === true &&
+    config.autonomy.profile === "scoped" &&
+    config.approval.mode !== "deny"
+  ) {
+    throw new Error(
+      "scoped autonomy in headless mode requires approval=deny; unmatched commands fail closed",
+    );
   }
   if (options.headless === true && options.allowUnsandboxedShell === true) {
     throw new Error("unsandboxed shell is never allowed in headless mode");

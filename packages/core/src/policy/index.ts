@@ -1884,12 +1884,15 @@ export function decidePolicy(request: PolicyRequest): PolicyDecision {
     (request.mode ?? DEFAULT_POLICY_MODE) !== "interactive" &&
     decision === "ask" &&
     request.tool !== "read" &&
-    request.tool !== "search"
+    request.tool !== "search" &&
+    request.autonomy !== "scoped"
   ) {
     // Print and worker sessions have no approval channel. The configured
     // approval mode still decides which classes were pre-approved: `auto`
     // covers routine/shell, `allow` covers everything, `ask`/`deny` cannot
-    // be resolved without a reviewer and therefore refuse.
+    // be resolved without a reviewer and therefore refuse. Scoped autonomy is
+    // the exception: the gate must see the ask first so an exact argv rule can
+    // allow it; an unmatched rule still fails closed in the gate.
     const approval = effectiveApprovalDecision(
       "ask",
       request.approvalMode ?? "ask",

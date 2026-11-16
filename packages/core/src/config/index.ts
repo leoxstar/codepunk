@@ -152,6 +152,10 @@ export interface ConfigOverrides {
   scopedRules?: string | null;
   sandbox?: SandboxMode | null;
   filesystem?: FilesystemMode | null;
+  /** Per-process egress allowlist, used by guarded child hosts. */
+  networkAllow?: readonly string[] | null;
+  /** Per-process egress deny list, used by guarded child hosts. */
+  networkDeny?: readonly string[] | null;
   memory?: boolean | null;
 }
 
@@ -1068,6 +1072,12 @@ function applyCliOverrides(
   }
   if (overrides.filesystem !== null && overrides.filesystem !== undefined) {
     target.filesystem.mode = overrides.filesystem;
+  }
+  if (overrides.networkAllow !== null && overrides.networkAllow !== undefined) {
+    target.sandbox.network_allow = [...overrides.networkAllow];
+  }
+  if (overrides.networkDeny !== null && overrides.networkDeny !== undefined) {
+    target.sandbox.network_deny = [...overrides.networkDeny];
   }
   if (overrides.memory !== null && overrides.memory !== undefined) {
     target.memory.enabled = overrides.memory;

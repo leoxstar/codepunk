@@ -5,6 +5,14 @@ import path from "node:path";
 import readline from "node:readline";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { finished } from "node:stream/promises";
+import {
+  autonomyRuleHash,
+  executableDigest,
+  isShellLauncher,
+  resolveExecutable,
+  verifyScopedRule,
+  type ScopedRule,
+} from "../autonomy/index.ts";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import { createTaskSpec } from "../delivery/spec.ts";
 import { gitText, statusOutsideCodepunk } from "../delivery/git.ts";
@@ -16,6 +24,7 @@ import {
   projectPaths,
   resolveCodepunkHome,
 } from "../platform/paths.ts";
+import { resolveRealPath } from "../platform/path.ts";
 import { spawnGuardedHost } from "./sandbox.ts";
 import type { WorkspaceTrustGrants } from "../trust/index.ts";
 import {
@@ -23,6 +32,7 @@ import {
   SubagentError,
   assertSubagentWithinParentPolicy,
   type SubagentPermissionMode,
+  type SubagentPermissionCeiling,
   type SubagentParentPolicy,
   type SubagentToolMask,
 } from "./subagent.ts";
@@ -114,6 +124,10 @@ export interface SubagentHostOptions extends ReadOnlySubagentOptions {
     name: string;
     sha256: string;
     tools: SubagentToolMask;
+    permission: SubagentPermissionCeiling;
+    shellAllow: readonly (readonly string[])[];
+    networkAllow: readonly string[];
+    networkDeny: readonly string[];
     systemPrompt: string;
     model: string | null;
     fallback: readonly string[];
@@ -286,7 +300,7 @@ function childSessionId(value: string | undefined): string {
   return value;
 }
 
-function enabledTools(mask: SubagentToolMask): string[] {
+function enabledTools(mask: SubagentToolMask, shellAllowed = false): string[] {
   const tools: string[] = [];
   if (mask.read) {
     tools.push("read");
@@ -301,10 +315,13 @@ function enabledTools(mask: SubagentToolMask): string[] {
     tools.push("edit");
   }
   if (mask.shell) {
-    throw new ChildHostError(
-      "subagent.shell_unsupported",
-      "subagent profiles cannot enable shell without an exact command allowlist",
-    );
+    if (!shellAllowed) {
+      throw new ChildHostError(
+        "subagent.shell_allowlist_required",
+        "subagent profiles cannot enable shell without an exact command allowlist",
+      );
+    }
+    tools.push("exec");
   }
   if (tools.length === 0) {
     throw new ChildHostError(
@@ -318,9 +335,10 @@ function enabledTools(mask: SubagentToolMask): string[] {
 async function writeChildPolicy(
   directory: string,
   mask: SubagentToolMask,
+  shellRules: readonly ScopedRule[] = [],
 ): Promise<string> {
   const filePath = path.join(directory, "headless.toml");
-  const tools = enabledTools(mask);
+  const tools = enabledTools(mask, shellRules.length > 0);
   const lines = [
     "version = 1",
     "[allow]",
@@ -331,7 +349,88 @@ async function writeChildPolicy(
     // grant relative so the child can only write in its own checkout.
     lines.push('write = ["."]');
   }
+  for (const rule of shellRules) {
+    lines.push(
+      "",
+      "[[allow.commands]]",
+      `argv = [${rule.argv.map((token) => JSON.stringify(token)).join(", ")}]`,
+      `executable_sha256 = ${JSON.stringify(rule.executable_sha256)}`,
+      `cwd = ${JSON.stringify(rule.cwd)}`,
+    );
+  }
   await fs.writeFile(filePath, `${lines.join("\n")}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return filePath;
+}
+
+async function buildProfileShellRules(
+  worktree: string,
+  shellAllow: readonly (readonly string[])[],
+  environment: NodeJS.ProcessEnv,
+): Promise<ScopedRule[]> {
+  const cwd = resolveRealPath(worktree);
+  const rules: ScopedRule[] = [];
+  for (const [index, argv] of shellAllow.entries()) {
+    if (argv.length === 0) {
+      throw new ChildHostError(
+        "subagent.shell_allow",
+        `shell allow rule ${index + 1} is empty`,
+      );
+    }
+    if (isShellLauncher(argv)) {
+      throw new ChildHostError(
+        "subagent.shell_allow",
+        `shell allow rule ${index + 1} launches a shell or interpreter`,
+      );
+    }
+    const executable = await resolveExecutable(argv[0]!, cwd, environment);
+    if (executable === null) {
+      throw new ChildHostError(
+        "subagent.shell_executable",
+        `shell allow rule ${index + 1} executable cannot be resolved`,
+      );
+    }
+    const unsigned = {
+      id: `profile-${index + 1}`,
+      argv: [...argv],
+      cwd,
+      executable_sha256: await executableDigest(executable),
+    };
+    const rule: ScopedRule = {
+      ...unsigned,
+      rule_sha256: autonomyRuleHash(unsigned),
+    };
+    const issue = await verifyScopedRule(rule, environment);
+    if (issue !== null) {
+      throw new ChildHostError(
+        "subagent.shell_executable",
+        `shell allow rule ${index + 1}: ${issue}`,
+      );
+    }
+    rules.push(rule);
+  }
+  return rules;
+}
+
+async function writeScopedRules(
+  directory: string,
+  rules: readonly ScopedRule[],
+): Promise<string> {
+  const filePath = path.join(directory, "scoped-rules.toml");
+  const lines = ["version = 1", ""];
+  for (const rule of rules) {
+    lines.push(
+      "[[rules]]",
+      `id = ${JSON.stringify(rule.id)}`,
+      `argv = [${rule.argv.map((token) => JSON.stringify(token)).join(", ")}]`,
+      `cwd = ${JSON.stringify(rule.cwd)}`,
+      `executable_sha256 = ${JSON.stringify(rule.executable_sha256)}`,
+      "",
+    );
+  }
+  await fs.writeFile(filePath, `${lines.join("\n").trimEnd()}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -538,14 +637,48 @@ async function runChild(
     );
   }
   const toolMask = options.profile?.tools ?? READ_ONLY_MASK;
-  const permissionMode: SubagentPermissionMode = hasMutatingTools(toolMask)
-    ? "ask"
-    : "read-only";
+  const profilePermission =
+    options.profile?.permission ??
+    (hasMutatingTools(toolMask) ? "standard" : "read-only");
+  const shellAllow = options.profile?.shellAllow ?? [];
+  if (toolMask.shell && shellAllow.length === 0) {
+    throw new ChildHostError(
+      "subagent.shell_allowlist_required",
+      "subagent profiles cannot enable shell without an exact command allowlist",
+    );
+  }
+  if (!toolMask.shell && shellAllow.length > 0) {
+    throw new ChildHostError(
+      "subagent.shell_allowlist_without_shell",
+      "subagent shell-allow requires the shell tool",
+    );
+  }
+  if (profilePermission === "read-only" && hasMutatingTools(toolMask)) {
+    throw new ChildHostError(
+      "subagent.read_only_mask",
+      "a read-only subagent profile cannot mutate or execute shell",
+    );
+  }
+  const permissionMode: SubagentPermissionMode =
+    profilePermission === "read-only" || !hasMutatingTools(toolMask)
+      ? "read-only"
+      : toolMask.shell
+        ? "scoped"
+        : "ask";
+  const profilePolicy =
+    options.profile === undefined
+      ? undefined
+      : {
+          permission: profilePermission,
+          networkAllow: options.profile.networkAllow ?? [],
+          networkDeny: options.profile.networkDeny ?? [],
+        };
   try {
     assertSubagentWithinParentPolicy(
       toolMask,
       permissionMode,
       options.parentPolicy,
+      profilePolicy,
     );
   } catch (error) {
     if (error instanceof SubagentError) {
@@ -605,6 +738,13 @@ async function runChild(
   const fallback =
     options.fallbackModels ?? options.profile?.fallback ?? undefined;
   const thinking = options.thinking ?? options.profile?.thinking ?? undefined;
+  const effectiveNetworkAllow = options.profile?.networkAllow ?? [];
+  const effectiveNetworkDeny = [
+    ...new Set([
+      ...(options.parentPolicy.networkDeny ?? []),
+      ...(options.profile?.networkDeny ?? []),
+    ]),
+  ];
   const captured: {
     value: {
       child_run_id: string | null;
@@ -624,6 +764,7 @@ async function runChild(
     tool_mask: toolMask,
     permission_mode: permissionMode,
     parent_policy: options.parentPolicy,
+    ...(profilePolicy === undefined ? {} : { profile_policy: profilePolicy }),
     depth: 0,
     worktree,
     parent_worktree: options.cwd,
@@ -637,7 +778,23 @@ async function runChild(
         path.join(os.tmpdir(), "codepunk-subagent-"),
       );
       try {
-        const policyPath = await writeChildPolicy(temporaryRoot, toolMask);
+        const shellRules =
+          permissionMode === "scoped"
+            ? await buildProfileShellRules(
+                context.worktree,
+                shellAllow,
+                environment,
+              )
+            : [];
+        const policyPath = await writeChildPolicy(
+          temporaryRoot,
+          toolMask,
+          shellRules,
+        );
+        const scopedRulesPath =
+          permissionMode === "scoped"
+            ? await writeScopedRules(temporaryRoot, shellRules)
+            : null;
         const token = randomBytes(16).toString("hex");
         const trustOverride = options.workspaceTrustOverride;
         const trustResourceKinds =
@@ -660,15 +817,28 @@ async function runChild(
           "--headless-policy",
           policyPath,
           "--approval",
-          permissionMode === "read-only" ? "deny" : "allow",
+          permissionMode === "read-only" || permissionMode === "scoped"
+            ? "deny"
+            : "allow",
           "--sandbox",
           "required",
           "--filesystem",
           "workspace",
           "--autonomy",
-          permissionMode === "read-only" ? "read-only" : "ask",
+          permissionMode === "read-only"
+            ? "read-only"
+            : permissionMode === "scoped"
+              ? "scoped"
+              : "ask",
+          ...(scopedRulesPath === null
+            ? []
+            : ["--scoped-rules", scopedRulesPath]),
           "--tools",
-          enabledTools(toolMask).join(","),
+          enabledTools(toolMask, shellAllow.length > 0).join(","),
+          "--network-allow",
+          effectiveNetworkAllow.join(","),
+          "--network-deny",
+          effectiveNetworkDeny.join(","),
           "--memory",
           "false",
           "--no-mcp",
@@ -928,7 +1098,10 @@ export async function runSubagentHost(
   options: SubagentHostOptions,
 ): Promise<SubagentHostResult> {
   const childSessionIdValue = childSessionId(options.childSessionId);
-  enabledTools(options.profile?.tools ?? READ_ONLY_MASK);
+  enabledTools(
+    options.profile?.tools ?? READ_ONLY_MASK,
+    (options.profile?.shellAllow?.length ?? 0) > 0,
+  );
   if (
     options.profile !== undefined &&
     (!PROFILE_NAME_RE.test(options.profile.name) ||

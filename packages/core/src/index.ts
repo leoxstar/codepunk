@@ -17,6 +17,7 @@ export {
   loadAgentProfiles,
   type AgentProfile,
   type AgentProfileBundle,
+  type AgentProfilePermission,
 } from "./agents/index.ts";
 export {
   HostIsolationError,
@@ -613,7 +614,9 @@ export {
   type SubagentStreamEvent,
   type SpawnGuardedHostOptions,
   type SubagentParentPolicy,
+  type SubagentPermissionCeiling,
   type SubagentPermissionMode,
+  type SubagentProfilePolicy,
   type SubagentRequest,
   type SubagentResult,
   type SubagentHandle,

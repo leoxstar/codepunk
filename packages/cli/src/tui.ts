@@ -3765,7 +3765,23 @@ async function runSubagent(
       `subagent started: ${childSessionId}`,
       `profile: ${profile === undefined ? "built-in read-only" : `${profile.name} (${profile.source})`}`,
       `isolation: ${isolation}`,
+      `permission: ${profile?.permission ?? "read-only"}`,
       `tools: ${profileTools(profile).join(", ")}`,
+      `shell allow: ${
+        profile === undefined || profile.shellAllow.length === 0
+          ? "none"
+          : `${profile.shellAllow.length} exact rule(s)`
+      }`,
+      `network: ${
+        profile === undefined ||
+        (profile.networkAllow.length === 0 && profile.networkDeny.length === 0)
+          ? "deny-by-default"
+          : `${profile.networkAllow.join(",") || "deny-by-default"}${
+              profile.networkDeny.length === 0
+                ? ""
+                : `; deny ${profile.networkDeny.join(",")}`
+            }`
+      }`,
       `model: ${
         primaryModel === undefined
           ? "inherited"
@@ -3790,6 +3806,13 @@ async function runSubagent(
           approval: runtime.config.approval.mode,
           autonomy: runtime.autonomy.profile,
           tools: runtime.config.tools.enabled,
+          permission:
+            runtime.config.autonomy.profile === "read-only" ||
+            runtime.config.approval.mode === "deny"
+              ? "read-only"
+              : "standard",
+          networkAllow: runtime.config.sandbox.network_allow,
+          networkDeny: runtime.config.sandbox.network_deny,
         },
         ...(runtime.paths.additionalRoots.length === 0
           ? {}
@@ -3805,6 +3828,10 @@ async function runSubagent(
                 name: profile.name,
                 sha256: profile.sha256,
                 tools: profile.tools,
+                permission: profile.permission,
+                shellAllow: profile.shellAllow,
+                networkAllow: profile.networkAllow,
+                networkDeny: profile.networkDeny,
                 systemPrompt: profile.systemPrompt,
                 model: profile.model,
                 fallback: profile.fallback,
