@@ -820,10 +820,40 @@ function validateProjectFloor(
   }
 }
 
+const APPROVAL_LOOSENESS: Record<ApprovalMode, number> = {
+  deny: 0,
+  ask: 1,
+  auto: 2,
+  allow: 3,
+};
+
+const AUTONOMY_LOOSENESS: Record<AutonomyProfile, number> = {
+  "read-only": 0,
+  ask: 1,
+  scoped: 2,
+};
+
+const FILESYSTEM_LOOSENESS: Record<FilesystemMode, number> = {
+  workspace: 0,
+  full: 1,
+};
+
+const SANDBOX_LOOSENESS: Record<SandboxMode, number> = {
+  required: 0,
+  uncovered: 1,
+};
+
 function applyEnvironment(
   target: CodepunkConfig,
   environment: NodeJS.ProcessEnv,
+  warnings: string[],
 ): void {
+  const fileLayers = {
+    approval: target.approval.mode,
+    autonomy: target.autonomy.profile,
+    filesystem: target.filesystem.mode,
+    sandbox: target.sandbox.mode,
+  };
   const mappings: Array<[string, string, (value: string) => unknown]> = [
     ["CODEPUNK_MODEL_PROVIDER", "model.provider", (value) => value],
     ["CODEPUNK_MODEL_ID", "model.id", (value) => value],
@@ -973,6 +1003,60 @@ function applyEnvironment(
     if (value !== undefined) {
       assignNested(target, key, transform(value));
     }
+  }
+
+  // An environment variable is the one layer a project file cannot set. It may
+  // still only tighten a trust axis silently; a loosening relative to the file
+  // layers is reported so `codepunk config` and the startup warnings show it.
+  const loosened: Array<[string, string, string]> = [];
+  if (
+    environment["CODEPUNK_APPROVAL_MODE"] !== undefined &&
+    APPROVAL_LOOSENESS[target.approval.mode] >
+      APPROVAL_LOOSENESS[fileLayers.approval]
+  ) {
+    loosened.push([
+      "CODEPUNK_APPROVAL_MODE",
+      "approval.mode",
+      `${fileLayers.approval} -> ${target.approval.mode}`,
+    ]);
+  }
+  if (
+    environment["CODEPUNK_AUTONOMY"] !== undefined &&
+    AUTONOMY_LOOSENESS[target.autonomy.profile] >
+      AUTONOMY_LOOSENESS[fileLayers.autonomy]
+  ) {
+    loosened.push([
+      "CODEPUNK_AUTONOMY",
+      "autonomy.profile",
+      `${fileLayers.autonomy} -> ${target.autonomy.profile}`,
+    ]);
+  }
+  if (
+    environment["CODEPUNK_FILESYSTEM_MODE"] !== undefined &&
+    FILESYSTEM_LOOSENESS[target.filesystem.mode] >
+      FILESYSTEM_LOOSENESS[fileLayers.filesystem]
+  ) {
+    loosened.push([
+      "CODEPUNK_FILESYSTEM_MODE",
+      "filesystem.mode",
+      `${fileLayers.filesystem} -> ${target.filesystem.mode}`,
+    ]);
+  }
+  if (
+    environment["CODEPUNK_SANDBOX_MODE"] !== undefined &&
+    SANDBOX_LOOSENESS[target.sandbox.mode] >
+      SANDBOX_LOOSENESS[fileLayers.sandbox]
+  ) {
+    loosened.push([
+      "CODEPUNK_SANDBOX_MODE",
+      "sandbox.mode",
+      `${fileLayers.sandbox} -> ${target.sandbox.mode}`,
+    ]);
+  }
+  for (const [variable, key, change] of loosened) {
+    warnings.push(
+      `environment override ${variable} loosens ${key} (${change})`,
+    );
   }
 }
 
@@ -1142,7 +1226,7 @@ export async function loadConfig(
   }
   validateProjectFloor(userFloor, projectLayer);
   applyLayer(config, projectLayer);
-  applyEnvironment(config, environment);
+  applyEnvironment(config, environment, warnings);
   applyCliOverrides(config, overrides);
 
   if (config.session.lease_seconds < config.session.heartbeat_seconds) {

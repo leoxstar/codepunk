@@ -526,6 +526,12 @@ function evidenceSource(tool: string): EvidenceRecord["source"] {
   return isMcpProductTool(tool) ? "mcp" : "tool";
 }
 
+function resolveApprovalMode(options: ToolWrapOptions): ApprovalMode {
+  return typeof options.approvalMode === "function"
+    ? options.approvalMode()
+    : (options.approvalMode ?? "ask");
+}
+
 function baseRecord(
   options: ToolWrapOptions,
   input: {
@@ -576,6 +582,7 @@ function baseRecord(
     rule_sha256: input.ruleSha256,
     policy_layers: input.policyLayers,
     approval: input.approval,
+    approval_mode: resolveApprovalMode(options),
     ...(input.reviewer === undefined ? {} : { reviewer: input.reviewer }),
     command: input.command,
     command_argv: input.commandArgv,
@@ -791,10 +798,7 @@ export async function wrapToolDefinition(
         definition.name === "bash" && typeof params["command"] === "string"
           ? params["command"]
           : null;
-      const approvalMode =
-        typeof options.approvalMode === "function"
-          ? options.approvalMode()
-          : (options.approvalMode ?? "ask");
+      const approvalMode = resolveApprovalMode(options);
       const policy = decidePolicy({
         tool: definition.name,
         args: params,
@@ -1322,10 +1326,7 @@ export async function wrapUserBashCommand(
   }
   const sandboxProvider = options.sandbox ?? null;
   const autonomy = options.autonomy ?? null;
-  const approvalMode =
-    typeof options.approvalMode === "function"
-      ? options.approvalMode()
-      : (options.approvalMode ?? "ask");
+  const approvalMode = resolveApprovalMode(options);
   const policy = decidePolicy({
     tool: "user_bash",
     command,

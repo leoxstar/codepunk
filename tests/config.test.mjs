@@ -31,6 +31,56 @@ test("a persisted full filesystem requires the dangerous start flag", async () =
   });
 });
 
+test("an environment override that loosens a trust axis warns", async () => {
+  await withTempDirectory("codepunk-config-env-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "config.toml"),
+      [
+        "[approval]",
+        'mode = "ask"',
+        "",
+        "[filesystem]",
+        'mode = "workspace"',
+        "",
+      ].join("\n"),
+    );
+
+    const loosened = await core.loadConfig(paths, {
+      CODEPUNK_APPROVAL_MODE: "allow",
+      CODEPUNK_FILESYSTEM_MODE: "full",
+    });
+    assert.equal(loosened.config.approval.mode, "allow");
+    assert.equal(loosened.config.filesystem.mode, "full");
+    assert.ok(
+      loosened.warnings.some(
+        (warning) =>
+          warning.includes("CODEPUNK_APPROVAL_MODE") &&
+          warning.includes("ask -> allow"),
+      ),
+      loosened.warnings.join("\n"),
+    );
+    assert.ok(
+      loosened.warnings.some((warning) =>
+        warning.includes("CODEPUNK_FILESYSTEM_MODE"),
+      ),
+      loosened.warnings.join("\n"),
+    );
+
+    const tightened = await core.loadConfig(paths, {
+      CODEPUNK_APPROVAL_MODE: "deny",
+      CODEPUNK_FILESYSTEM_MODE: "workspace",
+    });
+    assert.equal(tightened.config.approval.mode, "deny");
+    assert.deepEqual(
+      tightened.warnings.filter((warning) =>
+        warning.startsWith("environment override"),
+      ),
+      [],
+    );
+  });
+});
+
 test("full access refuses a persisted read-only autonomy", async () => {
   await withTempDirectory("codepunk-config-full-readonly-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);

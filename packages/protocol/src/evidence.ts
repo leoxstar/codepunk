@@ -65,6 +65,17 @@ export const EvidenceRecordSchema = Type.Object(
     rule_sha256: Sha256Schema,
     policy_layers: Type.Array(PolicyLayerSchema),
     approval: Type.Union([ApprovalEvidenceSchema, Type.Null()]),
+    // Effective approval mode at call time. An operator-set environment
+    // variable that loosens the file-configured mode is visible here, not only
+    // in the startup warnings.
+    approval_mode: Type.Optional(
+      Type.Union([
+        Type.Literal("ask"),
+        Type.Literal("deny"),
+        Type.Literal("auto"),
+        Type.Literal("allow"),
+      ]),
+    ),
     reviewer: Type.Optional(Type.Union([ReviewerEvidenceSchema, Type.Null()])),
     command: Type.Union([Type.String(), Type.Null()]),
     command_argv: Type.Union([Type.Array(Type.String()), Type.Null()]),

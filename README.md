@@ -216,6 +216,11 @@ given. It also refuses to write through an instruction-file symlink.
 trust decision, the effective layered values, and any config warnings. It does
 not send a model request and does not create project or home state.
 
+An environment variable may tighten a trust axis silently, but a value that
+loosens `approval.mode`, `autonomy.profile`, `filesystem.mode`, or
+`sandbox.mode` relative to the file layers adds a config warning, and every
+evidence record carries the effective `approval_mode`.
+
 ```text
 codepunk config
 codepunk config --json
@@ -378,6 +383,14 @@ written rule is visible through `/permissions rules`. Switching to `ask`
 preserves the rules file, and switching back to `scoped` reloads and
 revalidates the rules from disk. Shell launchers, globs, variable expansion,
 redirections, and complex shell syntax are not eligible for reuse.
+
+A file mutation takes its before-snapshot before the approval prompt and
+re-snapshots the same target immediately before execution. If the target
+changed content, changed mode, or became a symbolic link while the caller was
+deciding, the call is denied as `path.recheck` and the tool does not run. This
+closes the approval window. It is not an atomic no-follow write: the pinned
+host's writer uses a plain file write, so a swap in the microseconds between
+the recheck and the write is outside this guarantee.
 
 `/permissions why -- <command>` is an execution-free policy check. It runs the
 same policy, scoped-rule, approval, and shell-availability chain as a real

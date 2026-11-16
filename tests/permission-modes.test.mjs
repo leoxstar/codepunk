@@ -166,6 +166,7 @@ test("read-only allows safe reads and denies shell mutations", async () => {
   });
   assert.equal(date.executed, true);
   assert.match(date.record.rule, /^shell\.read\./u);
+  assert.equal(date.record.approval_mode, "ask");
   assert.deepEqual(date.sandbox.commands, [
     { command: "date +%A", cwd: paths.workspace },
   ]);
@@ -210,6 +211,7 @@ test("auto approves ordinary shell but keeps destructive actions human", async (
   assert.equal(touch.executed, true);
   assert.equal(touch.record.decision, "allow");
   assert.equal(touch.record.approval, null);
+  assert.equal(touch.record.approval_mode, "auto");
 
   const reviewer = fakeReviewer();
   const destructive = await runUserBash(paths, "rm -rf build", {
