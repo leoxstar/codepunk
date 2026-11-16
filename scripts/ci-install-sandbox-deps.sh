@@ -14,25 +14,40 @@ fi
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends bubblewrap ripgrep socat
 
-# Ubuntu 24.04 and later enable kernel.apparmor_restrict_unprivileged_userns.
-# The restriction still permits unshare(CLONE_NEWUSER), so a plain bubblewrap
-# probe passes, but the namespace it creates carries no capabilities. `srt`
-# needs a capability-bearing namespace twice over: bubblewrap's own, and the
-# nested one its bundled apply-seccomp helper makes. Under the restriction
-# every sandboxed command exits 1 with "nested userns is capability-restricted;
-# caller must provide CAP_SYS_ADMIN" while writing /proc/self/setgroups. `srt`
-# documents this sysctl as the supported fix and the test suite runs with the
-# same sandbox settings a user gets, so disable the restriction on the runner.
-if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
-  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+# Two AppArmor defaults on Ubuntu 24.04 and later leave unprivileged user
+# namespaces without capabilities. `srt` needs a capability-bearing namespace
+# twice over: bubblewrap makes one for the command, and the bundled
+# apply-seccomp helper makes a nested one for its uid map and
+# /proc/self/setgroups. Both controls are lifted here because the suite runs
+# with the same sandbox settings a user gets.
+
+# 24.04+: creation still succeeds, but the namespace carries no capabilities.
+# The `_unconfined` knob restricts the same creation for processes the distro
+# leaves unconfined.
+for name in apparmor_restrict_unprivileged_userns \
+  apparmor_restrict_unprivileged_unconfined; do
+  if [ "$(sysctl -n "kernel.$name" 2>/dev/null || true)" = "1" ]; then
+    sudo sysctl -w "kernel.$name=0"
+  fi
+done
+
+# 25.04+: bwrap-userns-restrict lets bubblewrap create its namespace but
+# stacks every child into unpriv_bwrap, which denies all capabilities. The
+# sysctl above does not undo a profile transition, and the profile is not tied
+# to a boot, so unload it on this ephemeral runner and keep it unloaded.
+if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+  sudo mkdir -p /etc/apparmor.d/disable
+  sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+  sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
 fi
 
-# Probe the capability itself, not just namespace creation: --mount inside a
-# fresh user namespace needs CAP_SYS_ADMIN in it, the same capability the
-# seccomp helper is stripped of. This fails where the sandbox would, and names
-# the cause instead of leaving it to fourteen unexplained test errors.
-if ! unshare --user --map-root-user --mount true; then
-  echo "unprivileged user namespaces here cannot carry capabilities; srt cannot sandbox" >&2
+# Probe the capability in the context that uses it: a nested user namespace
+# inside bubblewrap must be able to take CAP_SYS_ADMIN, which the mount below
+# requires. A plain namespace-creation probe passes under both restrictions,
+# so it cannot stand in for this one.
+if ! bwrap --unshare-user --cap-drop ALL --dev-bind / / -- \
+  unshare --user --map-root-user --mount true; then
+  echo "nested user namespaces cannot carry capabilities here; srt cannot sandbox" >&2
   exit 1
 fi
 

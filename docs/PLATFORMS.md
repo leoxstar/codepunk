@@ -14,11 +14,15 @@ non-root user.
 
 Ubuntu 24.04 and later enable `kernel.apparmor_restrict_unprivileged_userns`,
 which still allows unprivileged user namespaces but leaves them without
-capabilities. `srt` needs capability-bearing namespaces, so every sandboxed
-command fails until the restriction is lifted with
-`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor
-profile grants `userns` to both bubblewrap and the bundled `apply-seccomp`
-helper.
+capabilities. Ubuntu 25.04 and later also ship and enable the
+`bwrap-userns-restrict` AppArmor profile, which lets bubblewrap create its
+namespace but stacks every process it launches into `unpriv_bwrap` and denies
+all capabilities there. `srt` needs capability-bearing namespaces for
+bubblewrap and for its bundled `apply-seccomp` helper, so every sandboxed
+command fails until both controls are lifted:
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` and either
+disabling `bwrap-userns-restrict` or granting `capability sys_admin` through
+its `local/unpriv_bwrap` include.
 
 The table describes supported targets. Automated verification in this
 repository has run on macOS arm64 and Linux arm64; macOS x64, Linux x64, and

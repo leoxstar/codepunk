@@ -130,12 +130,13 @@ false positives.
 repository, typecheck, test, build, and built-entry checks on `ubuntu-latest`
 and `macos-latest`. The workflow uses `pnpm/action-setup` and a frozen lockfile.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
-packages `srt` needs (bubblewrap, socat, ripgrep) and, when Ubuntu's
-`kernel.apparmor_restrict_unprivileged_userns` is enabled, disables it and
-probes that unprivileged user namespaces can carry capabilities: the
-restriction leaves them without the capabilities `srt`'s nested seccomp helper
-needs, and it is silent to a plain bubblewrap probe. On macOS the script is a
-no-op because `srt` uses the built-in Seatbelt sandbox. Windows is not a
+packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
+controls on Ubuntu that leave unprivileged user namespaces without
+capabilities (`kernel.apparmor_restrict_unprivileged_userns` on 24.04 and
+later, and the `bwrap-userns-restrict` profile on 25.04 and later, which the
+sysctl does not affect), and probes a nested capability-bearing namespace
+inside bubblewrap, the operation `srt`'s seccomp helper performs. On macOS the
+script is a no-op because `srt` uses the built-in Seatbelt sandbox. Windows is not a
 supported CI platform.
 
 ## Repository checks
