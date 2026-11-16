@@ -62,6 +62,12 @@ rather than executed behavior, it is marked.
 | Screen-reader mode          | no                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | not exposed in help                               | `--screen-reader`                                                                          | not exposed in help                | `--ax-screen-reader`                                                               |
 | Windows support             | not claimed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | not verified                                      | not verified                                                                               | not verified                       | not verified                                                                       |
 
+Workspace trust is an exact-checkout decision, not parent-directory inheritance.
+The startup selector shows the invocation cwd, exact root, and whether this
+checkout or an ancestor has a saved decision; an ancestor decision is reported
+but not applied. Temporary choices are labeled `(session only)` or
+`(one run)` in the status line, while persisted choices read `(saved)`.
+
 Codepunk's `auto` row has one deliberate opt-in beyond the static table: a
 user-scope model reviewer can resolve only network commands and headless argv
 `exec`. It is off by default, never sees hard denies, sensitive paths,

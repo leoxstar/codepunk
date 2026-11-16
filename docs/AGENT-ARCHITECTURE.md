@@ -204,21 +204,28 @@ SHA-256 preview before the decision. Digests are bounded to 1 MiB of content
 and 512 directory entries per resource, and symlinks are hashed as links
 rather than followed. The same detail is available through
 `codepunk trust status`, `/trust`, and the `resource_details` JSON field.
+The startup preview shortens the digest to keep a multi-resource prompt
+readable; `/trust status` and `--json` keep the full value.
 The pre-host selector reuses Pi's `SelectList` and `TuiMainScreen` directly:
-the `Project trust` title, the exact root, whether this checkout has a saved
-decision, a `→` pointer, Up/Down movement, Page Up/Page Down, Enter to confirm,
-and Escape or Ctrl+C to cancel. It deliberately has no numbered menu and does
-not own a second key parser or renderer. The footer prints the running package
-version, dist build time, and source freshness. The adapter is small because
-Pi's interactive mode does not exist until after the trust decision; every
-later selection (resume, approvals, new-session confirmation) goes through
-`context.ui.select` instead of a second picker implementation.
+the `Project trust` title, the invocation cwd, exact root, whether this
+checkout or an ancestor has a saved decision, a `→` pointer, Up/Down movement,
+Page Up/Page Down, Enter to confirm, and Escape or Ctrl+C to cancel. It
+deliberately has no numbered menu and does not own a second key parser or
+renderer. The footer appears only when the checkout's `dist` is stale; an
+up-to-date build does not add release metadata to a security decision. The
+adapter is small because Pi's interactive mode does not exist until after the
+trust decision; every later selection (resume, approvals, new-session
+confirmation) goes through `context.ui.select` instead of a second picker
+implementation.
 Print mode cannot prompt: it uses a saved decision or an explicit
 `--trust`/`--no-trust`, and otherwise refuses to start when project resources
 exist instead of silently running without the project layer. This is the same
 fail-closed posture as Gemini CLI's headless trust check.
 `codepunk trust status|grant|revoke` and `/trust` expose the same decision;
 `/trust` changes future sessions rather than hot-reloading the current one.
+The product status line labels a prompt decision with no saved path as
+`(session only)` and a flag decision as `(one run)`, so a temporary decision
+is not mistaken for a persisted one.
 Every runtime records a `trust/decision` event with the source, root, resource
 list, and skipped classes so the evidence chain explains why a project layer
 was absent.

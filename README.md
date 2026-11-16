@@ -89,15 +89,23 @@ An interactive start asks when project resources exist and no saved decision
 applies. The prompt is titled `Project trust` and is Pi's own `SelectList`:
 Up/Down moves the pointer, Enter confirms, Page Up/Page Down move a page, and
 Escape or Ctrl+C cancels. It has no numbered menu. The prompt states whether
-this exact checkout already has a saved decision. Each row carries a short
+this exact checkout already has a saved decision, or whether an ancestor
+decision exists but is deliberately not inherited. It shows the invocation
+cwd and exact checkout root inside the prompt. Each row carries a short
 description of what it loads and whether the decision persists. The highlighted
 default is
 `Trust this workspace and remember`; choose `Trust for this session only` when
 the decision should not persist, `Do not trust and remember this decision` to
 skip project resources from now on, or `Do not trust for this session only` to
 inspect the repository once without writing a saved decision.
-The prompt footer and `codepunk --version` print the running package version,
-dist build time, entry path, and whether `dist` matches the package sources.
+The startup resource preview uses a shortened SHA-256; `/trust status` and
+`codepunk trust status --json` retain the full digest. The prompt explains that
+workspace trust does not change approval, sandbox, or filesystem permissions.
+A session-only or one-run decision is named in the TUI status line instead of
+being reported as an ordinary saved decision.
+The prompt footer appears only when `dist` is stale, and `codepunk --version`
+always prints the running package version, dist build time, entry path, and
+whether `dist` matches the package sources.
 `codepunk doctor` and `/doctor` add the same result as a `build` check, so a
 stale checkout cannot silently keep serving an older trust or command UI.
 Print mode cannot prompt, so it refuses
