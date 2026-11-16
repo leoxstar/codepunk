@@ -10,6 +10,21 @@ import {
 export const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 
 /**
+ * Ambient provider credentials make Pi resolve a model before any config
+ * exists, so a suite that asserts the "no model configured" screens would
+ * depend on whoever happens to run it. Children that must start from an empty
+ * model catalog build their env from this instead of `process.env`.
+ */
+const AMBIENT_PROVIDER_KEY =
+  /(?:_API_KEY|_AUTH_TOKEN|_BASE_URL|_CREDENTIALS)$|^ANTHROPIC_(?:DEFAULT_[A-Z]+_MODEL|SMALL_FAST_MODEL)$/u;
+
+export function withoutAmbientProviderEnv(env = process.env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !AMBIENT_PROVIDER_KEY.test(key)),
+  );
+}
+
+/**
  * The suite shells out to pnpm and npm. Both timeouts are configurable because a
  * cold runner or a slow registry mirror legitimately needs longer than a warm
  * laptop, and a hard-coded value turns "slower than my machine" into "broken".

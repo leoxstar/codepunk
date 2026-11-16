@@ -11,17 +11,23 @@ import {
   REPO_ROOT,
   trustWorkspace,
   withTempDirectory,
+  withoutAmbientProviderEnv,
 } from "./support/helpers.mjs";
 import { importCore } from "./support/core.mjs";
 
 const execFileAsync = promisify(execFile);
 const core = await importCore();
 
+// The model-catalog assertions below describe a workspace with nothing
+// configured, so the provider credentials of the machine running the suite must
+// not reach the CLI.
+const BASE_ENV = withoutAmbientProviderEnv();
+
 async function runCli(args, { cwd, home }) {
   return execFileAsync(process.execPath, [await ensureBuilt(), ...args], {
     cwd,
     env: {
-      ...process.env,
+      ...BASE_ENV,
       CODEPUNK_HOME: home,
       NO_COLOR: "1",
     },

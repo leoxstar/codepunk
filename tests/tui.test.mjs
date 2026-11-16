@@ -11,10 +11,16 @@ import {
   REPO_ROOT,
   trustWorkspace,
   withTempDirectory,
+  withoutAmbientProviderEnv,
 } from "./support/helpers.mjs";
 import { importSource } from "./support/core.mjs";
 
 const execFileAsync = promisify(execFile);
+
+// These tests assert what the TUI shows before a model is configured, so the
+// provider credentials of the machine running the suite must not reach the
+// child process.
+const BASE_ENV = withoutAmbientProviderEnv();
 
 async function startTextModelServer() {
   const requests = [];
@@ -866,7 +872,7 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
     const output = await runPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -915,7 +921,7 @@ test("a real pty shows the working tree diff", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -996,7 +1002,7 @@ test("a real pty undoes and redoes Codepunk file changes", async () => {
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -1112,7 +1118,7 @@ test("a real pty signs a settled run with an explicit verdict", async () => {
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -1190,7 +1196,7 @@ test("a real pty creates a human-confirmed commit and records it", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1277,7 +1283,7 @@ test("a real pty manages MCP auth without leaving the TUI", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1357,7 +1363,7 @@ test("a real pty adds and removes an MCP server without editing TOML", async () 
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1417,7 +1423,7 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1497,7 +1503,7 @@ test("a real pty reports status without a configured model", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1570,7 +1576,7 @@ test("a real pty reloads config in place and preserves state on invalid input", 
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -1674,7 +1680,7 @@ test("/init refuses to overwrite an existing root instruction file", async () =>
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1747,7 +1753,7 @@ test("/init sends the repository-evidence prompt to the selected model", async (
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -1797,7 +1803,7 @@ test("a real pty asks before a project instruction file is trusted", async () =>
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1865,7 +1871,7 @@ test("a real pty asks before a project instruction file is trusted", async () =>
     const second = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -1895,7 +1901,7 @@ test("a real pty remembers the default trust choice", async () => {
     );
     const cli = await ensureBuilt();
     const env = {
-      ...process.env,
+      ...BASE_ENV,
       CODEPUNK_HOME: home,
       PI_OFFLINE: "1",
       TERM: "xterm-256color",
@@ -1967,7 +1973,7 @@ test("a real pty applies a custom per-resource trust decision", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2048,7 +2054,7 @@ test("a real pty labels an explicit one-run trust decision", async () => {
     const session = startPty(process.execPath, [cli, "--trust"], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2093,7 +2099,7 @@ test("a real pty explains an ancestor trust decision without inheriting it", asy
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2137,7 +2143,7 @@ test("a real pty cancels workspace trust without hanging", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2183,7 +2189,7 @@ test("a real pty can deny workspace trust for one session without saving", async
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2237,7 +2243,7 @@ test("--no-skills keeps project skills out of the /trust view", async () => {
     const session = startPty(process.execPath, [cli, "--no-skills"], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -2299,7 +2305,7 @@ test("header and footer can be disabled without disabling the session", async ()
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -2342,7 +2348,7 @@ test("a real pty approval selector allows and denies shell commands", async () =
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -2507,7 +2513,7 @@ test("a real pty persists an exact approval rule for later sessions", async () =
     await execFileAsync("git", ["init", "-q"], { cwd: project });
     const cli = await ensureBuilt();
     const env = {
-      ...process.env,
+      ...BASE_ENV,
       CODEPUNK_HOME: home,
       TERM: "xterm-256color",
       NO_COLOR: "1",
@@ -2705,7 +2711,7 @@ test("the editor disables ! before user_bash when plugins are on", async () => {
     const session = startPty(process.execPath, [cli, "--allow-plugins"], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -2789,7 +2795,7 @@ test("read-only live switch refuses an already-writable srt profile", async () =
     );
     const cli = await ensureBuilt();
     const environment = {
-      ...process.env,
+      ...BASE_ENV,
       CODEPUNK_HOME: home,
       TERM: "xterm-256color",
       NO_COLOR: "1",
@@ -2862,7 +2868,7 @@ test("read-only live switch refuses widening a read-only srt profile", async () 
     );
     const cli = await ensureBuilt();
     const environment = {
-      ...process.env,
+      ...BASE_ENV,
       CODEPUNK_HOME: home,
       TERM: "xterm-256color",
       NO_COLOR: "1",
@@ -2952,7 +2958,7 @@ test("a real pty selects and persists a configured model", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3145,7 +3151,7 @@ test("a real pty scopes the model picker to physical fallback members", async ()
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3232,7 +3238,7 @@ test("a real pty selects recent and favorite models without replacing Pi search"
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3366,7 +3372,7 @@ test("a real pty persists a Pi default even when the picker keeps the current mo
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3424,7 +3430,7 @@ test("a real pty shows and persists permission modes", async () => {
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           TERM: "xterm-256color",
           NO_COLOR: "1",
@@ -3597,7 +3603,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3805,7 +3811,7 @@ test("/login and /logout reach the Pi host instead of being intercepted", async 
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
@@ -3893,7 +3899,7 @@ test("a real pty resumes another session without restarting the CLI", async () =
     try {
       const cli = await ensureBuilt();
       const env = {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -3989,7 +3995,7 @@ test("a real pty starts a new session in place", async () => {
     const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
-        ...process.env,
+        ...BASE_ENV,
         CODEPUNK_HOME: home,
         PI_OFFLINE: "1",
         TERM: "xterm-256color",
@@ -4067,7 +4073,7 @@ test("a real pty navigates the session tree and forks into a child session", asy
       const session = startPty(process.execPath, [cli], {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -4229,7 +4235,7 @@ test("a real pty queues input as steering while the model is streaming", async (
       const session = startPty(process.execPath, [cli], {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -4331,7 +4337,7 @@ test("a real pty surfaces a stopped budget and refuses more model calls", async 
       const session = startPty(process.execPath, [cli], {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           PI_OFFLINE: "1",
           TERM: "xterm-256color",
@@ -4478,7 +4484,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           TERM: "xterm-256color",
           NO_COLOR: "1",
@@ -4698,7 +4704,7 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           TERM: "xterm-256color",
           NO_COLOR: "1",
@@ -4861,7 +4867,7 @@ test("a read-only parent rejects a mutating subagent profile", async () => {
       {
         cwd: project,
         env: {
-          ...process.env,
+          ...BASE_ENV,
           CODEPUNK_HOME: home,
           TERM: "xterm-256color",
           NO_COLOR: "1",
