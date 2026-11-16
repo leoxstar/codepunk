@@ -995,6 +995,43 @@ export async function wrapToolDefinition(
           }
         }
 
+        // The policy decision and any human approval happened above. Snapshot
+        // the target once more immediately before execution: if it became a
+        // symbolic link, changed content, or changed mode while the caller was
+        // deciding, refuse the write instead of following the new object. Pi's
+        // writer uses a plain file write and would follow a swapped link.
+        if (
+          isMutation &&
+          target !== null &&
+          finalDecision === "allow" &&
+          before !== null
+        ) {
+          let recheck: FileSnapshot | null = null;
+          let recheckIssue: string | null = null;
+          try {
+            recheck = await snapshotFile(target);
+          } catch (error) {
+            recheckIssue =
+              error instanceof Error ? error.message : String(error);
+          }
+          if (
+            recheckIssue === null &&
+            recheck !== null &&
+            (recheck.exists !== before.exists ||
+              recheck.sha256 !== before.sha256 ||
+              recheck.mode !== before.mode)
+          ) {
+            recheckIssue =
+              "mutation target changed after the approval decision";
+          }
+          if (recheckIssue !== null) {
+            finalDecision = "deny";
+            finalRule = "path.recheck";
+            finalRuleSha256 = recordHash({ rule: finalRule });
+            finalReason = recheckIssue;
+          }
+        }
+
         if (finalDecision !== "allow") {
           const guidance = approvalEvidence?.guidance;
           const message = `denied: ${finalRule} (${finalReason})${
