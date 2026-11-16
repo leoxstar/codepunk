@@ -69,8 +69,11 @@ authority, and the snapshot is opaque host state used for resume.
 projects entry ids, parent links, labels, the active branch, and the saved leaf
 for inspection. `codepunk sessions graph` joins product sessions by their
 recorded parent and fork entry, so a child session can be traced back to the
-exact branch point. These are read-only views; neither command mutates Pi state
-or appends a product event.
+exact branch point. `codepunk sessions search` reads the same snapshots, matches
+saved titles and bounded event excerpts, redacts every excerpt, and never reads
+the unbounded shell output that the product log does not store. These are
+read-only views; none of these commands mutates Pi state or appends a product
+event.
 
 The Pi runtime factory admits only explicit Codepunk session targets. `/resume`
 and `/new` dispose the old host, build a new Codepunk runtime for the selected
@@ -784,9 +787,11 @@ These are real gaps, not hidden fallbacks:
 1. Live `/resume`, `/new`, `/fork`, `/clone`, and `/tree` now run through Pi's
    session replacement and branch APIs. The agent-state snapshot stores the
    full Pi entry tree and the active leaf, so sibling branches survive restart
-   and `/tree` can inspect them again. What remains is a product-level,
-   queryable branch graph across sessions; the tree is still opaque host state
-   inside one session snapshot.
+   and `/tree` can inspect them again. `sessions tree`, `sessions graph`, and
+   `sessions search` expose saved branches, fork links, and bounded substring
+   matches across product sessions. What remains is ranked or semantic
+   retrieval and a cross-project view. Shell stdout is not stored, so search
+   cannot retrieve it, and every excerpt is redacted before output.
 2. MCP has user-scope `list/add/remove/test/login/logout/status` and `/mcp`
    over Pi's MCP client; both stdio and Streamable HTTP transports are wired,
    and the TUI add/remove form uses the same validated config writer as the
@@ -855,14 +860,14 @@ These are real gaps, not hidden fallbacks:
    classes. There is still no per-category toggle such as "never prompt for
    ordinary shell but always prompt for MCP"; the named profiles remain
    coarse-grained presets over the four permission axes.
-10. Workspace trust is still all-or-nothing across project config, policy,
-    skills, and instructions. `--no-skills`, `--no-plugins`, `--no-mcp`, and
-    the aggregate `--bare` switch provide a one-session escape hatch, but
-    they are not a per-resource trust decision. Codex keeps skills loading
-    while disabling project config; Claude's `--bare` keeps skills; Gemini
-    shows a discovery list before the decision. Codepunk now shows a bounded
-    type, size, and digest preview before the decision, but still lacks
-    per-resource choices such as "trust instructions but skip project config".
+10. Workspace trust now has independent grants for project config, policy,
+    skills, and instructions. The startup prompt, `--trust-resources`,
+    `trust grant|revoke --resources`, and the `/trust` status surface read the
+    same decision. The deliberate boundary is that `/trust` changes future
+    sessions only; it does not hot-reload grants into the running host.
+    Revoking a grant after the resource content entered the model context
+    would not retract it, so applying a changed decision requires a host
+    rebuild rather than a partial live mutation.
 11. Subagents now enforce a parent capability ceiling: a read-only or
     `approval = "deny"` parent cannot spawn a mutating profile, and every child
     tool must be in the parent's `tools.enabled` list. The child is always
@@ -921,17 +926,18 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Expose the persisted per-session Pi tree as a product-level branch graph
-   that can be searched and compared across sessions. Sibling branches now
-   survive restart inside one session, but there is no cross-session query.
-2. Add per-resource workspace trust so instructions, project config, policy,
-   and skills can be decided separately without weakening the exact-root rule.
-3. Add a bidirectional local protocol and product-branded out-of-terminal
+1. Add a bidirectional local protocol and product-branded out-of-terminal
    status signals. The current daemon is a read-only projection, and OSC 7501
    still carries Pi's app identity.
-4. Add a profile-level permission ceiling and a network dimension to agent
+2. Add a profile-level permission ceiling and a network dimension to agent
    profiles. The parent ceiling is now enforced, but a profile cannot declare
    "never exceed standard" independently of the parent.
+3. Add a `codepunk work` surface for `WorkerPool` and swarm tasks. The
+   underlying delivery primitives exist, but today only `/subagent` has a
+   product entry point.
+4. Decide whether session search needs ranked or cross-project retrieval.
+   Substring search is the auditable baseline because it has no hidden model
+   call and its excerpts stay bounded and redacted.
 
 ## Local evidence
 
@@ -939,8 +945,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 593 tests, 593 pass
-# repository check: 518 files, 3 packages
+# 603 tests, 603 pass
+# repository check: 533 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only
