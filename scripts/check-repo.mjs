@@ -157,7 +157,7 @@ const EXPECTED_LOCKFILE_SHA256 =
   "180e75ea6ecdee97126746c6b345fdfe7109a97c2fcc48a6e85f2c245847e196";
 
 const EXPECTED_CI_SHA256 =
-  "fa4e1b35a0a4bceeedd626e56a4e32202295521bbb411a936c8a6187eddb8b3b";
+  "06902bbaceeee07ca7dd0ab449d440a3fc1cda21ffc9726fe535919cd5b072d4";
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
   "56d01914ec4e8cfd27b7a5258b1b97acb338741e0172e159515193face9e4071";
@@ -193,6 +193,7 @@ const PROHIBITED_ROOT_KEYS = new Set([
 
 const CI_RUN_COMMANDS = [
   "pnpm install --frozen-lockfile --ignore-scripts",
+  "bash scripts/ci-install-sandbox-deps.sh",
   "pnpm run format:check",
   "pnpm run check",
   "pnpm run typecheck",

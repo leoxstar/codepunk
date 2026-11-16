@@ -129,7 +129,11 @@ false positives.
 `.github/workflows/ci.yml` is configured to run the same install, formatting,
 repository, typecheck, test, build, and built-entry checks on `ubuntu-latest`
 and `macos-latest`. The workflow uses `pnpm/action-setup` and a frozen lockfile.
-Windows is not a supported CI platform.
+Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
+packages `srt` needs (bubblewrap, socat, ripgrep) and lifts the Ubuntu 24.04
+AppArmor restriction on unprivileged user namespaces; on macOS the script is a
+no-op because `srt` uses the built-in Seatbelt sandbox. Windows is not a
+supported CI platform.
 
 ## Repository checks
 

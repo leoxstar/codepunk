@@ -39,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Install sandbox dependencies
+        run: bash scripts/ci-install-sandbox-deps.sh
+
       - name: Check formatting
         run: pnpm run format:check
 
