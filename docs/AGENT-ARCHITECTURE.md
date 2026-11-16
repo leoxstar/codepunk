@@ -878,21 +878,26 @@ These are real gaps, not hidden fallbacks:
     would not retract it, so applying a changed decision requires a host
     rebuild rather than a partial live mutation.
 11. Subagents now enforce a parent capability ceiling: a read-only or
-    `approval = "deny"` parent cannot spawn a mutating profile, and every child
-    tool must be in the parent's `tools.enabled` list. The child is always
+    `approval = "deny"` parent cannot spawn a mutating profile, every child
+    tool must be in the parent's `tools.enabled` list, and a profile's
+    `permission: standard` requires a standard parent. Profiles can declare
+    exact `shell-allow` argv rules. The child host resolves each program,
+    records its digest, and writes the same rule into the headless policy and
+    the scoped autonomy file; unmatched argv fails closed. The child is always
     `sandbox = "required"` and `filesystem = "workspace"` with MCP, plugins,
-    and memory disabled. A mutating child still runs with `--approval allow`
-    inside its detached worktree, so it does not inherit the parent's per-call
-    approval or scoped shell rules; worktree isolation plus human
-    review/sign/merge is the documented compensation. A profile still cannot
-    declare its own numeric maximum such as "never exceed `standard`"
-    independently of the parent; that remains a future profile-level policy,
-    not an authority source.
-12. The five named profiles carry no network dimension. `network_allow` and
-    `network_deny` are independent user-scope lists, so switching
+    and memory disabled. A write/edit-only child uses `--approval allow` and
+    `--autonomy ask` inside its detached worktree. A shell child uses
+    `--approval deny` and `--autonomy scoped`, so the profile's exact argv is
+    its only standing execution grant. Worktree isolation plus human
+    review/sign/merge remains the compensation for write/edit changes.
+12. Agent profiles can now declare `network-allow` and `network-deny`, but
+    only inside the operator's parent allowlist: every profile allow entry
+    must be covered by the parent, any overlap with the parent deny list is
+    rejected, and the child deny list is the union of both scopes. The five
+    named permission presets still carry no network dimension, so switching
     `--permission-mode` never changes egress. Codex folds network into
-    `permissions.network`; Codepunk keeps it as a separate operator setting
-    until a profile-level network choice is designed.
+    `permissions.network`; Codepunk keeps operator egress configuration
+    separate and treats a profile's network list as a narrowing declaration.
 13. Delivery worktrees, the worker pool, and swarm policy are library-level
     beyond `/subagent`: mutating subagents now have explicit review, sign,
     merge, and discard commands, but there is still no `codepunk work`
@@ -938,9 +943,9 @@ The next work should follow the trust boundary, not the feature count:
 1. Add a bidirectional local protocol. The current daemon is a read-only
    projection; the terminal title and OSC 7501 app identity are already
    product-owned.
-2. Add a profile-level permission ceiling and a network dimension to agent
-   profiles. The parent ceiling is now enforced, but a profile cannot declare
-   "never exceed standard" independently of the parent.
+2. Add a remote approval channel and bounded per-category approval controls.
+   The current static table and optional reviewer are deliberately narrow, and
+   an interactive session still needs a local human to resolve an ask.
 3. Add a `codepunk work` surface for `WorkerPool` and swarm tasks. The
    underlying delivery primitives exist, but today only `/subagent` has a
    product entry point.
@@ -955,7 +960,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 611 tests, 611 pass
+# 615 tests, 615 pass
 # repository check: 540 files, 3 packages
 ```
 

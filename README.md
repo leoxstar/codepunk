@@ -505,21 +505,27 @@ event linking both sessions, the child run and evidence head, the effective
 profile, isolation, worktree, and exit status.
 
 An agent profile is a Markdown file with `name`, `description`, `tools`,
-`model`, `fallback`, and `thinking` frontmatter. Profiles load from
+`permission`, `shell-allow`, `network-allow`, `network-deny`, `model`,
+`fallback`, and `thinking` frontmatter. Profiles load from
 `$CODEPUNK_HOME/agents/*.md`; project profiles load from
 `.codepunk/agents/*.md` only after the workspace is trusted, and override a
 user profile with the same name. `tools` accepts `read`, `search`, `write`,
-and `edit`. `shell` is rejected until a profile can declare an exact command
-allowlist. `model` and `fallback` use exact `provider/model` references; a
-per-run `--model` must belong to the profile's pool.
+`edit`, and `shell`. A shell profile must declare an exact argv
+`shell-allow`; shells, interpreters, globs, and shell fragments are rejected.
+The child host pins each program's digest and runs unmatched argv with
+`approval = "deny"`. `model` and `fallback` use exact `provider/model`
+references; a per-run `--model` must belong to the profile's pool.
 
 The child cannot widen the parent's declared tool or execution boundary. A
 read-only parent, or one with `approval = "deny"`, cannot spawn a mutating
 profile; every enabled child tool must also be present in the parent's
-`tools.enabled` list. The child always runs with `sandbox = "required"`,
-`filesystem = "workspace"`, no MCP, no plugins, and no memory. A mutating child
-runs with `--approval allow` inside its detached worktree, so its writes are
-not individually approved in the parent; worktree isolation and the explicit
+`tools.enabled` list, and `permission: standard` requires a standard parent.
+A child's `network-allow` must be a subset of the parent operator allowlist;
+profile deny entries are merged with the parent deny list. The child always
+runs with `sandbox = "required"`, `filesystem = "workspace"`, no MCP, no
+plugins, and no memory. A write/edit child uses `--approval allow` inside its
+detached worktree. A shell child uses `--approval deny` with exact scoped argv
+rules, so unmatched commands fail closed. Worktree isolation and the explicit
 review/sign/merge gate are the compensating human boundary.
 
 Without a profile, the child is a read-only `read`/`search` session in the

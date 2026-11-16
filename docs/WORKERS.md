@@ -108,6 +108,7 @@ The supported frontmatter is:
 name: reviewer
 description: Review a bounded change set
 tools: read, search
+permission: read-only
 model: local/primary
 fallback: local/secondary, local/tertiary
 thinking: high
@@ -116,31 +117,72 @@ thinking: high
 Return findings with file and line references.
 ```
 
-`tools` accepts `read`, `search`, `write`, and `edit`. `shell` is rejected
-until a profile can declare an exact command allowlist; the child does not
-receive `memory_search`. `model` and every fallback use exact
-`provider/model` references. A fallback requires a primary model and cannot
-repeat it. A per-run `--model` must be in the profile's model pool.
+`tools` accepts `read`, `search`, `write`, `edit`, and `shell`; the child does
+not receive `memory_search`. `permission` is `read-only` or `standard` and
+defaults from the tool list. A `read-only` profile cannot enable `write`,
+`edit`, or `shell`. `model` and every fallback use exact `provider/model`
+references. A fallback requires a primary model and cannot repeat it. A
+per-run `--model` must be in the profile's model pool.
+
+A shell profile must declare an exact argv allowlist:
+
+```markdown
+---
+name: test-runner
+description: Run the repository test commands
+tools: read, search, shell
+permission: standard
+shell-allow:
+  - ["pnpm", "test"]
+  - ["pnpm", "run", "typecheck"]
+network-allow: registry.npmjs.org, api.example.com
+network-deny: metadata.example.com
+---
+
+Run only the declared commands and report the result.
+```
+
+Each `shell-allow` entry is an argv array, never a shell string. Shells and
+interpreters (`sh`, `bash`, `zsh`, `env`, `node`, `python`, and similar) are
+rejected, as are globs and shell fragments. The child host resolves the
+program in the child worktree and `PATH`, records its SHA-256, and writes the
+same exact rule into both the headless exec policy and the scoped autonomy
+file. The headless policy authorizes the argv; `verifyExec` rechecks the
+resolved executable digest before execution. An unmatched argv is denied
+because the child runs with `approval = "deny"`.
+
+`network-allow` and `network-deny` require the shell tool. Entries use a
+hostname, `*.hostname`, or either with `:port`; `*.example.com` matches strict
+subdomains and not the apex. The parent operator's `network_allow` is the
+ceiling: every profile allow entry must be covered by it, and any overlap
+with the parent deny list is rejected. The child deny list is the union of the
+parent and profile lists. A profile with no network allow entries gets no
+egress, even when the parent has a wider allowlist.
 
 Before creating a worktree or spawning a child, Codepunk checks the profile
 against an explicit parent policy. A read-only parent or one with
 `approval = "deny"` cannot spawn a mutating profile, and every child tool must
-be present in the parent's `tools.enabled` list. The child always receives
-`sandbox = "required"`, `filesystem = "workspace"`, no MCP, no plugins, and no
-memory. The profile is a declaration inside that ceiling, not a way to widen
-the parent session. A mutating child still runs with `--approval allow` inside
-its detached worktree: it does not inherit the parent's per-call approval or
-scoped shell rules. Worktree isolation plus the explicit review/sign/merge
-gate is the compensating human boundary.
+be present in the parent's `tools.enabled` list. A `standard` profile also
+requires a parent whose permission ceiling is `standard`. The child always
+receives `sandbox = "required"`, `filesystem = "workspace"`, no MCP, no
+plugins, and no memory. The profile is a declaration inside that ceiling, not
+a way to widen the parent session. A shell profile does not inherit the
+parent's scoped rules; it receives only its exact argv rules. Worktree
+isolation plus the explicit review/sign/merge gate is the compensating human
+boundary.
 
 ### Isolation and lifecycle
 
 - A read-only child (the default, or a profile containing only read/search)
   shares the parent checkout and runs with `--approval deny`.
-- A profile that enables `write` or `edit` always runs in a detached worktree
-  and uses `--approval allow`, `--autonomy ask`, `--sandbox required`, and
-  `--filesystem workspace`. The write set is the worktree root; protected
-  instruction and `.codepunk` paths still fail closed.
+- A profile that enables `write`, `edit`, or `shell` always runs in a detached
+  worktree with `--sandbox required` and `--filesystem workspace`.
+- A write/edit profile without `shell` uses `--approval allow` and
+  `--autonomy ask`; the worktree is the compensating boundary.
+- A shell profile uses `--approval deny` and `--autonomy scoped`. Only exact
+  profile argv rules can execute; the headless policy and scoped gate both
+  fail closed for an unmatched command. The write set is the worktree root;
+  protected instruction and `.codepunk` paths still fail closed.
 - `--shared` is rejected for a mutating profile. `--worktree` forces a
   detached worktree for a read-only profile.
 - `/subagent` returns immediately. Up to four children run at once;
