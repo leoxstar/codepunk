@@ -19,12 +19,14 @@ export const DAEMON_METHODS = [
   "daemon/hello",
   "session/list",
   "session/read",
+  "session/pin",
 ] as const;
 
 const DaemonMethodSchema = Type.Union([
   Type.Literal("daemon/hello"),
   Type.Literal("session/list"),
   Type.Literal("session/read"),
+  Type.Literal("session/pin"),
 ]);
 
 export const DaemonRequestIdSchema = Type.String({
@@ -62,10 +64,16 @@ export const DaemonErrorSchema = Type.Object(
 
 export type DaemonError = Static<typeof DaemonErrorSchema>;
 
+/**
+ * `read_only` describes the whole wire surface, not one method: it is `true`
+ * only while every advertised method is a read. `session/pin` makes it
+ * `false`, while `DaemonSessionReadResultSchema.read_only` keeps describing
+ * that one response, which is still a read-only snapshot.
+ */
 export const DaemonHelloResultSchema = Type.Object(
   {
     protocol_version: Type.Literal(1),
-    read_only: Type.Literal(true),
+    read_only: Type.Boolean(),
     methods: Type.Array(DaemonMethodSchema),
     pid: Type.Integer({ minimum: 1 }),
     started_at: TimestampSchema,
@@ -118,6 +126,18 @@ export type DaemonSessionReadResult = Static<
   typeof DaemonSessionReadResultSchema
 >;
 
+export const DaemonSessionPinResultSchema = Type.Object(
+  {
+    session_id: DaemonSessionIdSchema,
+    pinned: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+export type DaemonSessionPinResult = Static<
+  typeof DaemonSessionPinResultSchema
+>;
+
 const RequestBase = {
   type: Type.Literal("codepunk/daemon-request"),
   version: Type.Literal(DAEMON_PROTOCOL_VERSION),
@@ -160,10 +180,26 @@ export const DaemonSessionReadRequestSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const DaemonSessionPinRequestSchema = Type.Object(
+  {
+    ...RequestBase,
+    method: Type.Literal("session/pin"),
+    params: Type.Object(
+      {
+        session_id: DaemonSessionIdSchema,
+        pinned: Type.Boolean(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const DaemonRequestSchema = Type.Union([
   DaemonHelloRequestSchema,
   DaemonSessionListRequestSchema,
   DaemonSessionReadRequestSchema,
+  DaemonSessionPinRequestSchema,
 ]);
 
 export type DaemonRequest = Static<typeof DaemonRequestSchema>;
@@ -201,6 +237,15 @@ export const DaemonSessionReadResponseSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const DaemonSessionPinResponseSchema = Type.Object(
+  {
+    ...ResponseBase,
+    ok: Type.Literal(true),
+    result: DaemonSessionPinResultSchema,
+  },
+  { additionalProperties: false },
+);
+
 export const DaemonErrorResponseSchema = Type.Object(
   {
     ...ResponseBase,
@@ -214,6 +259,7 @@ export const DaemonResponseSchema = Type.Union([
   DaemonHelloResponseSchema,
   DaemonSessionListResponseSchema,
   DaemonSessionReadResponseSchema,
+  DaemonSessionPinResponseSchema,
   DaemonErrorResponseSchema,
 ]);
 

@@ -18,14 +18,15 @@ import {
   type DaemonRequest,
   type DaemonResponse,
   type DaemonSessionListResult,
+  type DaemonSessionPinResult,
   type DaemonSessionReadResult,
 } from "@codepunk/protocol";
 import type { ProjectPaths } from "../platform/paths.ts";
 import { readSessionSnapshot, SessionNotFoundError } from "../session/index.ts";
-import { listProjectSessions } from "../session/ops.ts";
+import { listProjectSessions, pinSession } from "../session/ops.ts";
 import { daemonSocketPath } from "./paths.ts";
 
-const READ_ONLY_METHODS = new Set<string>(DAEMON_METHODS);
+const SUPPORTED_METHODS = new Set<string>(DAEMON_METHODS);
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
 
 export interface DaemonServerOptions {
@@ -110,12 +111,12 @@ function decodeRequest(line: string): DecodedRequest {
       message: "daemon request method is missing or invalid",
     };
   }
-  if (!READ_ONLY_METHODS.has(method)) {
+  if (!SUPPORTED_METHODS.has(method)) {
     return {
       ok: false,
       requestId,
       code: "daemon.read_only",
-      message: `daemon method ${method} is not available; the wire surface is read-only`,
+      message: `daemon method ${method} is not available; it is not one of the advertised methods`,
     };
   }
   const validation = validateSchema(DaemonRequestSchema, value);
@@ -359,7 +360,7 @@ export class DaemonServer {
   private helloResult(): DaemonHelloResult {
     return {
       protocol_version: DAEMON_PROTOCOL_VERSION,
-      read_only: true,
+      read_only: false,
       methods: [...DAEMON_METHODS],
       pid: process.pid,
       started_at: this.startedAt,
@@ -391,6 +392,29 @@ export class DaemonServer {
           last_seq: session.last_seq,
           cwd: session.cwd,
         })),
+      };
+      return {
+        type: "codepunk/daemon-response",
+        version: DAEMON_PROTOCOL_VERSION,
+        request_id: request.request_id,
+        ok: true,
+        result,
+      };
+    }
+    if (request.method === "session/pin") {
+      await pinSession(
+        {
+          rootDir: this.paths.home,
+          cwd: this.paths.cwd,
+          projectRoot: this.paths.deliveryRoot,
+          projectId: this.paths.projectId,
+          sessionId: request.params.session_id,
+        },
+        request.params.pinned,
+      );
+      const result: DaemonSessionPinResult = {
+        session_id: request.params.session_id,
+        pinned: request.params.pinned,
       };
       return {
         type: "codepunk/daemon-response",

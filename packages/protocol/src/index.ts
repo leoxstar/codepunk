@@ -218,6 +218,9 @@ export {
   DaemonSessionListRequestSchema,
   DaemonSessionListResponseSchema,
   DaemonSessionListResultSchema,
+  DaemonSessionPinRequestSchema,
+  DaemonSessionPinResponseSchema,
+  DaemonSessionPinResultSchema,
   DaemonSessionReadRequestSchema,
   DaemonSessionReadResponseSchema,
   DaemonSessionReadResultSchema,
@@ -228,6 +231,7 @@ export {
   type DaemonRequest,
   type DaemonResponse,
   type DaemonSessionListResult,
+  type DaemonSessionPinResult,
   type DaemonSessionReadResult,
   type DaemonSessionSummary,
 } from "./daemon.ts";

@@ -17,6 +17,7 @@ import {
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
   DaemonClient,
+  DaemonClientError,
   DaemonServer,
   allWorkspaceTrustGrants,
   MemoryManager,
@@ -1998,7 +1999,7 @@ async function commandDaemon(options: CliOptions): Promise<number> {
       );
     } else {
       process.stdout.write(
-        `codepunk daemon ${server.socketPath}\nread-only protocol v1; Ctrl-C to stop\n`,
+        `codepunk daemon ${server.socketPath}\nprotocol v1: session list/read and pin; Ctrl-C to stop\n`,
       );
     }
     try {
@@ -2082,16 +2083,33 @@ async function commandPin(options: CliOptions): Promise<number> {
   if (sessionId === undefined) {
     throw new Error("pin requires a session id");
   }
-  await pinSession(
-    {
-      rootDir: paths.home,
-      cwd: paths.cwd,
-      projectRoot: paths.deliveryRoot,
-      projectId: paths.projectId,
-      sessionId,
-    },
-    !options.unpin,
-  );
+  const pinned = !options.unpin;
+  // Prefer the daemon so a running server stays the only writer for this
+  // project; fall back to the direct store write when no daemon is listening,
+  // which is the normal case for a one-shot CLI call.
+  const client = new DaemonClient({
+    socketPath: daemonSocketPath(paths, options.socket),
+  });
+  try {
+    await client.pinSession(sessionId, pinned);
+  } catch (error) {
+    if (
+      !(error instanceof DaemonClientError) ||
+      error.code !== "daemon.unavailable"
+    ) {
+      throw error;
+    }
+    await pinSession(
+      {
+        rootDir: paths.home,
+        cwd: paths.cwd,
+        projectRoot: paths.deliveryRoot,
+        projectId: paths.projectId,
+        sessionId,
+      },
+      pinned,
+    );
+  }
   process.stdout.write(
     `${options.unpin ? "unpinned" : "pinned"} ${sessionId}\n`,
   );

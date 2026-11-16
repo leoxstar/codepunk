@@ -518,6 +518,24 @@ export class SessionStore {
     const projectId =
       options.projectId ?? projectIdFor(options.projectRoot ?? cwd);
     const paths = pathsFor(rootDir, projectId, options.sessionId);
+    // A missing log is "not found", not "corrupt": readSessionLog wraps every
+    // read failure, so the distinction has to be made before it runs. This
+    // mirrors readSessionSnapshot and keeps open() honest for write paths such
+    // as session/pin, which reach the store without a prior snapshot read.
+    let logStat;
+    try {
+      logStat = await fs.lstat(paths.logPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SessionNotFoundError(
+          `session ${options.sessionId} was not found`,
+        );
+      }
+      throw error;
+    }
+    if (logStat.isSymbolicLink() || !logStat.isFile()) {
+      throw new SessionCorruptError("session log is not a regular file");
+    }
     const loaded = await readSessionLog(paths.logPath);
     const metaValue = await readJsonFile<unknown>(paths.metaPath);
     let meta: SessionMeta;
