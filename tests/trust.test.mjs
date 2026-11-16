@@ -154,6 +154,11 @@ test("trust preview identifies resources without following symlinks", async () =
     );
     assert.match(formatted, /\[instructions\] AGENTS\.md/u);
     assert.match(formatted, /sha256:[a-f0-9]{64}/u);
+    const compact = core.formatWorkspaceTrustResourcePreview(previews[0], {
+      compactDigest: true,
+    });
+    assert.match(compact, /sha256:[a-f0-9]{12}\u2026/u);
+    assert.doesNotMatch(compact, /sha256:[a-f0-9]{64}/u);
 
     const before = config?.sha256;
     await writeFile(configPath, "[memory]\nmax_tokens = 500\n");
@@ -197,6 +202,23 @@ test("every protected resource maps to an explicit skipped class", async () => {
     source: "saved",
   };
   assert.doesNotMatch(core.formatWorkspaceTrust(empty), /untrusted workspace/u);
+  assert.doesNotMatch(core.formatWorkspaceTrust(empty), /scope:/u);
+  assert.match(
+    core.formatWorkspaceTrust({
+      ...trust,
+      source: "prompt",
+      savedPath: null,
+    }),
+    /scope: this session only/u,
+  );
+  assert.match(
+    core.formatWorkspaceTrust({
+      ...trust,
+      source: "flag",
+      savedPath: null,
+    }),
+    /scope: this run only/u,
+  );
 });
 
 test("trust preview reports an unreadable resource instead of failing startup", async () => {
@@ -588,6 +610,10 @@ test("a saved parent decision does not trust a nested repository", async () => {
       root: nested,
       home,
     });
+    const inspected = core.inspectSavedWorkspaceTrust(home, nested);
+    assert.equal(inspected?.inherited, true);
+    assert.equal(inspected?.entry.decision, true);
+    assert.equal(inspected?.entry.path, await fs.realpath(workspace));
     assert.equal(trust.trusted, false);
     assert.equal(trust.source, "default");
     assert.equal(trust.savedPath, null);
