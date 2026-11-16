@@ -1451,6 +1451,14 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
         session.output().slice(promptMark),
         /Sign in to a provider/u,
       );
+      const setupOutput = stripAnsi(session.output().slice(promptMark));
+      assert.match(setupOutput, /\u2192 Sign in to a provider/u);
+      assert.match(
+        setupOutput,
+        /\u2191\u2193 navigate  enter select  escape\/ctrl\+c cancel/u,
+      );
+      assert.doesNotMatch(setupOutput, /(?:^|\n)\s*1\. Sign in to a provider/u);
+      assert.doesNotMatch(setupOutput, /\[1\/2/u);
       const setupMark = session.output().length;
       session.child.stdin.write("\u001b[B\u001b[B\r");
       await waitForOutputAfter(
