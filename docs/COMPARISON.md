@@ -134,8 +134,8 @@ read-only live-switch directions, live `/resume`/`/new`/`/tree`/`/fork` and
 streaming steering, and repository negative controls. The TUI also covers
 `/init` guard and model-prompt injection, `/status`, skill hot reload, and the
 Pi-native trust selector.
-On 2026-11-16, the local suite reported 603 tests and the repository check
-reported 533 files across 3 packages.
+On 2026-11-16, the local suite reported 605 tests and the repository check
+reported 539 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
 Pi's fuzzy selector with no usage warning, an exact `provider/id` selection
@@ -377,9 +377,10 @@ in the comparison.
     The full child stdout transcript is stored as a `0600` artifact and
     `/agents transcript <id>` renders it. Merging is never automatic.
 11. Pi emits OSC 7501 program status, and Codepunk inherits it because it runs
-    Pi's interactive runtime. The reported app identity is still Pi's
-    `APP_NAME`, Codepunk adds no per-event notifications, and the status line
-    is fixed.
+    Pi's interactive runtime. A terminal wrapper rewrites Pi's title prefix and
+    the OSC 7501 `app` field to `codepunk`, so the external status identity is
+    product-owned. Codepunk adds no per-event notifications, and the status
+    line is fixed.
 12. Codepunk is local-first and has no web-search tool. That is a deliberate
     product boundary, not an implementation accident.
 13. Unknown slash commands are now rejected before prompt dispatch against
@@ -412,9 +413,8 @@ in the comparison.
 
 Ordered by expected value for the next iteration:
 
-1. A bidirectional local protocol and product-branded out-of-terminal run
-   state; the current daemon is read-only and OSC 7501 still reports Pi's app
-   identity.
+1. A bidirectional local protocol. The current daemon is read-only; the
+   terminal title and OSC 7501 app identity are already product-owned.
 2. Windows ConPTY and sandbox verification before any support claim.
 
 ## Limits

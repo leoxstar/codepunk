@@ -852,9 +852,10 @@ These are real gaps, not hidden fallbacks:
    Pi branch, `/export` forwards to `/cp-export`, and the aliases do not appear
    in help.
 8. Pi 1.5.2 emits OSC 7501 program status through its interactive runtime, and
-   Codepunk keeps that path enabled. The status app identity still comes from
-   Pi's `APP_NAME`, and Codepunk adds no per-event desktop notifications, so a
-   fully product-branded external status surface is still missing.
+   Codepunk keeps that path enabled. A terminal wrapper rewrites Pi's title and
+   the OSC 7501 `app` field to `codepunk` while delegating every other terminal
+   operation, so external status surfaces no longer identify the process as
+   Pi. Codepunk adds no per-event desktop notifications.
 9. `auto` now has a deliberately narrow optional reviewer for network and
    headless `exec` asks. It is off by default and cannot overrule human-only
    classes. There is still no per-category toggle such as "never prompt for
@@ -926,9 +927,9 @@ boundary instead of claiming all actions are policy-covered.
 
 The next work should follow the trust boundary, not the feature count:
 
-1. Add a bidirectional local protocol and product-branded out-of-terminal
-   status signals. The current daemon is a read-only projection, and OSC 7501
-   still carries Pi's app identity.
+1. Add a bidirectional local protocol. The current daemon is a read-only
+   projection; the terminal title and OSC 7501 app identity are already
+   product-owned.
 2. Add a profile-level permission ceiling and a network dimension to agent
    profiles. The parent ceiling is now enforced, but a profile cannot declare
    "never exceed standard" independently of the parent.
@@ -945,8 +946,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 603 tests, 603 pass
-# repository check: 533 files, 3 packages
+# 605 tests, 605 pass
+# repository check: 539 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only

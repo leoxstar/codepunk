@@ -10,6 +10,7 @@ import {
   runPrintMode,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { ProcessTerminal } from "@earendil-works/pi-tui";
 import {
   AutonomyController,
   APPROVAL_MODE_NAMES,
@@ -130,6 +131,7 @@ import {
   type TuiSessionTarget,
   type TuiState,
 } from "./tui.ts";
+import { CodepunkTerminal } from "./branded-terminal.ts";
 import {
   selectTerminalCheckboxes,
   selectTerminalChoice,
@@ -1725,6 +1727,7 @@ async function runTui(options: CliOptions): Promise<number> {
     const modelFallbackMessage =
       modelOnboardingMessage(runtime) ?? sessionRuntime.modelFallbackMessage;
     const interactive = new InteractiveMode(sessionRuntime, {
+      terminal: new CodepunkTerminal(new ProcessTerminal()),
       startupDiagnostics: runtime.host.services.diagnostics,
       ...(modelFallbackMessage === undefined ? {} : { modelFallbackMessage }),
     });
