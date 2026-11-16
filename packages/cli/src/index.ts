@@ -39,7 +39,9 @@ import {
   formatModelCatalog,
   formatDoctor,
   formatPermissionExplanation,
+  formatSessionGraph,
   formatSessionList,
+  formatSessionTree,
   importProviderModels,
   inspectSavedWorkspaceTrust,
   installSkill,
@@ -80,6 +82,8 @@ import {
   saveWorkspaceTrustGrants,
   SessionStore,
   resolveSession,
+  readSessionGraph,
+  readSessionTree,
   runDoctor,
   setConfiguredModel,
   signStandalone,
@@ -215,6 +219,8 @@ function usage(): string {
     "",
     "Session commands:",
     "  codepunk sessions [prune] [--apply]",
+    "  codepunk sessions tree [session-id] [--json]",
+    "  codepunk sessions graph [--json]",
     "  codepunk export [session-id] [--output path]",
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
@@ -339,6 +345,8 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "usage:",
           "  codepunk sessions",
           "  codepunk sessions prune [--apply]",
+          "  codepunk sessions tree [session-id] [--json]",
+          "  codepunk sessions graph [--json]",
           "  codepunk export [session-id] [--output path]",
           "  codepunk pin <session-id>",
           "  codepunk pin <session-id> --unpin",
@@ -1747,6 +1755,38 @@ async function commandSessions(options: CliOptions): Promise<number> {
         );
       }
     }
+    return 0;
+  }
+  const subcommand = options.positionals[1];
+  if (subcommand === "tree") {
+    const requested = options.positionals[2];
+    const store = await resolveSession({
+      rootDir: paths.home,
+      cwd: paths.cwd,
+      projectRoot: paths.deliveryRoot,
+      projectId: paths.projectId,
+      ...(requested !== undefined ? { sessionId: requested } : {}),
+    });
+    const tree = await readSessionTree(store);
+    if (tree === null) {
+      throw new Error(
+        `session ${store.sessionId} has no saved agent state; run a turn before inspecting its tree`,
+      );
+    }
+    process.stdout.write(
+      options.json
+        ? `${JSON.stringify(tree)}\n`
+        : `${formatSessionTree(tree)}\n`,
+    );
+    return 0;
+  }
+  if (subcommand === "graph") {
+    const graph = await readSessionGraph(paths.home, paths.projectId);
+    process.stdout.write(
+      options.json
+        ? `${JSON.stringify(graph)}\n`
+        : `${formatSessionGraph(graph)}\n`,
+    );
     return 0;
   }
   const sessions = await listProjectSessions(paths.home, paths.projectId);
