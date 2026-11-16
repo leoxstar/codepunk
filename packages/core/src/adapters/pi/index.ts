@@ -594,7 +594,11 @@ export function renderRuntimeEnvironment(now: Date, timeZone?: string): string {
   const value = (type: Intl.DateTimeFormatPartTypes): string =>
     parts.find((part) => part.type === type)?.value ?? "";
   const offsetName = value("timeZoneName");
-  const offset = offsetName === "GMT" ? "Z" : offsetName.replace(/^GMT/u, "");
+  // ICU reports UTC as "GMT" on some Node builds and "GMT+00:00" on others.
+  // Both become the same numeric offset so the rendered prompt does not
+  // depend on which Node version renders it.
+  const offset =
+    offsetName === "GMT" ? "+00:00" : offsetName.replace(/^GMT/u, "");
   return [
     `Current host time is ${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}:${value("second")}${offset} (${resolvedTimeZone}).`,
     "Use this host clock for each turn; run `date` when you need a fresh independent reading.",

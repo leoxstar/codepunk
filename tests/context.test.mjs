@@ -105,21 +105,29 @@ test("instruction discovery uses Pi precedence and stops at the delivery root", 
   assert.doesNotMatch(bundle.instructionBlock, /REPO BASE SENTINEL/u);
   assert.match(bundle.instructionBlock, /NESTED CLAUDE SENTINEL/u);
   assert.doesNotMatch(bundle.instructionBlock, /PARENT SENTINEL/u);
+  // The file is written as CLAUDE.MD. A case-insensitive filesystem resolves
+  // the canonical name and reports it back, a case-sensitive one reports the
+  // name on disk, so the discovery contract is compared without case.
+  const lower = (names) => names.map((name) => name.toLowerCase());
   assert.deepEqual(
-    await core.findTrustRequiringProjectResources(setup.repo, setup.nested),
-    ["AGENTS.override.md", "src/nested/CLAUDE.md"],
+    lower(
+      await core.findTrustRequiringProjectResources(setup.repo, setup.nested),
+    ),
+    lower(["AGENTS.override.md", "src/nested/CLAUDE.md"]),
   );
   const piDiscovered = loadProjectContextFiles({
     cwd: setup.nested,
     agentDir: setup.home,
   });
   assert.deepEqual(
-    piDiscovered
-      .filter((file) => file.path.startsWith(`${setup.repo}${path.sep}`))
-      .map((file) =>
-        path.relative(setup.repo, file.path).split(path.sep).join("/"),
-      ),
-    ["AGENTS.override.md", "src/nested/CLAUDE.md"],
+    lower(
+      piDiscovered
+        .filter((file) => file.path.startsWith(`${setup.repo}${path.sep}`))
+        .map((file) =>
+          path.relative(setup.repo, file.path).split(path.sep).join("/"),
+        ),
+    ),
+    lower(["AGENTS.override.md", "src/nested/CLAUDE.md"]),
   );
 });
 

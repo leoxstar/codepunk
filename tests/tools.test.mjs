@@ -4,7 +4,6 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { Type } from "typebox";
 import { importCore } from "./support/core.mjs";
 
 const core = await importCore();
@@ -802,7 +801,12 @@ test("artifact truncation preserves non-text tool content", async () => {
     name: "bash",
     label: "fake bash",
     description: "fake bash",
-    parameters: Type.Object({ command: Type.String() }),
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+      additionalProperties: false,
+    },
     async execute() {
       return {
         content: [
