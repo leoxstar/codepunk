@@ -405,6 +405,7 @@ export async function previewWorkspaceTrustResources(
 
 export function formatWorkspaceTrustResourcePreview(
   preview: WorkspaceTrustResourcePreview,
+  options: { compactDigest?: boolean } = {},
 ): string {
   const facts = [
     preview.type,
@@ -413,7 +414,13 @@ export function formatWorkspaceTrustResourcePreview(
   ].filter((fact): fact is string => fact !== null);
   const lines = [`  [${preview.kind}] ${preview.path} (${facts.join(", ")})`];
   if (preview.sha256 !== null) {
-    lines.push(`    ${preview.sha256}`);
+    lines.push(
+      `    ${
+        options.compactDigest === true
+          ? `${preview.sha256.slice(0, 19)}\u2026`
+          : preview.sha256
+      }`,
+    );
   }
   if (preview.reason !== undefined) {
     lines.push(`    ${preview.reason}`);
@@ -425,20 +432,41 @@ export function workspaceTrustStorePath(home: string): string {
   return path.join(normalizeAbsolute(home), "trust.json");
 }
 
-export function readSavedWorkspaceTrust(
+export interface SavedWorkspaceTrust {
+  entry: ProjectTrustStoreEntry;
+  /**
+   * True when the decision belongs to an ancestor directory rather than this
+   * exact checkout. Codepunk displays that fact but never applies the ancestor
+   * decision to a nested repository.
+   */
+  inherited: boolean;
+}
+
+export function inspectSavedWorkspaceTrust(
   home: string,
   root: string,
-): ProjectTrustStoreEntry | null {
+): SavedWorkspaceTrust | null {
   const entry = new ProjectTrustStore(normalizeAbsolute(home)).getEntry(root);
   if (entry === null) {
     return null;
   }
+  const requested = normalizeAbsolute(resolveRealPath(root));
+  const saved = normalizeAbsolute(resolveRealPath(entry.path));
+  return {
+    entry,
+    inherited: requested !== saved,
+  };
+}
+
+export function readSavedWorkspaceTrust(
+  home: string,
+  root: string,
+): ProjectTrustStoreEntry | null {
+  const saved = inspectSavedWorkspaceTrust(home, root);
   // Pi's store returns the closest saved ancestor. A decision for a parent
   // repository must not silently trust a nested repository that can carry its
   // own .codepunk configuration.
-  const requested = normalizeAbsolute(resolveRealPath(root));
-  const saved = normalizeAbsolute(resolveRealPath(entry.path));
-  return requested === saved ? entry : null;
+  return saved === null || saved.inherited ? null : saved.entry;
 }
 
 export async function saveWorkspaceTrust(
@@ -567,13 +595,20 @@ export function formatWorkspaceTrust(
     `root: ${trust.root}`,
     `store: ${trust.storePath}`,
     ...(trust.savedPath === null ? [] : [`saved for: ${trust.savedPath}`]),
+    ...(trust.source === "prompt" && trust.savedPath === null
+      ? ["scope: this session only"]
+      : trust.source === "flag"
+        ? ["scope: this run only"]
+        : []),
     ...(trust.resources.length === 0
       ? ["project resources: none"]
       : previews === undefined || previews.length === 0
         ? [`project resources: ${trust.resources.join(", ")}`]
         : [
             "project resources:",
-            ...previews.map(formatWorkspaceTrustResourcePreview),
+            ...previews.map((preview) =>
+              formatWorkspaceTrustResourcePreview(preview),
+            ),
           ]),
     ...(options.excluded === undefined || options.excluded.length === 0
       ? []
