@@ -356,6 +356,12 @@ export {
   type SessionTreeEntry,
 } from "./session/tree.ts";
 export {
+  formatSessionSearch,
+  searchProjectSessions,
+  type SessionSearchHit,
+  type SessionSearchResult,
+} from "./session/search.ts";
+export {
   appendEvidenceIndex,
   deriveAndWriteVerdict,
   evidenceIndexPath,

@@ -915,3 +915,65 @@ test("session graph orders children by their fork point", async () => {
     );
   });
 });
+
+test("session search finds titles and redacted event excerpts", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const store = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectId: "search-project",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const writer = await store.acquireWriter();
+    await store.writeMeta({ title: "Flux investigation" });
+    await store.append("user/input", {
+      run_id: "search-run",
+      text: `investigate flux capacitor token=${"sk-" + "a".repeat(24)}`,
+    });
+    await store.append("bash/result", {
+      run_id: "search-run",
+      command: "rg flux",
+      exit_code: 0,
+      output_sha256: null,
+      cancelled: false,
+    });
+    await writer.release();
+
+    const result = await core.searchProjectSessions({
+      rootDir,
+      projectId: "search-project",
+      query: "flux",
+    });
+    assert.equal(result.matches.length, 3);
+    assert.equal(result.truncated, false);
+    assert.equal(result.matches[0].kind, "session/title");
+    const userMatch = result.matches.find(
+      (match) => match.kind === "user/input",
+    );
+    assert.ok(userMatch);
+    assert.match(userMatch.excerpt, /flux capacitor/u);
+    assert.match(userMatch.excerpt, /\[REDACTED_TOKEN\]/u);
+    assert.equal(userMatch.excerpt.includes("sk-"), false);
+    const text = core.formatSessionSearch(result);
+    assert.match(text, /Found 3 match\(es\) for "flux"/u);
+    assert.match(text, /#\d+\s+bash\/result/u);
+
+    const limited = await core.searchProjectSessions({
+      rootDir,
+      projectId: "search-project",
+      query: "flux",
+      limit: 1,
+    });
+    assert.equal(limited.matches.length, 1);
+    assert.equal(limited.truncated, true);
+
+    const missing = await core.searchProjectSessions({
+      rootDir,
+      projectId: "search-project",
+      query: "no-such-session-text",
+    });
+    assert.equal(missing.matches.length, 0);
+    assert.match(core.formatSessionSearch(missing), /No matches/u);
+  });
+});
