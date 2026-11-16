@@ -349,7 +349,10 @@ only by an explicitly enabled reviewer; otherwise they stay refused under
 approval channel exists.
 Print mode's tool set is read-only unless `--headless-policy` grants `write`
 or `shell`, so an explicit mutating `--permission-mode` is rejected there
-instead of being accepted without effect.
+instead of being accepted without effect. Headless `exec` matches one exact
+`argv`; an interpreter such as `node` or `python` is accepted only when the
+policy also pins `script_sha256` for the single script argument, and a flag in
+the script position stays refused.
 
 Git execution and configuration surfaces are not ordinary workspace files.
 File tools and shell redirects cannot write `.git/config`,

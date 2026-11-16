@@ -373,6 +373,89 @@ test("a shebang script is denied as non-native", async () => {
   });
 });
 
+async function runInterpreterCase({ root, withScriptDigest, scriptBytes }) {
+  const script = path.join(root, "approved.mjs");
+  await fs.writeFile(script, 'process.stdout.write("SCRIPT_OK\\n");\n');
+  const argv = [process.execPath, script];
+  const exeDigest = digest(await fs.readFile(process.execPath));
+  const scriptDigest = digest(scriptBytes);
+  const { project, home, modelServer } = await setup(root, argv);
+  const policy = path.join(root, "headless.toml");
+  await fs.writeFile(
+    policy,
+    [
+      "version = 1",
+      "[allow]",
+      'tools = ["exec"]',
+      "[[allow.commands]]",
+      `argv = ${JSON.stringify(argv)}`,
+      `executable_sha256 = ${JSON.stringify(exeDigest)}`,
+      ...(withScriptDigest
+        ? [`script_sha256 = ${JSON.stringify(scriptDigest)}`]
+        : []),
+      `cwd = ${JSON.stringify(project)}`,
+      "",
+    ].join("\n"),
+  );
+  try {
+    const result = await runCli(
+      [
+        "-p",
+        "run the approved script",
+        "--model",
+        "local/local-test",
+        "--headless-policy",
+        policy,
+      ],
+      { cwd: project, home },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const records = await readEvidence(home);
+    const exec = records.find((record) => record.tool === "exec");
+    assert.ok(exec);
+    return exec;
+  } finally {
+    await new Promise((resolve) => modelServer.server.close(resolve));
+  }
+}
+
+test("an interpreter is allowed once its script digest is approved", async () => {
+  await withTempDirectory("codepunk-headless-interp-", async (root) => {
+    const bytes = Buffer.from('process.stdout.write("SCRIPT_OK\\n");\n');
+    const exec = await runInterpreterCase({
+      root,
+      withScriptDigest: true,
+      scriptBytes: bytes,
+    });
+    assert.equal(exec.decision, "allow");
+    assert.match(exec.output_preview, /SCRIPT_OK/u);
+  });
+});
+
+test("an interpreter without a pinned script digest stays denied", async () => {
+  await withTempDirectory("codepunk-headless-interp-", async (root) => {
+    const exec = await runInterpreterCase({
+      root,
+      withScriptDigest: false,
+      scriptBytes: Buffer.from(""),
+    });
+    assert.equal(exec.decision, "deny");
+    assert.match(exec.output_preview, /launchers are not allowed/u);
+  });
+});
+
+test("an interpreter whose script digest changed is denied", async () => {
+  await withTempDirectory("codepunk-headless-interp-", async (root) => {
+    const exec = await runInterpreterCase({
+      root,
+      withScriptDigest: true,
+      scriptBytes: Buffer.from("not the approved script\n"),
+    });
+    assert.equal(exec.decision, "deny");
+    assert.match(exec.output_preview, /approved script digest changed/u);
+  });
+});
+
 test("a headless policy inside the repository is refused", async () => {
   await withTempDirectory("codepunk-headless-inside-", async (root) => {
     const { project, modelServer } = await setup(root, ["/bin/echo", "x"]);

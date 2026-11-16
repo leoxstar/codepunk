@@ -378,8 +378,20 @@ async function verifyHeadlessExec(
   } catch {
     return "approved executable cannot be resolved";
   }
-  if (isShellLauncher([resolvedExecutable]) || isShellLauncher([executable])) {
-    return "shell and interpreter launchers are not allowed by headless exec";
+  const launcher =
+    isShellLauncher([resolvedExecutable]) || isShellLauncher([executable]);
+  if (launcher) {
+    // An interpreter may run exactly one approved script: the policy pins the
+    // whole argv, the interpreter digest above, and the script digest below.
+    // Without a pinned script, or with a flag in the script position, a
+    // launcher would still interpret whatever it is handed.
+    if (rule.script_sha256 === null) {
+      return "shell and interpreter launchers are not allowed by headless exec";
+    }
+    const scriptArg = argv[1];
+    if (scriptArg === undefined || scriptArg.startsWith("-")) {
+      return "launcher script argument is missing or is a flag";
+    }
   }
   let bytes: Buffer;
   try {
