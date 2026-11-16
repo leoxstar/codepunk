@@ -498,11 +498,18 @@ test("child-host overrides can narrow tools and set a private model pool", async
         fallbackModels: ["local/one", "local/two"],
         fallbackAllowCrossProvider: true,
         appendSystemPrompt: "profile context",
+        networkAllow: ["Registry.NPMJS.org", "*.example.com"],
+        networkDeny: ["Evil.Example.com"],
       },
     );
     assert.deepEqual(loaded.config.tools.enabled, ["read", "search", "write"]);
     assert.deepEqual(loaded.config.model.fallback, ["local/one", "local/two"]);
     assert.equal(loaded.config.model.fallback_allow_cross_provider, true);
+    assert.deepEqual(loaded.config.sandbox.network_allow, [
+      "registry.npmjs.org",
+      "*.example.com",
+    ]);
+    assert.deepEqual(loaded.config.sandbox.network_deny, ["evil.example.com"]);
     assert.equal(
       loaded.config.context.append,
       "base context\n\nprofile context",
@@ -517,6 +524,18 @@ test("child-host overrides can narrow tools and set a private model pool", async
           },
         ),
       /unknown tool/u,
+    );
+    await assert.rejects(
+      () =>
+        core.loadConfig(
+          paths,
+          {},
+          {
+            networkAllow: ["api.example.com"],
+            networkDeny: ["API.EXAMPLE.COM"],
+          },
+        ),
+      /cannot be both allowed and denied/u,
     );
   });
 });

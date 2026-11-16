@@ -185,6 +185,192 @@ test("a child cannot exceed the parent's permission or tool ceiling", () => {
   );
 });
 
+test("a profile permission and network policy cannot widen the parent", () => {
+  const shellMask = {
+    read: true,
+    write: false,
+    edit: false,
+    shell: true,
+    search: true,
+    memory_search: false,
+  };
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "read-only",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: ["api.example.com"],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["api.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /parent_permission_ceiling|read-only parent/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: [],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["api.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /exceeds the parent allowlist/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: ["*.example.com"],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["example.com"],
+          networkDeny: [],
+        },
+      ),
+    /exceeds the parent allowlist/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: ["api.example.com:443"],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["api.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /exceeds the parent allowlist/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: ["*.example.com"],
+          networkDeny: ["api.example.com"],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["api.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /denied by the parent/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        shellMask,
+        "scoped",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+          networkAllow: ["*.example.com"],
+          networkDeny: ["api.example.com"],
+        },
+        {
+          permission: "standard",
+          networkAllow: ["*.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /denied by the parent/u,
+  );
+  assert.doesNotThrow(() =>
+    core.assertSubagentWithinParentPolicy(
+      shellMask,
+      "scoped",
+      {
+        approval: "ask",
+        autonomy: "ask",
+        tools: PERMISSIVE_PARENT.tools,
+        networkAllow: ["*.example.com"],
+      },
+      {
+        permission: "standard",
+        networkAllow: ["api.example.com"],
+        networkDeny: ["metadata.example.com"],
+      },
+    ),
+  );
+  assert.doesNotThrow(() =>
+    core.assertSubagentWithinParentPolicy(
+      shellMask,
+      "scoped",
+      {
+        approval: "ask",
+        autonomy: "ask",
+        tools: PERMISSIVE_PARENT.tools,
+        networkAllow: ["*.example.com:443"],
+      },
+      {
+        permission: "standard",
+        networkAllow: ["*.api.example.com:443"],
+        networkDeny: [],
+      },
+    ),
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(
+        {
+          read: true,
+          write: false,
+          edit: false,
+          shell: false,
+          search: true,
+          memory_search: false,
+        },
+        "read-only",
+        {
+          approval: "ask",
+          autonomy: "ask",
+          tools: PERMISSIVE_PARENT.tools,
+        },
+        {
+          permission: "read-only",
+          networkAllow: ["api.example.com"],
+          networkDeny: [],
+        },
+      ),
+    /requires the shell tool/u,
+  );
+});
+
 test("a subagent request without a parent policy fails closed", async () => {
   await assert.rejects(
     () =>

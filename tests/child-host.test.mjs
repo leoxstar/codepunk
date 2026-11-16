@@ -30,6 +30,7 @@ async function startChildModelServer({
   readPath = "subagent-input.txt",
   toolName = "read",
   toolArguments = null,
+  toolCalls = null,
   finalText = "child says hello",
 } = {}) {
   const requests = [];
@@ -64,7 +65,18 @@ async function startChildModelServer({
         const toolResults = body.messages.filter(
           (message) => message.role === "tool",
         ).length;
-        if (emitToolCall && toolResults < toolCallRounds) {
+        const call =
+          toolCalls === null
+            ? {
+                name: toolName,
+                arguments: toolArguments ?? { path: readPath },
+              }
+            : toolCalls[toolResults];
+        if (
+          emitToolCall &&
+          call !== undefined &&
+          (toolCalls !== null || toolResults < toolCallRounds)
+        ) {
           send({
             id: "child-response",
             object: "chat.completion.chunk",
@@ -79,15 +91,11 @@ async function startChildModelServer({
                   tool_calls: [
                     {
                       index: 0,
-                      id: `call-${toolName}-${toolResults}`,
+                      id: `call-${call.name}-${toolResults}`,
                       type: "function",
                       function: {
-                        name: toolName,
-                        arguments: JSON.stringify(
-                          toolArguments ?? {
-                            path: readPath,
-                          },
-                        ),
+                        name: call.name,
+                        arguments: JSON.stringify(call.arguments),
                       },
                     },
                   ],
@@ -917,6 +925,110 @@ test("a mutating profile runs in a detached worktree and keeps the parent clean"
         .filter((line) => line.length > 0)
         .map((line) => JSON.parse(line));
       assert.equal(records.at(-1)?.tool, "write");
+    } finally {
+      if (worktree !== null) {
+        execFileSync("git", ["worktree", "remove", "--force", worktree], {
+          cwd: project,
+        });
+        await fs.rm(path.dirname(worktree), { recursive: true, force: true });
+      }
+      modelServer.server.closeAllConnections?.();
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
+test("a shell profile runs only its exact argv allowlist in the child worktree", async () => {
+  await withTempDirectory("codepunk-child-shell-profile-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    initGitRepository(project);
+    const modelServer = await startChildModelServer({
+      toolCalls: [
+        {
+          name: "exec",
+          arguments: { argv: ["printf", "profile-shell"] },
+        },
+        {
+          name: "exec",
+          arguments: { argv: ["printf", "not-allowed"] },
+        },
+      ],
+      finalText: "SHELL_PROFILE_DONE",
+    });
+    await writeModelHome(home, modelServer.baseUrl);
+    let worktree = null;
+    try {
+      const cli = await ensureBuilt();
+      const result = await core.runSubagentHost({
+        hostArgv: [process.execPath, cli],
+        cwd: project,
+        parentPolicy: {
+          ...PERMISSIVE_PARENT,
+          networkAllow: ["*.example.com"],
+          networkDeny: ["metadata.example.com"],
+        },
+        parentSessionId: "parent-session",
+        childSessionId: "child-shell-profile",
+        prompt: "run the exact allowed command and reject the other argv",
+        isolation: "worktree",
+        model: "local/local-test",
+        profile: {
+          name: "runner",
+          sha256: `sha256:${"e".repeat(64)}`,
+          tools: {
+            read: true,
+            write: false,
+            edit: false,
+            shell: true,
+            search: true,
+            memory_search: false,
+          },
+          permission: "standard",
+          shellAllow: [["printf", "profile-shell"]],
+          networkAllow: ["api.example.com"],
+          networkDeny: ["profile-deny.example.com"],
+          systemPrompt: "Run only the declared argv rules.",
+          model: "local/local-test",
+          fallback: [],
+          thinking: "low",
+        },
+        env: {
+          ...process.env,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          NO_COLOR: "1",
+        },
+      });
+      worktree = result.worktree;
+      assert.equal(result.exit_code, 0);
+      assert.equal(result.summary, "SHELL_PROFILE_DONE");
+      assert.equal(result.isolation, "worktree");
+      const records = (await fs.readFile(result.child_evidence_path, "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      assert.equal(records.length, 2);
+      assert.equal(records[0].tool, "exec");
+      assert.equal(records[0].decision, "allow");
+      assert.equal(records[0].rule, "headless.exec.1");
+      assert.deepEqual(records[0].sandbox.network_allowed_domains, [
+        "api.example.com",
+      ]);
+      assert.deepEqual(records[0].sandbox.network_denied_domains, [
+        "metadata.example.com",
+        "profile-deny.example.com",
+      ]);
+      assert.equal(records[0].output_preview, "profile-shell");
+      assert.equal(records[1].tool, "exec");
+      assert.equal(records[1].decision, "deny");
+      assert.equal(records[1].outcome, "denied");
+      assert.notEqual(records[1].output_preview, "not-allowed");
     } finally {
       if (worktree !== null) {
         execFileSync("git", ["worktree", "remove", "--force", worktree], {

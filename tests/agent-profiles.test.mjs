@@ -167,7 +167,7 @@ test("invalid or linked profile files are ignored with warnings", async () => {
   });
 });
 
-test("shell profiles are rejected until an exact command allowlist exists", async () => {
+test("shell profiles are rejected without an exact command allowlist", async () => {
   await withTempDirectory("codepunk-agent-shell-", async (root) => {
     const fixture = await pathsFor(root);
     await writeFile(
@@ -188,6 +188,124 @@ test("shell profiles are rejected until an exact command allowlist exists", asyn
     });
     assert.deepEqual(bundle.profiles, []);
     assert.equal(bundle.warnings.length, 1);
-    assert.match(bundle.warnings[0], /shell is not supported/u);
+    assert.match(bundle.warnings[0], /shell-allow/u);
+  });
+});
+
+test("profiles parse a permission ceiling, exact shell argv, and network policy", async () => {
+  await withTempDirectory("codepunk-agent-policy-", async (root) => {
+    const fixture = await pathsFor(root);
+    await writeFile(
+      path.join(fixture.home, "agents", "runner.md"),
+      [
+        "---",
+        "name: runner",
+        "description: bounded shell profile",
+        "tools: read, search, shell",
+        "permission: standard",
+        "shell-allow:",
+        '  - ["printf", "profile-shell"]',
+        '  - ["git", "status"]',
+        "network-allow: api.example.com, *.example.org",
+        "network-deny: metadata.example.com",
+        "---",
+        "Run only the declared commands.",
+        "",
+      ].join("\n"),
+    );
+
+    const bundle = await core.loadAgentProfiles(fixture.paths, {
+      projectTrusted: true,
+    });
+    assert.deepEqual(bundle.warnings, []);
+    assert.equal(bundle.profiles.length, 1);
+    const runner = bundle.profiles[0];
+    assert.equal(runner.permission, "standard");
+    assert.equal(runner.tools.shell, true);
+    assert.deepEqual(runner.shellAllow, [
+      ["printf", "profile-shell"],
+      ["git", "status"],
+    ]);
+    assert.deepEqual(runner.networkAllow, ["api.example.com", "*.example.org"]);
+    assert.deepEqual(runner.networkDeny, ["metadata.example.com"]);
+    assert.match(
+      core.formatAgentProfiles(bundle.profiles),
+      /standard: read,shell,search/u,
+    );
+    assert.match(
+      core.formatAgentProfiles(bundle.profiles),
+      /api\.example\.com/u,
+    );
+  });
+});
+
+test("profiles reject policy widening, dead network lists, and unsafe shell argv", async () => {
+  await withTempDirectory("codepunk-agent-policy-invalid-", async (root) => {
+    const fixture = await pathsFor(root);
+    const agents = path.join(fixture.home, "agents");
+    const cases = [
+      [
+        "read-only-write.md",
+        ["tools: read, write", "permission: read-only"],
+        /read-only agent profile/u,
+      ],
+      [
+        "network-no-shell.md",
+        ["tools: read, search", "network-allow: api.example.com"],
+        /network lists require the shell tool/u,
+      ],
+      ["shell-no-rules.md", ["tools: read, shell"], /shell-allow/u],
+      [
+        "rules-no-shell.md",
+        ["tools: read, search", "shell-allow:", '  - ["git", "status"]'],
+        /shell-allow requires the shell tool/u,
+      ],
+      [
+        "shell-launcher.md",
+        [
+          "tools: read, shell",
+          "shell-allow:",
+          '  - ["sh", "-c", "echo unsafe"]',
+        ],
+        /cannot launch a shell/u,
+      ],
+      [
+        "network-overlap.md",
+        [
+          "tools: read, shell",
+          "shell-allow:",
+          '  - ["git", "status"]',
+          "network-allow: api.example.com",
+          "network-deny: api.example.com",
+        ],
+        /network allow and deny overlap/u,
+      ],
+    ];
+    for (const [file, lines, expected] of cases) {
+      await writeFile(
+        path.join(agents, file),
+        [
+          "---",
+          `name: ${file.replace(/\.md$/u, "")}`,
+          "description: invalid profile",
+          ...lines,
+          "---",
+          "Invalid.",
+          "",
+        ].join("\n"),
+      );
+    }
+
+    const bundle = await core.loadAgentProfiles(fixture.paths, {
+      projectTrusted: true,
+    });
+    assert.deepEqual(bundle.profiles, []);
+    assert.equal(bundle.warnings.length, cases.length);
+    for (const [, , expected] of cases) {
+      assert.ok(
+        bundle.warnings.some((warning) => expected.test(warning)),
+        `missing warning ${expected}`,
+      );
+    }
   });
 });
