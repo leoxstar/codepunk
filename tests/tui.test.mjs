@@ -4211,7 +4211,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       ],
       { cwd: project },
     );
-    const modelServer = await startTextModelServer();
+    const modelServer = await startHeldModelServer();
     await fs.writeFile(
       path.join(home, "config.toml"),
       '[sandbox]\nmode = "uncovered"\n',
@@ -4281,17 +4281,50 @@ test("a real pty runs /subagent as a read-only child session", async () => {
         .slice(mark)
         .match(/subagent started: ([A-Za-z0-9_-]+)/u)?.[1];
       assert.ok(childSessionId);
+      await waitFor(
+        () => modelServer.requests.length > 0,
+        "the held child model request",
+      );
+
+      const transcriptMark = session.output().length;
+      session.child.stdin.write(`/agents transcript ${childSessionId}\r`);
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "CODEPUNK SUBAGENT TRANSCRIPT",
+        "/agents transcript browser",
+      );
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "live",
+        "/agents transcript live state",
+      );
+      modelServer.releaseFirst();
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "FIRST_DONE",
+        "/agents transcript live output",
+      );
+      session.child.stdin.write("\u001b");
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "codepunk · local/local-test",
+        "/agents transcript close",
+      );
       await waitForOutputAfter(
         session,
         mark,
         `completed; use /agents result ${childSessionId}`,
         "/subagent completion",
       );
-      assert.match(session.output().slice(mark), /CHILD_OK/u);
+      assert.match(session.output().slice(mark), /FIRST_DONE/u);
       await runCommandAfter(
         session,
         `/agents result ${childSessionId}`,
-        "CHILD_OK",
+        "FIRST_DONE",
       );
       await runCommandAfter(session, "/agents", "completed");
       await runCommandAfter(
@@ -4322,7 +4355,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       assert.equal(linked.event.data.model, "local/local-test");
       assert.equal(linked.event.data.profile, "reviewer");
       assert.match(linked.event.data.profile_sha256, /^sha256:[a-f0-9]{64}$/u);
-      assert.equal(linked.event.data.summary, "CHILD_OK");
+      assert.equal(linked.event.data.summary, "FIRST_DONE");
       assert.equal(linked.event.data.evidence_head, null);
       assert.equal(linked.event.data.worktree, null);
       assert.equal(linked.event.data.changed_files, 0);
@@ -4470,12 +4503,33 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
       );
       assert.match(session.output().slice(startMark), /transcript:/u);
       assert.match(session.output().slice(startMark), /transcript\.jsonl/u);
-      await runCommandAfter(
+      const transcriptMark = session.output().length;
+      session.child.stdin.write(`/agents transcript ${childSessionId}\r`);
+      await waitForOutputAfter(
         session,
-        `/agents transcript ${childSessionId}`,
-        "WRITE_DONE",
+        transcriptMark,
+        "CODEPUNK SUBAGENT TRANSCRIPT",
+        "/agents transcript browser",
       );
-      assert.match(session.output(), /tool write:/u);
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "TOOL write [ok",
+        "/agents transcript tool output",
+      );
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "WRITE_DONE",
+        "/agents transcript assistant output",
+      );
+      session.child.stdin.write("\u001b");
+      await waitForOutputAfter(
+        session,
+        transcriptMark,
+        "codepunk · local/local-test",
+        "/agents transcript close",
+      );
       await runCommandAfter(
         session,
         `/agents review ${childSessionId}`,
