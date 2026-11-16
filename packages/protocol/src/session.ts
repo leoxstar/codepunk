@@ -219,6 +219,13 @@ export const TrustDecisionEventSchema = Type.Object(
           Type.Literal("trusted"),
           Type.Literal("untrusted"),
         ]),
+        mode: Type.Optional(
+          Type.Union([
+            Type.Literal("all"),
+            Type.Literal("custom"),
+            Type.Literal("none"),
+          ]),
+        ),
         source: Type.Union([
           Type.Literal("flag"),
           Type.Literal("saved"),
@@ -228,6 +235,27 @@ export const TrustDecisionEventSchema = Type.Object(
         ]),
         resources: Type.Array(Type.String()),
         skipped: Type.Array(Type.String()),
+        grants: Type.Optional(
+          Type.Object(
+            {
+              config: Type.Boolean(),
+              policy: Type.Boolean(),
+              skills: Type.Boolean(),
+              instructions: Type.Boolean(),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+        available: Type.Optional(
+          Type.Array(
+            Type.Union([
+              Type.Literal("config"),
+              Type.Literal("policy"),
+              Type.Literal("skills"),
+              Type.Literal("instructions"),
+            ]),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
