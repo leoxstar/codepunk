@@ -65,6 +65,12 @@ so the Pi tree is an execution surface, not a second durable product tree.
 Codepunk records `/tree` navigation and stores the full Pi entry tree plus the
 active leaf inside `agent-state.json`; the product event log remains the
 authority, and the snapshot is opaque host state used for resume.
+`codepunk sessions tree` reads that snapshot without taking the writer lock and
+projects entry ids, parent links, labels, the active branch, and the saved leaf
+for inspection. `codepunk sessions graph` joins product sessions by their
+recorded parent and fork entry, so a child session can be traced back to the
+exact branch point. These are read-only views; neither command mutates Pi state
+or appends a product event.
 
 The Pi runtime factory admits only explicit Codepunk session targets. `/resume`
 and `/new` dispose the old host, build a new Codepunk runtime for the selected

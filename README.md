@@ -21,11 +21,14 @@ explicit policy boundary around file and shell actions.
 - Append-only evidence with a hash chain and human sign-off.
 - Codepunk-owned sessions with live `/resume`, `/new`, `/fork`, `/clone`, and
   `/tree` in the TUI, plus CLI listing, export, retention, and compaction
-  checkpoints. A checkpoint is evidence about the compaction boundary, not a
-  user-visible session rewind. The first prompt seeds a redacted title, later
-  Pi title changes are mirrored, and `pin <id> [--unpin]` controls retention.
-  The `/tree` snapshot stores every Pi entry and the active leaf, so sibling
-  branches survive resume without a separate Pi session file.
+  checkpoints. `codepunk sessions tree [id]` projects the saved Pi entries as a
+  branch graph with labels and the active leaf; `codepunk sessions graph` links
+  product sessions by parent and fork point. Both accept `--json`. A checkpoint
+  is evidence about the compaction boundary, not a user-visible session rewind.
+  The first prompt seeds a redacted title, later Pi title changes are mirrored,
+  and `pin <id> [--unpin]` controls retention. The `/tree` snapshot stores every
+  Pi entry and the active leaf, so sibling branches survive resume without a
+  separate Pi session file.
 - Project context from `AGENTS.md`, local memory, skills, and gated MCP
   servers, including resource listing and reads through Pi's MCP tools.
 - `/init` bootstraps `AGENTS.md` from repository evidence through a normal
