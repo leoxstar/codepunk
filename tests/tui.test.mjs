@@ -1515,7 +1515,7 @@ test("a real pty reports status without a configured model", async () => {
       assert.match(output, /project: /u);
       assert.match(output, /model: not selected/u);
       assert.match(output, /permissions: /u);
-      assert.match(output, /trust: (trusted|untrusted) \(/u);
+      assert.match(output, /trust: (trusted|untrusted)(?: \([^)]+\))? · /u);
       assert.match(output, /capabilities: /u);
       assert.match(output, /evidence: /u);
       session.child.stdin.write("/quit\r");
@@ -1798,12 +1798,25 @@ test("a real pty asks before a project instruction file is trusted", async () =>
     try {
       await waitForOutput(session, "Project trust", "trust prompt");
       assert.match(session.output(), /AGENTS\.md/u);
-      assert.match(session.output(), /sha256:[a-f0-9]{64}/u);
+      assert.match(session.output(), /sha256:[a-f0-9]{12}\u2026/u);
+      assert.doesNotMatch(session.output(), /sha256:[a-f0-9]{64}/u);
       assert.match(
         stripAnsi(session.output()),
-        /saved decision\s+none for this exact checkout/u,
+        /Workspace trust\s+cwd: .+\s+checkout root: /u,
       );
       assert.match(
+        stripAnsi(session.output()),
+        /Trust only controls project config, policy, skills, and instruction files\./u,
+      );
+      assert.match(
+        stripAnsi(session.output()),
+        /It does not change approval, sandbox, or filesystem permissions\./u,
+      );
+      assert.match(
+        stripAnsi(session.output()),
+        /saved decision:\s+none for this checkout or an ancestor/u,
+      );
+      assert.doesNotMatch(
         stripAnsi(session.output()),
         /codepunk 0\.0\.0 · dist .+ · source current/u,
       );
@@ -1905,6 +1918,7 @@ test("a real pty remembers the default trust choice", async () => {
     try {
       await waitForOutput(second, "codepunk · auto/auto", "trusted restart");
       assert.doesNotMatch(second.output(), /Trust this workspace\?/u);
+      assert.match(second.output(), /trust trusted \(saved\)/u);
       second.child.stdin.write("/quit\r");
       const result = await Promise.race([
         second.exited,
@@ -1915,6 +1929,95 @@ test("a real pty remembers the default trust choice", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(second);
+    }
+  });
+});
+
+test("a real pty labels an explicit one-run trust decision", async () => {
+  await withTempDirectory("codepunk-tui-trust-flag-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "ONE_RUN_TRUST_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli, "--trust"], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      assert.match(session.output(), /trust trusted \(one run\)/u);
+      await assert.rejects(
+        fs.readFile(path.join(home, "trust.json"), "utf8"),
+        /ENOENT/u,
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("a real pty explains an ancestor trust decision without inheriting it", async () => {
+  await withTempDirectory("codepunk-tui-trust-parent-", async (root) => {
+    const workspace = path.join(root, "workspace");
+    const project = path.join(workspace, "packages", "app");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "NESTED_PARENT_TRUST_SENTINEL\n",
+    );
+    await trustWorkspace(home, workspace);
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "Project trust", "trust prompt");
+      const output = stripAnsi(session.output()).replace(/\s+/gu, " ");
+      assert.match(
+        output,
+        /saved decision: trusted for parent .+; this checkout needs its own decision/u,
+      );
+      assert.ok(output.includes(`checkout root: ${project}`));
+      session.child.stdin.write("\u001b");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 8_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 1, signal: null });
+    } finally {
+      await stopPty(session);
     }
   });
 });
@@ -1995,7 +2098,7 @@ test("a real pty can deny workspace trust for one session without saving", async
       );
       session.child.stdin.write("\u001b[B\u001b[B\u001b[B\r");
       await waitForOutput(session, "codepunk · auto/auto", "startup");
-      assert.match(session.output(), /trust untrusted/u);
+      assert.match(session.output(), /trust untrusted \(session only\)/u);
       await assert.rejects(
         fs.readFile(path.join(home, "trust.json"), "utf8"),
         /ENOENT/u,
