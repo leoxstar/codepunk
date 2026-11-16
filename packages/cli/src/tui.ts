@@ -3587,6 +3587,11 @@ async function runSubagent(
       record.result = await runSubagentHost({
         hostArgv: state.childHostArgv,
         cwd: runtime.paths.cwd,
+        parentPolicy: {
+          approval: runtime.config.approval.mode,
+          autonomy: runtime.autonomy.profile,
+          tools: runtime.config.tools.enabled,
+        },
         ...(runtime.paths.additionalRoots.length === 0
           ? {}
           : { additionalDirs: runtime.paths.additionalRoots }),
