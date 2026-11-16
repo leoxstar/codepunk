@@ -218,9 +218,11 @@ export {
 } from "./verdict/index.ts";
 export {
   APPROVAL_MODE_NAMES,
+  CONFIG_FILE_NAME,
   ConfigError,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
+  configFilePaths,
   configSummary,
   defaultConfig,
   effectiveApprovalDecision,

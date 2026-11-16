@@ -430,6 +430,7 @@ export function codepunkHelp(): string {
     "",
     "Project",
     "  /init [--update]           create or update AGENTS.md from repository evidence",
+    "  /config, /settings        show file-backed configuration paths",
     "  /diff                      show staged and unstaged working tree changes",
     "  /commit [message]          review and create a Git commit as a human action",
     "  /undo [count]              restore recent Codepunk write/edit changes",
@@ -4918,7 +4919,10 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
           context.ui.notify(codepunkHelp(), "info");
           return true;
         }
-        if (isSlashCommand(trimmed, "/settings")) {
+        if (
+          isSlashCommand(trimmed, "/settings") ||
+          isSlashCommand(trimmed, "/config")
+        ) {
           context.ui.notify(
             [
               "codepunk settings are file-backed.",

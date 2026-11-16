@@ -134,8 +134,8 @@ read-only live-switch directions, live `/resume`/`/new`/`/tree`/`/fork` and
 streaming steering, and repository negative controls. The TUI also covers
 `/init` guard and model-prompt injection, `/status`, skill hot reload, and the
 Pi-native trust selector.
-On 2026-11-16, the local suite reported 605 tests and the repository check
-reported 539 files across 3 packages.
+On 2026-11-16, the local suite reported 608 tests and the repository check
+reported 540 files across 3 packages.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
 Pi's fuzzy selector with no usage warning, an exact `provider/id` selection

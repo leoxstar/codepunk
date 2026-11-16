@@ -750,6 +750,11 @@ misleading, or incomplete for Codepunk:
 | `/bug`                           | Codepunk refusal             | Pi's bug report can upload a session transcript; Codepunk points at `/cp-export` for a local redacted transcript instead.                                                                                                                                                                                                                                              |
 | `/reload`                        | Codepunk + Pi                | Re-reads layered config, skills, user plugins, and user-scope MCP; restarts MCP servers and asks Pi to rebuild the prompt, extension, and tool registry in place. Approval, ordinary autonomy/scoped rules, and plugin enablement apply live; sandbox, filesystem, model, context/tools, policy lifetimes, and the reviewer binding are reported for the next session. |
 
+`codepunk config` is the non-interactive counterpart to `/settings`. It prints
+the user, project, and local paths plus the effective layers, and it never
+loads project config when the config grant is denied. `codepunk config path`
+reports locations only; neither form starts a model or creates state.
+
 The `cp-` prefix is not a copy of Pi. It marks a Codepunk-owned command whose
 name would otherwise collide with a Pi builtin. Only two commands need it:
 
@@ -946,8 +951,8 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 605 tests, 605 pass
-# repository check: 539 files, 3 packages
+# 608 tests, 608 pass
+# repository check: 540 files, 3 packages
 ```
 
 The permission boundary has execution-level coverage rather than only

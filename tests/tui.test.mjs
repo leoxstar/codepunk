@@ -360,6 +360,7 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
+  assert.match(help, /\/config, \/settings\s+show file-backed/u);
   assert.match(help, /\/diff\s+show staged and unstaged/u);
   assert.match(help, /\/commit \[message\]\s+review and create/u);
   assert.match(help, /\/mcp \[list\|add \[name\]\|remove/u);

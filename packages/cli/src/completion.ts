@@ -13,6 +13,7 @@ const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["sign", "sign a run verdict"],
   ["memory", "manage user and project memory"],
   ["models", "list, test, select, import, or remove models"],
+  ["config", "inspect effective configuration and paths"],
   ["doctor", "check runtime dependencies"],
   ["permissions", "inspect or change policy settings"],
   ["trust", "inspect or change workspace trust"],
@@ -167,6 +168,10 @@ _codepunk_completion() {
       COMPREPLY=( $(compgen -W "list test set remove import" -- "$cur") )
       return 0
       ;;
+    config)
+      COMPREPLY=( $(compgen -W "show path" -- "$cur") )
+      return 0
+      ;;
     --mode)
       COMPREPLY=( $(compgen -W "text json" -- "$cur") )
       return 0
@@ -257,6 +262,7 @@ _codepunk() {
         plugins) _values 'plugins command' list add remove enable disable ;;
         memory) _values 'memory command' list search add edit delete archive export ;;
         models) _values 'models command' list test set remove import ;;
+        config) _values 'config command' show path ;;
       esac
       ;;
   esac
@@ -285,6 +291,7 @@ function fishScript(): string {
     ["plugins", "list add remove enable disable"],
     ["memory", "list search add edit delete archive export"],
     ["models", "list test set remove import"],
+    ["config", "show path"],
   ];
   for (const [command, values] of nested) {
     lines.push(

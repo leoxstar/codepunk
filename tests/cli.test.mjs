@@ -64,6 +64,7 @@ test("the built CLI reports version and help", async () => {
   assert.match(help.stdout, /--no-skills\s+do not load skills/u);
   assert.match(help.stdout, /--no-plugins\s+do not load user plugins/u);
   assert.match(help.stdout, /codepunk completion <bash\|zsh\|fish>/u);
+  assert.match(help.stdout, /codepunk config \[show\] \[--json\]/u);
   const permissionsHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
     "permissions",

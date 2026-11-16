@@ -29,6 +29,20 @@ export type ThinkingLevel =
   "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type CompactionMode = "auto" | "manual";
 
+export const CONFIG_FILE_NAME = "config.toml";
+
+export function configFilePaths(paths: ProjectPaths): {
+  user: string;
+  project: string;
+  local: string;
+} {
+  return {
+    user: path.join(paths.home, CONFIG_FILE_NAME),
+    project: path.join(paths.projectConfigDir, CONFIG_FILE_NAME),
+    local: path.join(paths.projectConfigDir, "local.toml"),
+  };
+}
+
 export interface CodepunkConfig {
   tui: {
     mode: "fullscreen" | "regular";
@@ -1067,9 +1081,11 @@ export async function loadConfig(
   options: { projectTrusted?: boolean } = {},
 ): Promise<LoadedConfig> {
   const config = defaultConfig();
-  const userPath = path.join(paths.home, "config.toml");
-  const projectPath = path.join(paths.projectConfigDir, "config.toml");
-  const localPath = path.join(paths.projectConfigDir, "local.toml");
+  const {
+    user: userPath,
+    project: projectPath,
+    local: localPath,
+  } = configFilePaths(paths);
   const warnings: string[] = [];
 
   const userContent = await readOptional(userPath);
@@ -1349,7 +1365,7 @@ export async function writeUserModelSelection(
   id: string,
   thinking?: ThinkingLevel,
 ): Promise<string> {
-  const filePath = path.join(paths.home, "config.toml");
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
   let content = "";
   try {
     content = await fs.readFile(filePath, "utf8");
@@ -1391,7 +1407,7 @@ export async function writeUserThinkingSelection(
       "model.thinking",
     );
   }
-  const filePath = path.join(paths.home, "config.toml");
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
   let content = "";
   try {
     content = await fs.readFile(filePath, "utf8");
@@ -1696,7 +1712,7 @@ export async function writeUserPermissionSelection(
     update.networkDeny === undefined
       ? undefined
       : normalizeNetworkDeny(update.networkDeny);
-  const filePath = path.join(paths.home, "config.toml");
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
   let content = "";
   try {
     content = await fs.readFile(filePath, "utf8");
@@ -1787,7 +1803,7 @@ export async function writeUserPluginsEnabled(
       "plugins.enabled",
     );
   }
-  const filePath = path.join(paths.home, "config.toml");
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
   let content = "";
   try {
     content = await fs.readFile(filePath, "utf8");

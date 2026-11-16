@@ -203,6 +203,26 @@ given. It also refuses to write through an instruction-file symlink.
 /status
 ```
 
+## Configuration
+
+`codepunk config` is the read-only, non-interactive counterpart to the TUI
+`/settings` command. It prints the user, project, and local config paths, the
+trust decision, the effective layered values, and any config warnings. It does
+not send a model request and does not create project or home state.
+
+```text
+codepunk config
+codepunk config --json
+codepunk config path
+codepunk config path --json
+```
+
+When workspace trust is unresolved, `codepunk config` still shows user-scope
+configuration but marks the project and local layers `(not loaded)`. Pass
+`--trust` or `--no-trust` for one inspection, or save a decision with
+`codepunk trust grant` before inspecting the project layer. `config path` only
+prints locations and does not resolve trust or read configuration.
+
 ## Permissions
 
 `/permissions` (also `/permission`) shows the effective
