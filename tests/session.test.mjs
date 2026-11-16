@@ -786,3 +786,132 @@ test("export links redacted events to raw record hashes", async () => {
     );
   });
 });
+
+test("session tree shows sibling branches, labels, and the active leaf", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const store = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectId: "tree-project",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const writer = await store.acquireWriter();
+    const root = {
+      id: "entry-root",
+      parentId: null,
+      timestamp: "2026-11-12T00:00:00.000Z",
+      type: "message",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "root prompt" }],
+      },
+    };
+    const active = {
+      id: "entry-active",
+      parentId: root.id,
+      timestamp: "2026-11-12T00:00:01.000Z",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "active answer" }],
+      },
+    };
+    const sibling = {
+      id: "entry-sibling",
+      parentId: root.id,
+      timestamp: "2026-11-12T00:00:02.000Z",
+      type: "message",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "sibling prompt" }],
+      },
+    };
+    const labelEntry = {
+      id: "entry-label",
+      parentId: sibling.id,
+      timestamp: "2026-11-12T00:00:03.000Z",
+      type: "label",
+      targetId: sibling.id,
+      label: "experiment",
+    };
+    await store.saveAgentState(
+      {
+        type: "session",
+        id: "pi-tree",
+        cwd: "/workspace",
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      [root, active],
+      {
+        entries: [root, active, sibling, labelEntry],
+        leafId: active.id,
+      },
+    );
+    await writer.release();
+
+    const tree = await core.readSessionTree(store);
+    assert.ok(tree);
+    assert.equal(tree.session_id, store.sessionId);
+    assert.equal(tree.leaf_id, active.id);
+    assert.deepEqual(
+      tree.entries.map((entry) => [entry.id, entry.depth, entry.active]),
+      [
+        [root.id, 0, true],
+        [active.id, 1, true],
+        [sibling.id, 1, false],
+        [labelEntry.id, 2, false],
+      ],
+    );
+    assert.equal(tree.entries[0].child_count, 2);
+    assert.equal(tree.entries[2].label, "experiment");
+    assert.equal(tree.entries[2].preview, "sibling prompt");
+    const text = core.formatSessionTree(tree);
+    assert.match(text, /\+ entry-root\s+message:user/u);
+    assert.match(text, /\*\s+entry-active\s+message:assistant\s+\(leaf\)/u);
+    assert.match(text, /-\s+entry-sibling\s+message:user \[experiment\]/u);
+    assert.match(text, /leaf: entry-active/u);
+  });
+});
+
+test("session graph orders children by their fork point", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const parent = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectId: "graph-project",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const child = await core.SessionStore.create({
+      rootDir,
+      cwd: "/workspace",
+      projectId: "graph-project",
+      parentSessionId: parent.sessionId,
+      forkEntryId: "entry-fork",
+      now: advancingClock(),
+      heartbeatMs: 60_000,
+    });
+    const graph = await core.readSessionGraph(rootDir, "graph-project");
+    assert.deepEqual(
+      graph.sessions.map((session) => [
+        session.id,
+        session.depth,
+        session.parent_session_id,
+        session.fork_entry_id,
+      ]),
+      [
+        [parent.sessionId, 0, null, null],
+        [child.sessionId, 1, parent.sessionId, "entry-fork"],
+      ],
+    );
+    const text = core.formatSessionGraph(graph);
+    assert.match(
+      text,
+      new RegExp(
+        `${parent.sessionId} .*\\n\\s+${child.sessionId} .*from ${parent.sessionId} @ entry-fork`,
+        "u",
+      ),
+    );
+  });
+});
