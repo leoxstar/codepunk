@@ -122,6 +122,7 @@ import {
   recordRecentModel,
   toggleFavoriteModel,
 } from "./model-history.ts";
+import { openSubagentTranscript } from "./subagent-transcript.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
@@ -379,6 +380,7 @@ export function codepunkHelp(): string {
     "                             start a child session from a discovered profile",
     "  /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard <id>]",
     "                             list profiles or manage child sessions",
+    "                             transcript opens a full-screen live tool-output view",
     "  /plan                      show the current plan",
     "  /todos                     show the current todo list",
     "",
@@ -3529,7 +3531,12 @@ async function runSubagent(
     result: null,
     error: null,
     worktree: null,
-    transcriptPath: null,
+    transcriptPath: path.join(
+      runtime.paths.artifactsDir,
+      "subagents",
+      childSessionId,
+      "transcript.jsonl",
+    ),
     streamTail: "",
     lastTool: null,
     lastStreamUpdate: 0,
@@ -3554,7 +3561,7 @@ async function runSubagent(
                 : ` (+${fallbackModels.join(",")})`
             }`
       }`,
-      "background: use /agents, /agents result <id>, or /agents stop <id>",
+      "background: use /agents, /agents result <id>, /agents transcript <id> (live), or /agents stop <id>",
     ].join("\n"),
     "info",
   );
@@ -3918,6 +3925,18 @@ async function showSubagentTranscript(
   context: ExtensionCommandContext,
   record: BackgroundSubagent,
 ): Promise<void> {
+  const transcriptPath =
+    record.transcriptPath ?? record.result?.transcript_path ?? null;
+  if (transcriptPath !== null && context.mode === "tui") {
+    await openSubagentTranscript(context, {
+      childSessionId: record.childSessionId,
+      profile: record.profile,
+      transcriptPath,
+      status: () => record.status,
+      error: () => record.error,
+    });
+    return;
+  }
   try {
     context.ui.notify(await subagentTranscriptText(record), "info");
   } catch (error) {
