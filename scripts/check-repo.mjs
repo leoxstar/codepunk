@@ -165,7 +165,7 @@ const EXPECTED_CI_SHA256 =
   "fa4e1b35a0a4bceeedd626e56a4e32202295521bbb411a936c8a6187eddb8b3b";
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "b0c648d40d93533cd1c97e0f6123fd5c14e22108924bf9494cafbe5e95df0efb";
+  "1fe33248f61a353cfab7b73c06c4d2934e2e6e7799ceeedaeb8fddc4fef912b7";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -336,13 +336,39 @@ function isGitIgnored(root, relativePath) {
   return result.status === 0;
 }
 
-async function walkFiles(root) {
+function collectTrackedDirectories(tracked) {
+  const directories = new Set();
+  for (const relativePath of tracked) {
+    const segments = relativePath.split("/");
+    segments.pop();
+    let current = "";
+    for (const segment of segments) {
+      current = current === "" ? segment : `${current}/${segment}`;
+      directories.add(current);
+    }
+  }
+  return directories;
+}
+
+async function walkFiles(root, directoriesWithTrackedFiles) {
   const files = [];
 
-  async function walk(directory) {
+  async function walk(directory, relativeDirectory) {
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === ".git" || entry.name === "node_modules") {
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      if (entry.name === ".git") {
+        continue;
+      }
+      // An installed node_modules tree is skipped, but a tracked file inside
+      // one is still part of the product and must reach the content and
+      // import scans.
+      if (
+        entry.name === "node_modules" &&
+        !directoriesWithTrackedFiles.has(relativePath)
+      ) {
         continue;
       }
       if (directory === root && TRANSIENT_ROOT_ENTRY.test(entry.name)) {
@@ -350,14 +376,14 @@ async function walkFiles(root) {
       }
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        await walk(absolutePath);
+        await walk(absolutePath, relativePath);
       } else if (entry.isFile()) {
         files.push(projectPath(root, absolutePath));
       }
     }
   }
 
-  await walk(root);
+  await walk(root, "");
   return files;
 }
 
@@ -365,9 +391,11 @@ async function listFiles(root) {
   const tracked = isGitRepository(root)
     ? gitFiles(root, ["ls-files", "--cached", "-z"])
     : [];
+  const trackedDirectories = collectTrackedDirectories(tracked);
   return {
     tracked,
-    scanned: await walkFiles(root),
+    trackedDirectories,
+    scanned: await walkFiles(root, trackedDirectories),
   };
 }
 
@@ -377,6 +405,9 @@ function hasForbiddenSegment(relativePath) {
   for (const rawSegment of relativePath.split("/")) {
     const segment = rawSegment.toLowerCase();
     if (
+      // A package source tree may name a directory build, dist, or tmp, but a
+      // tracked node_modules is an installed tree and never belongs in Git.
+      segment === "node_modules" ||
       (RESEARCH_ARTIFACT_DIRECTORIES.has(segment) && !productPackage) ||
       LOCAL_STATE_DIRECTORIES.has(segment) ||
       (!packageSource &&
@@ -451,7 +482,7 @@ function classifyForbiddenFile(name) {
   return undefined;
 }
 
-async function scanWorkingTreeHygiene(root, add) {
+async function scanWorkingTreeHygiene(root, add, directoriesWithTrackedFiles) {
   async function walk(directory, relativeDirectory, insideGenerated = false) {
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
@@ -461,7 +492,13 @@ async function scanWorkingTreeHygiene(root, add) {
       const absolutePath = path.join(directory, entry.name);
 
       const normalizedName = entry.name.toLowerCase();
-      if (normalizedName === ".git" || normalizedName === "node_modules") {
+      if (normalizedName === ".git") {
+        continue;
+      }
+      if (
+        normalizedName === "node_modules" &&
+        !directoriesWithTrackedFiles.has(relativePath)
+      ) {
         continue;
       }
       if (entry.isSymbolicLink()) {
@@ -1965,7 +2002,8 @@ export async function checkRepository({
   await checkRootEntries(normalizedRoot, add);
   checkRequiredDocs(normalizedRoot, add);
 
-  const { tracked, scanned } = await listFiles(normalizedRoot);
+  const { tracked, trackedDirectories, scanned } =
+    await listFiles(normalizedRoot);
   for (const relativePath of tracked) {
     const forbiddenSegment = hasForbiddenSegment(relativePath);
     if (forbiddenSegment) {
@@ -1982,7 +2020,7 @@ export async function checkRepository({
     }
   }
 
-  await scanWorkingTreeHygiene(normalizedRoot, add);
+  await scanWorkingTreeHygiene(normalizedRoot, add, trackedDirectories);
   await scanFileContents(normalizedRoot, scanned, add);
   await checkMarkdownLinks(normalizedRoot, scanned, add);
   await checkCiContract(normalizedRoot, scanned, add);

@@ -103,6 +103,17 @@ async function createFileFixture(root, relativePath, content) {
   };
 }
 
+async function stageTrackedFile(root, relativePath) {
+  execFileSync("git", ["-C", root, "add", "-f", "--", relativePath]);
+  return async () => {
+    execFileSync(
+      "git",
+      ["-C", root, "rm", "--cached", "-f", "--", relativePath],
+      { stdio: "ignore" },
+    );
+  };
+}
+
 async function plantStaleBuiltEntries(root) {
   for (const packageDirectory of ["protocol", "core", "cli"]) {
     const directory = path.join(root, "packages", packageDirectory);
@@ -747,6 +758,26 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
       return mutateJson(root, "packages/core/package.json", (manifest) => {
         manifest.license = "GPL-3.0";
       });
+    },
+  },
+  {
+    name: "tracked file inside a source node_modules directory",
+    rule: "hygiene.forbidden",
+    path: "packages/core/src/node_modules/probe.ts",
+    async apply(root) {
+      const removeFile = await createFileFixture(
+        root,
+        "packages/core/src/node_modules/probe.ts",
+        'import "../../../../cli/src/index.ts";\nexport const probe = 1;\n',
+      );
+      const unstage = await stageTrackedFile(
+        root,
+        "packages/core/src/node_modules/probe.ts",
+      );
+      return async () => {
+        await unstage();
+        await removeFile();
+      };
     },
   },
 ];
