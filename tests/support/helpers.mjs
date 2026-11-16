@@ -9,6 +9,115 @@ import {
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+/**
+ * The suite shells out to pnpm and npm. Both timeouts are configurable because a
+ * cold runner or a slow registry mirror legitimately needs longer than a warm
+ * laptop, and a hard-coded value turns "slower than my machine" into "broken".
+ */
+export const DEFAULT_INSTALL_TIMEOUT_MS = 120_000;
+export const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
+
+const NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ERR_SOCKET_TIMEOUT",
+]);
+
+const NETWORK_PATTERN =
+  /(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|ERR_SOCKET_TIMEOUT|socket hang up|fetch failed|getaddrinfo|npm ERR! code E(?:40[13]|429|5\d\d))/iu;
+
+export function resolveTimeoutMs(envName, fallback, env = process.env) {
+  const raw = env[envName];
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `${envName} must be a positive integer number of milliseconds, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return value;
+}
+
+export function resolveInstallTimeoutMs(env = process.env) {
+  return resolveTimeoutMs(
+    "CODEPUNK_TEST_INSTALL_TIMEOUT_MS",
+    DEFAULT_INSTALL_TIMEOUT_MS,
+    env,
+  );
+}
+
+export function resolveBuildTimeoutMs(env = process.env) {
+  return resolveTimeoutMs(
+    "CODEPUNK_TEST_BUILD_TIMEOUT_MS",
+    DEFAULT_BUILD_TIMEOUT_MS,
+    env,
+  );
+}
+
+/**
+ * A killed child means we ran out of time. A name-resolution or socket failure
+ * means we never reached the other side, so the run says nothing about the code
+ * under test. Anything else is a real failure of the thing being checked.
+ */
+export function classifyCommandFailure(error) {
+  if (error === null || typeof error !== "object") {
+    return "assertion";
+  }
+  if (error.killed === true) {
+    return "timeout";
+  }
+  if (error.signal === "SIGTERM" || error.signal === "SIGKILL") {
+    return "timeout";
+  }
+  if (typeof error.code === "string" && NETWORK_ERROR_CODES.has(error.code)) {
+    return "network";
+  }
+  const message = typeof error.message === "string" ? error.message : "";
+  const stderr = typeof error.stderr === "string" ? error.stderr : "";
+  if (NETWORK_PATTERN.test(`${message}\n${stderr}`)) {
+    return "network";
+  }
+  return "assertion";
+}
+
+function failureDetail(error) {
+  if (error === null || typeof error !== "object") {
+    return String(error);
+  }
+  const message = typeof error.message === "string" ? error.message : "";
+  const stderr = typeof error.stderr === "string" ? error.stderr : "";
+  const text = stderr.trim() === "" ? message : `${message}\n${stderr}`;
+  const bounded = text.split("\n").slice(0, 12).join("\n").trim();
+  return bounded === "" ? "no error detail" : bounded;
+}
+
+export function describeInstallFailure(error, timeoutMs) {
+  const kind = classifyCommandFailure(error);
+  const advice = {
+    timeout: `npm install produced no result within ${timeoutMs}ms. Treat a repeated timeout as a distribution problem rather than a test problem; raise CODEPUNK_TEST_INSTALL_TIMEOUT_MS only when the machine or the registry is genuinely slow.`,
+    network: `npm install could not reach a package host, so this run says nothing about whether the packed tarballs are correct. Re-run with network access before reporting a distribution regression.`,
+    assertion: `npm install reached the registry and still failed, so the packed tarballs, their manifest, or the installed layout are wrong.`,
+  }[kind];
+  return `distribution install failed (${kind}): ${failureDetail(error)}\n${advice}`;
+}
+
+export function describeBuildFailure(error, timeoutMs) {
+  const kind = classifyCommandFailure(error);
+  const advice = {
+    timeout: `pnpm run build produced no result within ${timeoutMs}ms. Raise CODEPUNK_TEST_BUILD_TIMEOUT_MS on a slow machine; a repeated timeout means the build is stuck rather than slow.`,
+    network: `pnpm run build could not reach a package host, so this run says nothing about whether the sources compile.`,
+    assertion: `pnpm run build ran and failed, so the compiler or the packager rejected the sources.`,
+  }[kind];
+  return `test setup failed (${kind}): ${failureDetail(error)}\n${advice}`;
+}
+
 export async function withTempDirectory(prefix, callback) {
   const directory = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
@@ -125,10 +234,16 @@ export async function ensureBuilt() {
     if (acquired) {
       const current = await fs.stat(cliEntry).catch(() => null);
       if (current === null || current.mtimeMs < sourceTime) {
-        execFileSync("pnpm", ["run", "build"], {
-          cwd: REPO_ROOT,
-          stdio: "pipe",
-        });
+        const buildTimeoutMs = resolveBuildTimeoutMs();
+        try {
+          execFileSync("pnpm", ["run", "build"], {
+            cwd: REPO_ROOT,
+            stdio: "pipe",
+            timeout: buildTimeoutMs,
+          });
+        } catch (error) {
+          throw new Error(describeBuildFailure(error, buildTimeoutMs));
+        }
       }
     }
   } finally {

@@ -5,8 +5,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
+  classifyCommandFailure,
+  describeInstallFailure,
   ensureBuilt,
   REPO_ROOT,
+  resolveBuildTimeoutMs,
+  resolveInstallTimeoutMs,
   withTempDirectory,
 } from "./support/helpers.mjs";
 
@@ -50,18 +54,23 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
       path.join(install, "package.json"),
       `${JSON.stringify({ name: "codepunk-smoke", private: true })}\n`,
     );
-    await execFileAsync(
-      "npm",
-      [
-        "install",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--no-package-lock",
-        ...packed,
-      ],
-      { cwd: install, timeout: 120_000 },
-    );
+    const installTimeoutMs = resolveInstallTimeoutMs();
+    try {
+      await execFileAsync(
+        "npm",
+        [
+          "install",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "--no-package-lock",
+          ...packed,
+        ],
+        { cwd: install, timeout: installTimeoutMs },
+      );
+    } catch (error) {
+      assert.fail(describeInstallFailure(error, installTimeoutMs));
+    }
     const version = await execFileAsync(
       process.execPath,
       [
@@ -91,4 +100,63 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
       "package.json",
     ]);
   });
+});
+
+test("external command timeouts are configurable", () => {
+  assert.equal(resolveInstallTimeoutMs({}), 120_000);
+  assert.equal(
+    resolveInstallTimeoutMs({ CODEPUNK_TEST_INSTALL_TIMEOUT_MS: "45000" }),
+    45_000,
+  );
+  assert.equal(resolveBuildTimeoutMs({}), 600_000);
+  assert.equal(
+    resolveBuildTimeoutMs({ CODEPUNK_TEST_BUILD_TIMEOUT_MS: "900000" }),
+    900_000,
+  );
+  for (const value of ["soon", "0", "-5", "1.5"]) {
+    assert.throws(
+      () =>
+        resolveInstallTimeoutMs({ CODEPUNK_TEST_INSTALL_TIMEOUT_MS: value }),
+      /positive integer/u,
+      `${value} is not a positive integer timeout`,
+    );
+  }
+});
+
+test("install failures are classified as timeout, network, or assertion", () => {
+  const timedOut = Object.assign(new Error("npm install killed"), {
+    killed: true,
+    signal: "SIGTERM",
+  });
+  assert.equal(classifyCommandFailure(timedOut), "timeout");
+
+  const unreachable = Object.assign(
+    new Error("getaddrinfo ENOTFOUND registry.npmjs.org"),
+    { code: "ENOTFOUND" },
+  );
+  assert.equal(classifyCommandFailure(unreachable), "network");
+
+  const forbidden = Object.assign(new Error("npm ERR! code E403"), {
+    stderr: "npm ERR! code E403 Forbidden - GET https://registry.npmjs.org/a",
+  });
+  assert.equal(classifyCommandFailure(forbidden), "network");
+
+  const wrongContent = Object.assign(new Error("npm ERR! missing tarball"), {
+    code: "ELIFECYCLE",
+  });
+  assert.equal(classifyCommandFailure(wrongContent), "assertion");
+  assert.equal(classifyCommandFailure(new Error("plain failure")), "assertion");
+
+  assert.match(
+    describeInstallFailure(timedOut, 120_000),
+    /^distribution install failed \(timeout\):/u,
+  );
+  assert.match(
+    describeInstallFailure(unreachable, 120_000),
+    /^distribution install failed \(network\):/u,
+  );
+  assert.match(
+    describeInstallFailure(wrongContent, 120_000),
+    /^distribution install failed \(assertion\):/u,
+  );
 });
