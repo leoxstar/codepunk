@@ -78,7 +78,7 @@ async function startModelServer() {
   };
 }
 
-async function runCli(args, { cwd, home }) {
+async function runCli(args, { cwd, home, timeoutMs }) {
   const cli = await ensureBuilt();
   const child = spawn(process.execPath, [cli, ...args], {
     cwd,
@@ -89,6 +89,9 @@ async function runCli(args, { cwd, home }) {
       PI_OFFLINE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
+    ...(timeoutMs === undefined
+      ? {}
+      : { timeout: timeoutMs, killSignal: "SIGKILL" }),
   });
   let stdout = "";
   let stderr = "";
@@ -542,7 +545,16 @@ test("an invalid configured model fails before creating a session", async () => 
     );
     const childProcess = spawn("git", ["init", "-q"], { cwd: project });
     await new Promise((resolve) => childProcess.on("close", resolve));
-    const result = await runCli(["-p", "hello"], { cwd: project, home });
+    // This home enables the default sandbox, and on Linux the srt proxy is a
+    // long-lived child process. Without an explicit close on the failure path
+    // the CLI prints its error and then waits forever instead of exiting, so
+    // the timeout turns that regression into a failed assertion rather than a
+    // hung suite.
+    const result = await runCli(["-p", "hello"], {
+      cwd: project,
+      home,
+      timeoutMs: 30_000,
+    });
     assert.equal(result.code, 1);
     assert.match(result.stderr, /selected model fake\/model is not available/u);
     const entries = await fs.readdir(home, { recursive: true });

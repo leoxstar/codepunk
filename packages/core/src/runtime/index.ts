@@ -607,6 +607,23 @@ function configValuesEqual(left: unknown, right: unknown): boolean {
 export async function createRuntime(
   options: RuntimeOptions,
 ): Promise<CodepunkRuntime> {
+  // The srt sandbox starts a long-lived proxy process on Linux. If startup
+  // fails after the sandbox exists (a bad model reference, an unreachable
+  // provider, a failed host), the proxy would keep the event loop alive and
+  // the CLI would print its error and then hang instead of exiting.
+  const sandboxRef: { current: ShellProvider | null } = { current: null };
+  try {
+    return await createRuntimeInner(options, sandboxRef);
+  } catch (error) {
+    await sandboxRef.current?.close?.().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function createRuntimeInner(
+  options: RuntimeOptions,
+  sandboxRef: { current: ShellProvider | null },
+): Promise<CodepunkRuntime> {
   const environment = options.environment ?? process.env;
   const configOverrides = { ...(options.configOverrides ?? {}) };
   const project = await findDeliveryRoot(options.cwd);
@@ -824,6 +841,7 @@ export async function createRuntime(
     } catch {
       sandbox = null;
     }
+    sandboxRef.current = sandbox;
   }
   if (
     sandbox === null &&
