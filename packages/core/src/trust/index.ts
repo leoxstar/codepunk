@@ -9,24 +9,45 @@ import {
   normalizeAbsolute,
   resolveRealPath,
 } from "../platform/path.ts";
+import { readJsonFile, writeJsonAtomic } from "../platform/fs.ts";
 import { discoverProjectInstructionFiles } from "../platform/context-files.ts";
 import { sha256Value } from "../platform/hash.ts";
 
 export type WorkspaceTrustSource =
   "flag" | "saved" | "prompt" | "default" | "no-resources";
 
+export const WORKSPACE_TRUST_RESOURCE_KINDS = [
+  "config",
+  "policy",
+  "skills",
+  "instructions",
+] as const;
+
+export type WorkspaceTrustResourceKind =
+  (typeof WORKSPACE_TRUST_RESOURCE_KINDS)[number];
+
+export type WorkspaceTrustGrants = Record<WorkspaceTrustResourceKind, boolean>;
+
+export type WorkspaceTrustMode = "all" | "custom" | "none";
+
 export interface WorkspaceTrust {
+  /**
+   * True only when every discovered resource kind is granted. Consumers that
+   * load one specific resource class must read `grants` instead; a workspace
+   * can load project instructions while denying project config.
+   */
   trusted: boolean;
+  mode: WorkspaceTrustMode;
+  grants: WorkspaceTrustGrants;
+  available: WorkspaceTrustResourceKind[];
   source: WorkspaceTrustSource;
   cwd: string;
   root: string;
   resources: string[];
   storePath: string;
+  resourceStorePath: string;
   savedPath: string | null;
 }
-
-export type WorkspaceTrustResourceKind =
-  "config" | "policy" | "skills" | "instructions";
 
 export type WorkspaceTrustResourceType =
   "file" | "directory" | "symlink" | "other" | "missing";
@@ -51,10 +72,12 @@ const TRUST_REQUIRING_FILES = [
   "policy.toml",
 ] as const;
 
-const TRUST_REQUIRING_DIRECTORIES = ["skills"] as const;
+const TRUST_REQUIRING_DIRECTORIES = ["skills", "agents"] as const;
 const PREVIEW_MAX_ENTRIES = 512;
 const PREVIEW_MAX_BYTES = 1024 * 1024;
 const NOFOLLOW = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+const RESOURCE_TRUST_STORE_VERSION = 1;
+const RESOURCE_TRUST_STORE_FILE = "workspace-trust.json";
 
 async function directoryHasEntries(directory: string): Promise<boolean> {
   try {
@@ -141,8 +164,13 @@ export async function findTrustRequiringProjectResources(
   return resources;
 }
 
-function resourceKind(resource: string): WorkspaceTrustResourceKind {
+export function workspaceTrustResourceKind(
+  resource: string,
+): WorkspaceTrustResourceKind {
   if (resource.endsWith("/config.toml") || resource.endsWith("/local.toml")) {
+    return "config";
+  }
+  if (resource.endsWith("/agents")) {
     return "config";
   }
   if (resource.endsWith("/policy.toml")) {
@@ -373,7 +401,7 @@ export async function previewWorkspaceTrustResources(
       }
       previews.push({
         path: resource,
-        kind: resourceKind(resource),
+        kind: workspaceTrustResourceKind(resource),
         type: "symlink",
         bytes: null,
         sha256:
@@ -396,7 +424,7 @@ export async function previewWorkspaceTrustResources(
     }
     previews.push({
       path: resource,
-      kind: resourceKind(resource),
+      kind: workspaceTrustResourceKind(resource),
       ...entry,
     });
   }
@@ -430,6 +458,68 @@ export function formatWorkspaceTrustResourcePreview(
 
 export function workspaceTrustStorePath(home: string): string {
   return path.join(normalizeAbsolute(home), "trust.json");
+}
+
+export function workspaceResourceTrustStorePath(home: string): string {
+  return path.join(normalizeAbsolute(home), RESOURCE_TRUST_STORE_FILE);
+}
+
+export function allWorkspaceTrustGrants(value: boolean): WorkspaceTrustGrants {
+  return {
+    config: value,
+    policy: value,
+    skills: value,
+    instructions: value,
+  };
+}
+
+export function workspaceTrustGrantsFromKinds(
+  kinds: readonly WorkspaceTrustResourceKind[],
+): WorkspaceTrustGrants {
+  const grants = allWorkspaceTrustGrants(false);
+  for (const kind of kinds) {
+    grants[kind] = true;
+  }
+  return grants;
+}
+
+export function workspaceTrustKindLabel(
+  kind: WorkspaceTrustResourceKind,
+): string {
+  return {
+    config: "project-config",
+    policy: "project-policy",
+    skills: "project-skills",
+    instructions: "project-instructions",
+  }[kind];
+}
+
+export function availableWorkspaceTrustKinds(
+  resources: readonly string[],
+): WorkspaceTrustResourceKind[] {
+  const present = new Set(
+    resources.map((resource) => workspaceTrustResourceKind(resource)),
+  );
+  return WORKSPACE_TRUST_RESOURCE_KINDS.filter((kind) => present.has(kind));
+}
+
+export function workspaceTrustMode(
+  grants: WorkspaceTrustGrants,
+): WorkspaceTrustMode {
+  const granted = WORKSPACE_TRUST_RESOURCE_KINDS.filter(
+    (kind) => grants[kind],
+  ).length;
+  if (granted === WORKSPACE_TRUST_RESOURCE_KINDS.length) {
+    return "all";
+  }
+  return granted === 0 ? "none" : "custom";
+}
+
+function grantedKinds(
+  grants: WorkspaceTrustGrants,
+  available: readonly WorkspaceTrustResourceKind[],
+): WorkspaceTrustResourceKind[] {
+  return available.filter((kind) => grants[kind]);
 }
 
 export interface SavedWorkspaceTrust {
@@ -469,13 +559,191 @@ export function readSavedWorkspaceTrust(
   return saved === null || saved.inherited ? null : saved.entry;
 }
 
+interface StoredWorkspaceTrustEntry {
+  grants: WorkspaceTrustGrants;
+  updated_at: string;
+  source: "prompt" | "cli";
+}
+
+interface StoredWorkspaceTrustFile {
+  version: typeof RESOURCE_TRUST_STORE_VERSION;
+  workspaces: Record<string, StoredWorkspaceTrustEntry>;
+}
+
+export interface SavedWorkspaceResourceTrust {
+  path: string;
+  entry: StoredWorkspaceTrustEntry;
+}
+
+function parseStoredGrants(
+  value: unknown,
+  storePath: string,
+  root: string,
+): WorkspaceTrustGrants {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${storePath} has a non-object grants value for ${root}; repair or remove the resource trust store`,
+    );
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!(WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(key)) {
+      throw new Error(
+        `${storePath} has an unknown resource kind ${key} for ${root}; repair or remove the resource trust store`,
+      );
+    }
+  }
+  const grants = allWorkspaceTrustGrants(false);
+  for (const kind of WORKSPACE_TRUST_RESOURCE_KINDS) {
+    const entry = record[kind];
+    if (entry === undefined) {
+      continue;
+    }
+    if (typeof entry !== "boolean") {
+      throw new Error(
+        `${storePath} has a non-boolean ${kind} decision for ${root}; repair or remove the resource trust store`,
+      );
+    }
+    grants[kind] = entry;
+  }
+  return grants;
+}
+
+function parseResourceTrustStore(
+  value: unknown,
+  storePath: string,
+): Record<string, StoredWorkspaceTrustEntry> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${storePath} is not a JSON object; repair or remove the resource trust store`,
+    );
+  }
+  const record = value as Record<string, unknown>;
+  if (record["version"] !== RESOURCE_TRUST_STORE_VERSION) {
+    throw new Error(
+      `${storePath} uses an unsupported version ${String(
+        record["version"],
+      )}; repair or remove the resource trust store`,
+    );
+  }
+  const workspaces = record["workspaces"];
+  if (
+    typeof workspaces !== "object" ||
+    workspaces === null ||
+    Array.isArray(workspaces)
+  ) {
+    throw new Error(
+      `${storePath} has no workspaces object; repair or remove the resource trust store`,
+    );
+  }
+  const parsed: Record<string, StoredWorkspaceTrustEntry> = {};
+  for (const [rawRoot, rawEntry] of Object.entries(workspaces)) {
+    const root = normalizeAbsolute(rawRoot);
+    if (
+      typeof rawEntry !== "object" ||
+      rawEntry === null ||
+      Array.isArray(rawEntry)
+    ) {
+      throw new Error(
+        `${storePath} has a non-object entry for ${root}; repair or remove the resource trust store`,
+      );
+    }
+    const entry = rawEntry as Record<string, unknown>;
+    if (entry["source"] !== "prompt" && entry["source"] !== "cli") {
+      throw new Error(
+        `${storePath} has an invalid source for ${root}; repair or remove the resource trust store`,
+      );
+    }
+    if (typeof entry["updated_at"] !== "string") {
+      throw new Error(
+        `${storePath} has no updated_at for ${root}; repair or remove the resource trust store`,
+      );
+    }
+    parsed[root] = {
+      grants: parseStoredGrants(entry["grants"], storePath, root),
+      updated_at: entry["updated_at"],
+      source: entry["source"],
+    };
+  }
+  return parsed;
+}
+
+async function readResourceTrustStore(
+  home: string,
+): Promise<Record<string, StoredWorkspaceTrustEntry>> {
+  const storePath = workspaceResourceTrustStorePath(home);
+  try {
+    const value = await readJsonFile<unknown>(storePath);
+    return value === null ? {} : parseResourceTrustStore(value, storePath);
+  } catch (error) {
+    throw new Error(
+      `workspace resource trust store ${storePath} could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }; repair or remove the store before starting Codepunk`,
+      { cause: error },
+    );
+  }
+}
+
+export async function inspectSavedWorkspaceResourceTrust(
+  home: string,
+  root: string,
+): Promise<SavedWorkspaceResourceTrust | null> {
+  const canonical = normalizeAbsolute(resolveRealPath(root));
+  const workspaces = await readResourceTrustStore(home);
+  const entry = workspaces[canonical];
+  return entry === undefined ? null : { path: canonical, entry };
+}
+
+export async function saveWorkspaceTrustGrants(
+  home: string,
+  cwd: string,
+  grants: WorkspaceTrustGrants,
+  source: "prompt" | "cli" = "cli",
+): Promise<{ storePath: string; resourceStorePath: string }> {
+  const root = normalizeAbsolute(resolveRealPath(cwd));
+  const resourceStorePath = workspaceResourceTrustStorePath(home);
+  const workspaces = await readResourceTrustStore(home);
+  workspaces[root] = {
+    grants: { ...grants },
+    updated_at: new Date().toISOString(),
+    source,
+  };
+  const store: StoredWorkspaceTrustFile = {
+    version: RESOURCE_TRUST_STORE_VERSION,
+    workspaces,
+  };
+
+  // Pi's store can only express a whole-workspace boolean. Keep it
+  // conservative for partial decisions so removing Codepunk's sidecar cannot
+  // silently widen trust when another Pi entry point reads the same store.
+  const allGranted = WORKSPACE_TRUST_RESOURCE_KINDS.every(
+    (kind) => grants[kind],
+  );
+  const storePath = await saveWorkspaceTrust(home, root, allGranted);
+  try {
+    await writeJsonAtomic(resourceStorePath, store);
+  } catch (error) {
+    // The Pi boolean is already conservative, so a failed sidecar write can
+    // only narrow trust. Report the failure instead of claiming a saved
+    // per-resource decision.
+    throw new Error(
+      `workspace resource trust store ${resourceStorePath} could not be written: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
+  return { storePath, resourceStorePath };
+}
+
 export async function saveWorkspaceTrust(
   home: string,
   cwd: string,
   decision: boolean,
 ): Promise<string> {
   const store = new ProjectTrustStore(normalizeAbsolute(home));
-  store.set(cwd, decision);
+  store.set(normalizeAbsolute(resolveRealPath(cwd)), decision);
   const filePath = workspaceTrustStorePath(home);
   try {
     await fs.access(filePath);
@@ -494,7 +762,7 @@ export async function resolveWorkspaceTrust(input: {
   cwd: string;
   root?: string;
   home: string;
-  override?: boolean | null;
+  override?: boolean | WorkspaceTrustGrants | null;
   source?: WorkspaceTrustSource;
   includeSkills?: boolean;
   includeInstructions?: boolean;
@@ -510,6 +778,8 @@ export async function resolveWorkspaceTrust(input: {
       : {}),
   });
   const storePath = workspaceTrustStorePath(input.home);
+  const resourceStorePath = workspaceResourceTrustStorePath(input.home);
+  const available = availableWorkspaceTrustKinds(resources);
   let saved: ProjectTrustStoreEntry | null;
   try {
     saved = readSavedWorkspaceTrust(input.home, root);
@@ -521,67 +791,80 @@ export async function resolveWorkspaceTrust(input: {
       { cause: error },
     );
   }
+  let savedResources: SavedWorkspaceResourceTrust | null;
+  try {
+    savedResources = await inspectSavedWorkspaceResourceTrust(input.home, root);
+  } catch (error) {
+    throw error instanceof Error
+      ? error
+      : new Error(
+          `workspace resource trust store ${resourceStorePath} could not be read: ${String(
+            error,
+          )}; repair or remove the store before starting Codepunk`,
+          { cause: error },
+        );
+  }
+  let grants: WorkspaceTrustGrants;
+  let source: WorkspaceTrustSource;
+  let savedPath: string | null;
   if (input.override === true || input.override === false) {
-    return {
-      trusted: input.override,
-      source: input.source ?? "flag",
-      cwd,
-      root,
-      resources,
-      storePath,
-      savedPath: saved?.path ?? null,
-    };
+    grants = allWorkspaceTrustGrants(input.override);
+    source = input.source ?? "flag";
+    savedPath = null;
+  } else if (input.override !== undefined && input.override !== null) {
+    grants = { ...input.override };
+    source = input.source ?? "flag";
+    savedPath = null;
+  } else if (savedResources !== null) {
+    grants = { ...savedResources.entry.grants };
+    source = "saved";
+    savedPath = savedResources.path;
+  } else if (saved !== null) {
+    grants = allWorkspaceTrustGrants(saved.decision);
+    source = "saved";
+    savedPath = saved.path;
+  } else if (resources.length === 0) {
+    grants = allWorkspaceTrustGrants(true);
+    source = "no-resources";
+    savedPath = null;
+  } else {
+    grants = allWorkspaceTrustGrants(false);
+    source = "default";
+    savedPath = null;
   }
-  if (saved !== null) {
-    return {
-      trusted: saved.decision,
-      source: "saved",
-      cwd,
-      root,
-      resources,
-      storePath,
-      savedPath: saved.path,
-    };
-  }
-  if (resources.length === 0) {
-    return {
-      trusted: true,
-      source: "no-resources",
-      cwd,
-      root,
-      resources,
-      storePath,
-      savedPath: null,
-    };
-  }
+  const mode = workspaceTrustMode(grants);
   return {
-    trusted: false,
-    source: "default",
+    trusted: available.every((kind) => grants[kind]),
+    mode,
+    grants,
+    available,
+    source,
     cwd,
     root,
     resources,
     storePath,
-    savedPath: null,
+    resourceStorePath,
+    savedPath,
   };
 }
 
 export function skippedProjectResources(trust: WorkspaceTrust): string[] {
-  if (trust.trusted) {
-    return [];
+  return trust.available
+    .filter((kind) => !trust.grants[kind])
+    .map(workspaceTrustKindLabel);
+}
+
+function formatTrustHeadline(trust: WorkspaceTrust): string {
+  if (trust.mode === "all") {
+    return `trust: trusted (${trust.source})`;
   }
-  const skipped: string[] = [];
-  for (const resource of trust.resources) {
-    if (resource.endsWith("/config.toml") || resource.endsWith("/local.toml")) {
-      skipped.push("project-config");
-    } else if (resource.endsWith("/policy.toml")) {
-      skipped.push("project-policy");
-    } else if (resource.endsWith("/skills")) {
-      skipped.push("project-skills");
-    } else if (!resource.startsWith(".codepunk/")) {
-      skipped.push("project-instructions");
-    }
+  if (trust.mode === "none") {
+    return `trust: untrusted (${trust.source})`;
   }
-  return [...new Set(skipped)];
+  const loaded = grantedKinds(trust.grants, trust.available).join(", ");
+  return loaded.length === 0
+    ? `trust: custom (${trust.source})`
+    : `trust: custom (${trust.source}; allowed ${loaded})`;
 }
 
 export function formatWorkspaceTrust(
@@ -591,9 +874,13 @@ export function formatWorkspaceTrust(
 ): string {
   const skipped = skippedProjectResources(trust);
   return [
-    `trust: ${trust.trusted ? "trusted" : "untrusted"} (${trust.source})`,
+    formatTrustHeadline(trust),
+    `resource decisions: ${WORKSPACE_TRUST_RESOURCE_KINDS.map(
+      (kind) => `${kind}=${trust.grants[kind] ? "allowed" : "skipped"}`,
+    ).join(", ")}`,
     `root: ${trust.root}`,
     `store: ${trust.storePath}`,
+    `resource store: ${trust.resourceStorePath}`,
     ...(trust.savedPath === null ? [] : [`saved for: ${trust.savedPath}`]),
     ...(trust.source === "prompt" && trust.savedPath === null
       ? ["scope: this session only"]
@@ -615,8 +902,10 @@ export function formatWorkspaceTrust(
       : [
           `excluded from this session's trust check: ${options.excluded.join(", ")}`,
         ]),
-    ...(trust.trusted || skipped.length === 0
+    ...(skipped.length === 0
       ? []
-      : [`not loaded (untrusted workspace): ${skipped.join(", ")}`]),
+      : trust.mode === "none"
+        ? [`not loaded (untrusted workspace): ${skipped.join(", ")}`]
+        : [`not loaded (untrusted resource kinds): ${skipped.join(", ")}`]),
   ].join("\n");
 }
