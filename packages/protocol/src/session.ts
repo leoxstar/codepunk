@@ -809,6 +809,8 @@ export const AgentStateSchema = Type.Object(
     saved_at: TimestampSchema,
     header: Type.Unknown(),
     branch: Type.Array(Type.Unknown()),
+    entries: Type.Optional(Type.Array(Type.Unknown())),
+    leaf_id: Type.Optional(Type.Union([NonEmptyStringSchema, Type.Null()])),
   },
   { additionalProperties: false },
 );
