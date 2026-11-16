@@ -4722,8 +4722,13 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
         `completed; use /agents result ${childSessionId}`,
         "/subagent completion",
       );
+      await waitForOutputAfter(
+        session,
+        startMark,
+        "transcript.jsonl",
+        "/agents completion transcript",
+      );
       assert.match(session.output().slice(startMark), /transcript:/u);
-      assert.match(session.output().slice(startMark), /transcript\.jsonl/u);
       const transcriptMark = session.output().length;
       session.child.stdin.write(`/agents transcript ${childSessionId}\r`);
       await waitForOutputAfter(
