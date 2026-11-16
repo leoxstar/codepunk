@@ -12,8 +12,9 @@ explicit policy boundary around file and shell actions.
 - Exact, short-lived approvals bound to the session, worker, tool call, and
   request nonce, with once, session, and persistent exact-action choices.
 - Scoped autonomy rules and an explicit interactive unsandboxed-shell path.
-- Pi-backed workspace trust that gates project config, policy, skills, and
-  project instruction files; project MCP files are inert, not trust inputs.
+- Per-resource workspace trust for project config, policy, skills, and
+  instruction files, with Pi's boolean store as the exact-root fallback;
+  project MCP files are inert, not trust inputs.
 - `--add-dir` extra file roots that extend read/write paths without loading
   the extra directory's project config, skills, MCP, or instructions.
 - Shell confinement through `srt`, with coverage reported per execution surface.
@@ -49,12 +50,14 @@ explicit policy boundary around file and shell actions.
 
 ## Workspace trust
 
-Codepunk reuses Pi's `ProjectTrustStore` and keeps its own canonical decision
-file at `~/.codepunk/trust.json`. A project must be trusted before Codepunk
-loads `.codepunk/config.toml`, `.codepunk/local.toml`,
-`.codepunk/policy.toml`, project `skills`, or any instruction file discovered
-between the invocation directory and the delivery root. A bare `.codepunk`
-directory does not trigger the prompt; Codepunk creates one for its own state.
+Codepunk keeps Pi's whole-workspace boolean in `~/.codepunk/trust.json` and a
+per-resource decision file at `~/.codepunk/workspace-trust.json`. The
+decision has four independent grants: `config` (`.codepunk/config.toml`,
+`local.toml`, and `agents`), `policy` (`.codepunk/policy.toml`), `skills`
+(`.codepunk/skills`), and `instructions` (every instruction file discovered
+between the invocation directory and the delivery root). Loading one group
+never authorizes another. A bare `.codepunk` directory does not trigger the
+prompt; Codepunk creates one for its own state.
 Project MCP files are inert: Codepunk never loads them and warns that MCP
 configuration is user-scope only. `--no-mcp` skips user-scope MCP servers for
 one session. `--no-skills` and `--no-plugins` isolate those surfaces
@@ -65,8 +68,12 @@ Project `extensions`/`hooks` are not loaded in this build, so they do not
 produce a misleading trust prompt. User-level instructions in Codepunk home
 still load when the workspace is untrusted.
 
-`trust.json` is Pi's fixed trust-store filename, not a per-machine random value;
-`codepunk trust status` prints the exact path in use.
+The two stores use canonical paths and exact-root lookup. A parent
+repository's decision never covers a nested repository. A malformed
+per-resource file aborts startup instead of becoming "no decision". Partial
+decisions also write `false` to Pi's store, so removing the sidecar cannot
+silently widen trust in another Pi entry point. `codepunk trust status` prints
+both paths in use.
 
 Project config is not just gated by trust, it is also floored by the user
 layer. `.codepunk/config.toml` may narrow tools, memory, model scope, and
@@ -83,23 +90,21 @@ keys. A cloned repository cannot redirect model traffic by shipping a
 `local.toml`.
 
 ```text
-codepunk trust [status|grant|revoke] [path] [--json]
---trust | --no-trust        one-run override
+codepunk trust [status|grant|revoke] [path] [--resources config,policy,skills,instructions] [--json]
+--trust | --no-trust        one-run override for all resource groups
+--trust-resources <kinds>   one-run override for named groups
 ```
 
 An interactive start asks when project resources exist and no saved decision
 applies. The prompt is titled `Project trust` and is Pi's own `SelectList`:
-Up/Down moves the pointer, Enter confirms, Page Up/Page Down move a page, and
-Escape or Ctrl+C cancels. It has no numbered menu. The prompt states whether
-this exact checkout already has a saved decision, or whether an ancestor
-decision exists but is deliberately not inherited. It shows the invocation
-cwd and exact checkout root inside the prompt. Each row carries a short
-description of what it loads and whether the decision persists. The highlighted
-default is
-`Trust this workspace and remember`; choose `Trust for this session only` when
-the decision should not persist, `Do not trust and remember this decision` to
-skip project resources from now on, or `Do not trust for this session only` to
-inspect the repository once without writing a saved decision.
+Up/Down moves the pointer, Enter confirms, and Escape or Ctrl+C cancels. It has
+no numbered menu. When more than one resource group exists, `Customize
+resources…` opens a checkbox screen: Space toggles one group, Enter continues,
+and Escape goes back. The next screen applies the selection to this session or
+remembers it. The prompt states whether this exact checkout already has a
+saved decision, or whether an ancestor decision exists but is deliberately
+not inherited. It shows the invocation cwd and exact checkout root. Each row
+states what it loads and whether the decision persists.
 The startup resource preview uses a shortened SHA-256; `/trust status` and
 `codepunk trust status --json` retain the full digest. The prompt explains that
 workspace trust does not change approval, sandbox, or filesystem permissions.
@@ -110,16 +115,16 @@ always prints the running package version, dist build time, entry path, and
 whether `dist` matches the package sources.
 `codepunk doctor` and `/doctor` add the same result as a `build` check, so a
 stale checkout cannot silently keep serving an older trust or command UI.
-Print mode cannot prompt, so it refuses
-to start while the decision is unresolved and project resources exist; pass
-`--trust`, `--no-trust`, or save a decision first. An untrusted session skips
-project config, policy, skills, and project instruction files; user-level
-instructions in Codepunk home still load.
+Print mode cannot prompt, so it refuses to start while the decision is
+unresolved and project resources exist; pass `--trust`, `--no-trust`,
+`--trust-resources`, or save a decision first. A denied resource group is
+skipped independently; user-level instructions in Codepunk home still load.
 `/trust` shows the current decision, `/trust grant` and `/trust revoke` save a
-decision for future sessions; they do not hot-reload the current one. The
-trust prompt and `/trust` list each protected resource with its class, type,
-size, and a bounded SHA-256 content preview; symlinks are identified as
-symlinks rather than followed.
+decision for future sessions; they do not hot-reload the current one. Both
+commands accept an optional kind list, for example `/trust grant
+instructions,config`. The trust prompt and `/trust` list each protected
+resource with its class, type, size, and a bounded SHA-256 content preview;
+symlinks are identified as symlinks rather than followed.
 
 Trust is scoped to the current Git checkout. A linked worktree is a separate
 canonical root and therefore needs its own decision; a decision saved for the

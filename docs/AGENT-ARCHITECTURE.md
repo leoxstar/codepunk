@@ -104,23 +104,60 @@ questions and the policy behind them:
 | Policy, sandbox, and sign-off | Codepunk                                                         | No Pi equivalent is used as a substitute                                                         |
 
 The pre-host adapter is the only place Codepunk builds a terminal component
-directly. It renders a question, four choices with one-line effect
-descriptions, and the same footer Pi uses; it does not parse arrow keys,
-maintain a selection model, or print a numbered menu. Every later prompt is
+directly. It renders a question, single-select choices, and, for custom trust,
+a checkbox list with one-line effect descriptions. It reuses Pi's `SelectList`
+and key matcher, and it never prints a numbered menu. Every later prompt is
 created from Pi's extension context, so adding a new Codepunk question does
 not add another selector implementation.
 
 ## Workspace trust
 
-Codepunk reuses Pi's `ProjectTrustStore` instead of inventing a trust file
-format. The store lives at `~/.codepunk/trust.json`, uses canonical paths, and
-accepts only a decision saved for the exact canonical project root. A parent
-repository's decision does not cover a nested repository, because the nested
-root can carry its own `.codepunk` configuration. The product adds its own
-protected-resource list because Codepunk owns `.codepunk` rather than `.pi`:
+Codepunk keeps Pi's `ProjectTrustStore` (`~/.codepunk/trust.json`) as the
+whole-workspace fallback, but it owns a second sidecar at
+`~/.codepunk/workspace-trust.json` because Pi's store can only express one boolean.
+The sidecar records four independent grants per exact canonical checkout:
+
+- `config`: `.codepunk/config.toml`, `local.toml`, and `.codepunk/agents`
+- `policy`: `.codepunk/policy.toml`
+- `skills`: non-empty `.codepunk/skills`
+- `instructions`: every `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`,
+  `CLAUDE.md`, or `CLAUDE.MD` that Pi discovers between the invocation
+  directory and the delivery root (first match per directory, the same
+  precedence Pi uses)
+
+The sidecar is written atomically with owner-only permissions. A malformed or
+unsupported store aborts startup instead of degrading to "no decision". An
+exact-root lookup is mandatory: a decision for a parent repository never
+covers a nested repository, because the nested root can carry its own
+`.codepunk` configuration. A partial decision also writes `false` to the Pi
+store, so removing or ignoring the sidecar cannot silently widen trust in
+another Pi entry point. The decision precedence is: one-run override,
+Codepunk sidecar, Pi boolean, no-resources default, then untrusted default.
+
+The startup prompt reuses Pi's `SelectList` with a `→` pointer and Up/Down,
+Enter, and Escape/Ctrl+C. It never uses a numbered menu. When more than one
+resource group is present, `Customize resources…` opens a checkbox list:
+Space toggles a group, Enter continues, Escape goes back. The next screen
+chooses session-only or remembered scope. The same decision is available
+non-interactively as `--trust-resources config,instructions` for one run and
+`codepunk trust grant|revoke --resources config,instructions` for the future.
+
+The runtime consumes each grant separately: config loading reads `config`,
+policy loading reads `policy`, skill discovery reads `skills`, and project
+context discovery reads `instructions`. Loading project instructions never
+authorizes project config, and denying config never suppresses instructions.
+Warnings, `trust/decision` events, `/trust status`, and the TUI footer name
+the actual per-kind result instead of collapsing it back to one boolean.
+
+Older decisions from Pi's store still work: a saved `true` grants all
+available kinds for that checkout, and a saved `false` denies all of them.
+Codepunk does not rewrite that legacy format to simulate partial trust.
+
+The protected-resource list is owned by Codepunk because Codepunk owns
+`.codepunk` rather than `.pi`:
 
 - `.codepunk/config.toml`, `local.toml`, `policy.toml`
-- non-empty `.codepunk/skills`
+- non-empty `.codepunk/skills` and `.codepunk/agents`
 - every `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or
   `CLAUDE.MD` that Pi discovers between the invocation directory and the
   delivery root (first match per directory, the same precedence Pi uses)
@@ -139,9 +176,9 @@ file therefore cannot turn the byte cap into an unbounded allocation, while
 the truncation record still names the full size and hash.
 
 A bare `.codepunk` directory is not protected because Codepunk creates one for
-its own project registration. An untrusted session skips project config,
-project policy, and project skills. Project MCP files are inert: they are not
-trust resources because Codepunk never loads them, and startup reports a
+its own project registration. A denied resource group is skipped independently
+of the other groups. Project MCP files are inert: they are not trust resources
+because Codepunk never loads them, and startup reports a
 user-scope-only warning at any trust level. Project extension/hook directories
 are not loaded by this build; because those paths are never consumed, they are
 not reported as trust resources. User-scope config, credentials, MCP servers,
@@ -151,14 +188,13 @@ skill loader reads only `$CODEPUNK_HOME/skills` and
 `<delivery-root>/.codepunk/skills`, so that ancestor path is never consumed and
 does not need a separate trust prompt.
 Project instruction files are agent input, not passive documentation: they can
-steer tool choice as directly as a project policy. An untrusted session
-therefore skips `project-instructions` as well as project config, policy, and
-skills; `loadContext` records a `context.untrusted_project_instruction`
-warning. User-level instructions in Codepunk home still load, so the person's
-standing rules are not lost. An instruction file between the session cwd and
-the delivery root triggers the prompt, whether it is the root file or a nested
-`src/AGENTS.md`; the untrusted warning names the relative resource and says
-how to grant trust.
+steer tool choice as directly as a project policy. Denying `instructions`
+therefore records a `context.untrusted_project_instruction` warning;
+`loadContext` still loads user-level instructions from Codepunk home, so the
+person's standing rules are not lost. An instruction file between the session
+cwd and the delivery root triggers the prompt, whether it is the root file or
+a nested `src/AGENTS.md`; the skipped warning names the relative resource and
+says how to grant trust.
 
 This is deliberately stricter than Codex CLI and Pi, which load `AGENTS.md`
 regardless of project trust, and closer to Gemini CLI (directory trust covers
