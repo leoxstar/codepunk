@@ -779,6 +779,125 @@ test("restart restores codepunk state without Pi persistence", async () => {
   }
 });
 
+test("restart restores sibling branches and the saved leaf", async () => {
+  const paths = await setup();
+  const first = await createHost(paths, { model: TEST_MODEL });
+  let rootUserId;
+  let branchAUserId;
+  let branchBUserId;
+  let savedState;
+  try {
+    const sessionManager = first.host.sessionManager;
+    rootUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "root prompt" }],
+      timestamp: Date.now(),
+    });
+    branchAUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "branch a prompt" }],
+      timestamp: Date.now(),
+    });
+    sessionManager.branch(rootUserId);
+    branchBUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "branch b prompt" }],
+      timestamp: Date.now(),
+    });
+    sessionManager.branch(branchAUserId);
+    savedState = await first.host.saveAgentState();
+    assert.ok(savedState);
+    assert.equal(savedState.leaf_id, branchAUserId);
+    assert.ok(savedState.entries?.some((entry) => entry.id === branchBUserId));
+  } finally {
+    await first.host.dispose();
+  }
+
+  const reopened = await core.SessionStore.open({
+    rootDir: paths.home,
+    cwd: paths.project,
+    sessionId: first.store.sessionId,
+  });
+  const resumed = await reopened.resume();
+  const second = await createHost(paths, {
+    model: TEST_MODEL,
+    restore: resumed.state,
+    sessionId: first.store.sessionId,
+    sessionStore: reopened,
+  });
+  try {
+    const sessionManager = second.host.sessionManager;
+    assert.equal(sessionManager.getLeafId(), branchAUserId);
+    assert.deepEqual(
+      sessionManager.getBranch().map((entry) => entry.id),
+      savedState.branch.map((entry) => entry.id),
+    );
+    const children = sessionManager
+      .getChildren(rootUserId)
+      .map((entry) => entry.id);
+    assert.ok(children.includes(branchAUserId));
+    assert.ok(children.includes(branchBUserId));
+    assert.equal(sessionManager.getEntry(branchBUserId)?.id, branchBUserId);
+  } finally {
+    await second.host.dispose();
+    await fs.rm(paths.root, { recursive: true, force: true });
+  }
+});
+
+test("restore refuses a saved leaf that conflicts with the active branch", async () => {
+  const paths = await setup();
+  const first = await createHost(paths, { model: TEST_MODEL });
+  let savedState;
+  let branchBUserId;
+  try {
+    const sessionManager = first.host.sessionManager;
+    const rootUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "root prompt" }],
+      timestamp: Date.now(),
+    });
+    const branchAUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "branch a prompt" }],
+      timestamp: Date.now(),
+    });
+    sessionManager.branch(rootUserId);
+    branchBUserId = sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "branch b prompt" }],
+      timestamp: Date.now(),
+    });
+    sessionManager.branch(branchAUserId);
+    savedState = await first.host.saveAgentState();
+    assert.ok(savedState);
+  } finally {
+    await first.host.dispose();
+  }
+
+  await fs.writeFile(
+    first.store.paths.statePath,
+    `${JSON.stringify({ ...savedState, leaf_id: branchBUserId })}\n`,
+    "utf8",
+  );
+  const reopened = await core.SessionStore.open({
+    rootDir: paths.home,
+    cwd: paths.project,
+    sessionId: first.store.sessionId,
+  });
+  const resumed = await reopened.resume();
+  await assert.rejects(
+    () =>
+      createHost(paths, {
+        model: TEST_MODEL,
+        restore: resumed.state,
+        sessionId: first.store.sessionId,
+        sessionStore: reopened,
+      }),
+    /active branch does not match/u,
+  );
+  await fs.rm(paths.root, { recursive: true, force: true });
+});
+
 test("legacy Pi session ids resume by migrating the persisted header", async () => {
   const paths = await setup();
   const store = await core.SessionStore.create({
