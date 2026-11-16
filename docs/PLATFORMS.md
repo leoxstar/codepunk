@@ -12,6 +12,14 @@ Node.js `>=22.19.0` is required. Linux needs the dependencies required by the
 pinned `srt` release, including bubblewrap, socat, and ripgrep. Run as a
 non-root user.
 
+Ubuntu 24.04 and later enable `kernel.apparmor_restrict_unprivileged_userns`,
+which still allows unprivileged user namespaces but leaves them without
+capabilities. `srt` needs capability-bearing namespaces, so every sandboxed
+command fails until the restriction is lifted with
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor
+profile grants `userns` to both bubblewrap and the bundled `apply-seccomp`
+helper.
+
 The table describes supported targets. Automated verification in this
 repository has run on macOS arm64 and Linux arm64; macOS x64, Linux x64, and
 WSL2 are not separately exercised by the repository test suite.
