@@ -23,6 +23,21 @@ const fullMask = {
   memory_search: false,
 };
 
+const PERMISSIVE_PARENT = {
+  approval: "ask",
+  autonomy: "ask",
+  tools: [
+    "read",
+    "write",
+    "edit",
+    "shell",
+    "search",
+    "memory_search",
+    "plan",
+    "todo",
+  ],
+};
+
 test("child session is isolated, evidence-backed, and depth one", async () => {
   const subagent = new core.Subagent({
     parent_session_id: "parent",
@@ -31,6 +46,7 @@ test("child session is isolated, evidence-backed, and depth one", async () => {
     isolation: "worktree",
     tool_mask: fullMask,
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     worktree: "/tmp/worker-child",
     async run(context) {
@@ -56,6 +72,7 @@ test("memory_search, read-only mutation, shared escape, and depth one are denied
     isolation: "worktree",
     tool_mask: { ...fullMask },
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     worktree: "/tmp/worker-child",
     async run() {
@@ -120,6 +137,71 @@ test("action-level masks reject tools outside the child mask", () => {
   assert.throws(
     () => core.assertSubagentAction(mask, "unknown"),
     /outside its mask/u,
+  );
+});
+
+test("a child cannot exceed the parent's permission or tool ceiling", () => {
+  const readOnlyMask = {
+    read: true,
+    write: false,
+    edit: false,
+    shell: false,
+    search: true,
+    memory_search: false,
+  };
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(readOnlyMask, "read-only", {
+        approval: "ask",
+        autonomy: "ask",
+        tools: ["search"],
+      }),
+    /parent's enabled tools/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(fullMask, "ask", {
+        approval: "ask",
+        autonomy: "read-only",
+        tools: ["read", "write", "edit", "shell", "search"],
+      }),
+    /read-only parent/u,
+  );
+  assert.throws(
+    () =>
+      core.assertSubagentWithinParentPolicy(fullMask, "ask", {
+        approval: "deny",
+        autonomy: "ask",
+        tools: ["read", "write", "edit", "shell", "search"],
+      }),
+    /deny-approval parent/u,
+  );
+  assert.doesNotThrow(() =>
+    core.assertSubagentWithinParentPolicy(readOnlyMask, "read-only", {
+      approval: "ask",
+      autonomy: "read-only",
+      tools: ["read", "search"],
+    }),
+  );
+});
+
+test("a subagent request without a parent policy fails closed", async () => {
+  await assert.rejects(
+    () =>
+      new core.Subagent({
+        parent_session_id: "parent",
+        child_session_id: "child-no-parent-policy",
+        task,
+        isolation: "worktree",
+        tool_mask: fullMask,
+        permission_mode: "ask",
+        depth: 0,
+        worktree: "/tmp/worker-child",
+        async run() {
+          return { summary: "unreachable", evidence_head: "" };
+        },
+      }).run(),
+    /explicit parent policy/u,
   );
 });
 
@@ -193,6 +275,7 @@ test("async dispatch supports status, send, stop, and a typed second spawn", asy
     isolation: "worktree",
     tool_mask: fullMask,
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     worktree: "/tmp/worker-child",
     async run(context) {
@@ -215,6 +298,7 @@ test("async dispatch supports status, send, stop, and a typed second spawn", asy
         isolation: "worktree",
         tool_mask: fullMask,
         permission_mode: "ask",
+        parent_policy: PERMISSIVE_PARENT,
         depth: 0,
         worktree: "/tmp/worker-child",
         async run() {
@@ -236,6 +320,7 @@ test("async dispatch supports status, send, stop, and a typed second spawn", asy
     isolation: "worktree",
     tool_mask: fullMask,
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     worktree: "/tmp/worker-child",
     async run(context) {
@@ -292,6 +377,7 @@ test("a spawn approval does not become a child approval", async () => {
     isolation: "worktree",
     tool_mask: fullMask,
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     worktree: "/tmp/worker-child",
     spawn_approved: true,
@@ -366,6 +452,7 @@ test("worktree and shared isolation require explicit run boundaries", async () =
     task,
     tool_mask: fullMask,
     permission_mode: "ask",
+    parent_policy: PERMISSIVE_PARENT,
     depth: 0,
     async run() {
       return { summary: "done", evidence_head: `sha256:${"d".repeat(64)}` };
@@ -452,6 +539,7 @@ test("tool-call and disk budgets stop only that child", async () => {
         worktree: "/tmp/worker-child",
         tool_mask: fullMask,
         permission_mode: "ask",
+        parent_policy: PERMISSIVE_PARENT,
         depth: 0,
         async run(context) {
           assert.equal(context.budget.max_tool_calls, 2);
@@ -473,6 +561,7 @@ test("tool-call and disk budgets stop only that child", async () => {
         worktree: "/tmp/worker-child",
         tool_mask: fullMask,
         permission_mode: "ask",
+        parent_policy: PERMISSIVE_PARENT,
         depth: 0,
         async run(context) {
           context.consumeDiskBytes(2048);

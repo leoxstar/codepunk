@@ -8,6 +8,20 @@ import { importCore } from "./support/core.mjs";
 import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
+const PERMISSIVE_PARENT = {
+  approval: "ask",
+  autonomy: "ask",
+  tools: [
+    "read",
+    "write",
+    "edit",
+    "shell",
+    "search",
+    "memory_search",
+    "plan",
+    "todo",
+  ],
+};
 
 async function startChildModelServer({
   emitToolCall = true,
@@ -190,6 +204,7 @@ async function runChild(options) {
   return core.runReadOnlySubagent({
     hostArgv: [process.execPath, cli],
     model: "local/local-test",
+    parentPolicy: PERMISSIVE_PARENT,
     ...options,
   });
 }
@@ -689,6 +704,7 @@ test("invalid and duplicate child session ids fail before spawning", async () =>
         core.runReadOnlySubagent({
           hostArgv: ["/nonexistent-child-host"],
           cwd: project,
+          parentPolicy: PERMISSIVE_PARENT,
           parentSessionId: "parent-session",
           childSessionId: "../escape",
           prompt: "inspect",
@@ -744,6 +760,7 @@ test("child host rejects a working directory outside git", async () => {
         core.runReadOnlySubagent({
           hostArgv: ["/nonexistent-child-host"],
           cwd: project,
+          parentPolicy: PERMISSIVE_PARENT,
           parentSessionId: "parent-session",
           childSessionId: "child-nongit",
           prompt: "inspect",
@@ -781,6 +798,7 @@ test("a mutating profile runs in a detached worktree and keeps the parent clean"
       const result = await core.runSubagentHost({
         hostArgv: [process.execPath, cli],
         cwd: project,
+        parentPolicy: PERMISSIVE_PARENT,
         parentSessionId: "parent-session",
         childSessionId: "child-mutable",
         prompt: "create the child output file",
@@ -870,6 +888,7 @@ test("an edit-only profile can mutate its worktree", async () => {
       const result = await core.runSubagentHost({
         hostArgv: [process.execPath, cli],
         cwd: project,
+        parentPolicy: PERMISSIVE_PARENT,
         parentSessionId: "parent-session",
         childSessionId: "child-edit",
         prompt: "edit the child output file",
@@ -938,6 +957,7 @@ test("a mutating profile cannot run in the shared checkout", async () => {
         core.runSubagentHost({
           hostArgv: [process.execPath, cli],
           cwd: project,
+          parentPolicy: PERMISSIVE_PARENT,
           parentSessionId: "parent-session",
           childSessionId: "child-shared-mutation",
           prompt: "try to mutate the parent checkout",
@@ -961,6 +981,54 @@ test("a mutating profile cannot run in the shared checkout", async () => {
           },
         }),
       /requires a detached worktree/u,
+    );
+  });
+});
+
+test("a read-only parent cannot spawn a mutating profile", async () => {
+  await withTempDirectory("codepunk-child-parent-ceiling-", async (root) => {
+    const project = path.join(root, "project");
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    initGitRepository(project);
+    const cli = await ensureBuilt();
+    await assert.rejects(
+      () =>
+        core.runSubagentHost({
+          hostArgv: [process.execPath, cli],
+          cwd: project,
+          parentPolicy: {
+            approval: "ask",
+            autonomy: "read-only",
+            tools: PERMISSIVE_PARENT.tools,
+          },
+          parentSessionId: "parent-session",
+          childSessionId: "child-parent-read-only",
+          prompt: "try to mutate from a locked parent",
+          model: "local/local-test",
+          profile: {
+            name: "worker",
+            sha256: `sha256:${"d".repeat(64)}`,
+            tools: {
+              read: true,
+              write: true,
+              edit: false,
+              shell: false,
+              search: true,
+              memory_search: false,
+            },
+            systemPrompt: "You are a bounded worker.",
+            model: "local/local-test",
+            fallback: [],
+            thinking: "low",
+          },
+        }),
+      (error) =>
+        error instanceof core.ChildHostError &&
+        error.code === "subagent.parent_read_only",
     );
   });
 });
