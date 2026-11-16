@@ -12,6 +12,12 @@ export interface CliBuildInfo {
   builtAt: string | null;
   sourceNewest: string | null;
   /**
+   * `true` when a dist file was rebuilt after this process started. Node keeps
+   * loaded modules in memory, so a long-running TUI can otherwise keep showing
+   * an older prompt after `pnpm build`.
+   */
+  rebuiltAfterStart: boolean;
+  /**
    * `null` means this is an installed package without its TypeScript sources,
    * so Codepunk cannot compare the build against source files.
    */
@@ -99,6 +105,10 @@ function isoTime(mtimeMs: number | null): string | null {
   return mtimeMs === null ? null : new Date(mtimeMs).toISOString();
 }
 
+function processStartedAtMs(): number {
+  return Date.now() - process.uptime() * 1_000;
+}
+
 /**
  * Reads the CLI package identity and compares every emitted JavaScript file
  * with its TypeScript source. The check is deliberately source-aware: an
@@ -107,6 +117,7 @@ function isoTime(mtimeMs: number | null): string | null {
  */
 export async function inspectCliBuild(
   entryUrl: string = import.meta.url,
+  options: { startedAtMs?: number } = {},
 ): Promise<CliBuildInfo> {
   const currentModule = fileURLToPath(entryUrl);
   const extension = path.extname(currentModule);
@@ -124,18 +135,22 @@ export async function inspectCliBuild(
   } catch {
     // The fallback is intentionally the unpublished checkout version.
   }
-  let builtAt: string | null = null;
+  let builtAtMs: number | null = null;
   try {
-    builtAt = isoTime((await fs.stat(entryPath)).mtimeMs);
+    builtAtMs = (await fs.stat(entryPath)).mtimeMs;
   } catch {
     // `--version` still has a useful package identity if the entry is gone.
   }
   const comparison = await comparePackageBuild(repositoryRoot);
+  const newestDist = comparison?.distNewest ?? builtAtMs;
+  const startedAtMs = options.startedAtMs ?? processStartedAtMs();
   return {
     version,
     entryPath,
-    builtAt: isoTime(comparison?.distNewest ?? null) ?? builtAt,
+    builtAt: isoTime(newestDist),
     sourceNewest: isoTime(comparison?.sourceNewest ?? null),
+    rebuiltAfterStart:
+      newestDist !== null && newestDist > startedAtMs + MTIME_TOLERANCE_MS,
     stale: comparison === null ? null : comparison.stale,
   };
 }
@@ -152,6 +167,11 @@ export function formatBuildIdentity(build: CliBuildInfo): string {
           ? `STALE (newest source ${build.sourceNewest ?? "unknown"}; run pnpm build)`
           : "current"
     }`,
+    ...(build.rebuiltAfterStart
+      ? [
+          "running: dist was rebuilt after this process started; restart to load it",
+        ]
+      : []),
   ];
   return details.join("\n");
 }
@@ -163,7 +183,7 @@ export function formatBuildLabel(build: CliBuildInfo): string {
       : build.stale === false
         ? "current"
         : "unknown"
-  }`;
+  }${build.rebuiltAfterStart ? " · restart required" : ""}`;
 }
 
 export function appendBuildDoctorCheck(
@@ -172,9 +192,10 @@ export function appendBuildDoctorCheck(
 ): DoctorReport {
   const check: DoctorCheck = {
     id: "build",
-    status: build.stale === true ? "warn" : "ok",
-    message:
-      build.stale === true
+    status: build.stale === true || build.rebuiltAfterStart ? "warn" : "ok",
+    message: build.rebuiltAfterStart
+      ? `this process started before the current dist (built ${build.builtAt ?? "unknown"}); restart codepunk to load it`
+      : build.stale === true
         ? `stale dist: source ${build.sourceNewest ?? "unknown"} is newer than build ${build.builtAt ?? "unknown"}`
         : build.stale === false
           ? `dist matches package sources (built ${build.builtAt ?? "unknown"})`
@@ -182,7 +203,9 @@ export function appendBuildDoctorCheck(
     hint:
       build.stale === true
         ? `run pnpm build in ${path.dirname(path.dirname(path.dirname(path.dirname(build.entryPath))))}`
-        : null,
+        : build.rebuiltAfterStart
+          ? "restart codepunk; a running process keeps the old JavaScript modules in memory"
+          : null,
   };
   const checks = [...report.checks, check];
   return {

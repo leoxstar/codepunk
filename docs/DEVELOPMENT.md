@@ -49,6 +49,12 @@ the pre-host `Project trust` footer shows the same build identity before the
 decision is made. An installed package without `src` reports the source
 comparison as unavailable rather than claiming the build is current.
 
+The same check compares the newest `dist` mtime with the running process start.
+If `codepunk --version`/`/doctor` reports `restart required`, this process is
+still executing the JavaScript it loaded before a rebuild. Quit that TUI and
+start `codepunk` again; a running process does not hot-swap modules after
+`pnpm build`.
+
 ## Workspace
 
 The dependency direction is:

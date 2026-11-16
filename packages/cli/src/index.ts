@@ -1294,7 +1294,9 @@ async function resolveRunWorkspaceTrust(
         ? []
         : [`excluded for this run: ${excluded.join(", ")}`]),
     ],
-    ...(build.stale === true ? { footerNote: formatBuildLabel(build) } : {}),
+    ...(build.stale === true || build.rebuiltAfterStart
+      ? { footerNote: formatBuildLabel(build) }
+      : {}),
   };
   let decision: Exclude<TrustChoice, "custom"> | null = null;
   while (decision === null) {
@@ -1686,6 +1688,7 @@ async function runTui(options: CliOptions): Promise<number> {
   setTuiRuntime(state, runtime);
   let currentRuntime: CodepunkRuntime | null = runtime;
   const switchState: { target: TuiSessionTarget | null } = { target: null };
+  let buildWatch: NodeJS.Timeout | undefined;
   try {
     const sessionRuntime = await makeSessionRuntime(runtime, {
       switchState,
@@ -1742,9 +1745,21 @@ async function runTui(options: CliOptions): Promise<number> {
     };
     const modelFallbackMessage =
       modelOnboardingMessage(runtime) ?? sessionRuntime.modelFallbackMessage;
+    const build = await inspectCliBuild();
+    const startupDiagnostics = [
+      ...runtime.host.services.diagnostics,
+      ...(build.stale === true || build.rebuiltAfterStart
+        ? [
+            {
+              type: "warning" as const,
+              message: `codepunk build: ${formatBuildLabel(build)}. Run pnpm build if the source changed, then restart codepunk; a running process keeps the old UI in memory.`,
+            },
+          ]
+        : []),
+    ];
     const interactive = new InteractiveMode(sessionRuntime, {
       terminal: new CodepunkTerminal(new ProcessTerminal()),
-      startupDiagnostics: runtime.host.services.diagnostics,
+      startupDiagnostics,
       ...(modelFallbackMessage === undefined ? {} : { modelFallbackMessage }),
     });
     await interactive.init();
@@ -1754,11 +1769,37 @@ async function runTui(options: CliOptions): Promise<number> {
       );
     };
     applyTitle();
+    buildWatch = setInterval(() => {
+      void (async () => {
+        const context = state.context;
+        if (context === null) {
+          return;
+        }
+        const current = await inspectCliBuild();
+        if (!current.rebuiltAfterStart) {
+          return;
+        }
+        if (buildWatch !== undefined) {
+          clearInterval(buildWatch);
+          buildWatch = undefined;
+        }
+        context.ui.notify(
+          `codepunk: dist was rebuilt after this process started (${formatBuildLabel(
+            current,
+          )}). Restart codepunk to load the new UI; this session keeps the old modules in memory.`,
+          "warning",
+        );
+      })().catch(() => undefined);
+    }, 30_000);
+    buildWatch.unref();
     setTimeout(applyTitle, 250).unref();
     setTimeout(applyTitle, 1_000).unref();
     await interactive.run();
     return 0;
   } finally {
+    if (buildWatch !== undefined) {
+      clearInterval(buildWatch);
+    }
     const running = [...(state.subagents?.values() ?? [])].filter(
       (record) => record.status === "running",
     );

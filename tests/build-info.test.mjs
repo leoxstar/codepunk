@@ -39,9 +39,13 @@ test("build inspection distinguishes current, stale, and installed packages", as
     const moduleUrl = pathToFileURL(
       path.join(root, "packages", "cli", "dist", "build-info.js"),
     ).href;
-    const current = await inspectCliBuild(moduleUrl);
+    const startedAtMs = Date.now();
+    const current = await inspectCliBuild(moduleUrl, {
+      startedAtMs,
+    });
     assert.equal(current.version, "0.0.0");
     assert.equal(current.stale, false);
+    assert.equal(current.rebuiltAfterStart, false);
 
     const old = new Date("2026-01-01T00:00:00.000Z");
     const newer = new Date("2026-01-02T00:00:00.000Z");
@@ -50,7 +54,9 @@ test("build inspection distinguishes current, stale, and installed packages", as
       await fs.utimes(path.join(packageRoot, "dist", "index.js"), old, old);
       await fs.utimes(path.join(packageRoot, "src", "index.ts"), newer, newer);
     }
-    const stale = await inspectCliBuild(moduleUrl);
+    const stale = await inspectCliBuild(moduleUrl, {
+      startedAtMs,
+    });
     assert.equal(stale.stale, true);
     assert.match(stale.sourceNewest ?? "", /^2026-01-02/u);
 
@@ -60,7 +66,50 @@ test("build inspection distinguishes current, stale, and installed packages", as
         force: true,
       });
     }
-    const installed = await inspectCliBuild(moduleUrl);
+    const installed = await inspectCliBuild(moduleUrl, {
+      startedAtMs,
+    });
     assert.equal(installed.stale, null);
+  });
+});
+
+test("build inspection detects a dist rebuilt after the process started", async () => {
+  const {
+    appendBuildDoctorCheck,
+    formatBuildIdentity,
+    formatBuildLabel,
+    inspectCliBuild,
+  } = await loadBuildInfoModule();
+  await withTempDirectory("codepunk-build-restart-", async (root) => {
+    for (const name of ["protocol", "core", "cli"]) {
+      await writeFixturePackage(root, name);
+    }
+    const moduleUrl = pathToFileURL(
+      path.join(root, "packages", "cli", "dist", "build-info.js"),
+    ).href;
+    const startedAtMs = Date.now() - 10_000;
+    const rebuiltAt = new Date();
+    for (const name of ["protocol", "core", "cli"]) {
+      await fs.utimes(
+        path.join(root, "packages", name, "dist", "index.js"),
+        rebuiltAt,
+        rebuiltAt,
+      );
+    }
+    const build = await inspectCliBuild(moduleUrl, { startedAtMs });
+    assert.equal(build.rebuiltAfterStart, true);
+    assert.match(formatBuildLabel(build), /restart required/u);
+    assert.match(formatBuildIdentity(build), /restart to load it/u);
+    const report = appendBuildDoctorCheck(
+      {
+        ok: true,
+        platform: process.platform,
+        codepunkHome: root,
+        checks: [],
+      },
+      build,
+    );
+    assert.equal(report.checks.at(-1)?.status, "warn");
+    assert.match(report.checks.at(-1)?.message ?? "", /restart codepunk/u);
   });
 });

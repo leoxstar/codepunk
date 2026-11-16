@@ -123,9 +123,12 @@ The startup resource preview uses a shortened SHA-256; `/trust status` and
 workspace trust does not change approval, sandbox, or filesystem permissions.
 A session-only or one-run decision is named in the TUI status line instead of
 being reported as an ordinary saved decision.
-The prompt footer appears only when `dist` is stale, and `codepunk --version`
-always prints the running package version, dist build time, entry path, and
-whether `dist` matches the package sources.
+The prompt footer appears when `dist` is stale or the running process predates
+a rebuild, and `codepunk --version` always prints the running package version,
+dist build time, entry path, and whether `dist` matches the package sources.
+The footer also reports `restart required` when the running process started
+before the current `dist`; a long-lived terminal must be restarted to load a
+rebuilt UI. `/doctor` reports the same condition.
 `codepunk doctor` and `/doctor` add the same result as a `build` check, so a
 stale checkout cannot silently keep serving an older trust or command UI.
 Print mode cannot prompt, so it refuses to start while the decision is
