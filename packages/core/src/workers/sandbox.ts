@@ -148,6 +148,13 @@ export function spawnGuardedHost(
       "pipe",
     ],
   });
+  // The child can exit before it drains a pipe. libuv reports the resulting
+  // failed read/write as an 'error' event on the stream, and an unhandled one
+  // crashes the parent; the child's exit status already tells that story.
+  const ignoreStreamError = (): void => undefined;
+  child.stdin?.on("error", ignoreStreamError);
+  child.stdout?.on("error", ignoreStreamError);
+  child.stderr?.on("error", ignoreStreamError);
   if (options.stdin !== undefined) {
     child.stdin?.end(options.stdin);
   }
@@ -168,6 +175,7 @@ export function spawnGuardedHost(
         `guarded host did not receive fd ${fd}`,
       );
     }
+    tokenFd.on("error", ignoreStreamError);
     tokenFd.write(value);
     tokenFd.end();
   }

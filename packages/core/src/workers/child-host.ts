@@ -922,6 +922,10 @@ async function runChild(
           input: child.stdout,
           crlfDelay: Number.POSITIVE_INFINITY,
         });
+        // A killed child can leave a pending read that fails on the stream.
+        // readline forwards input errors to the interface; the exit status
+        // collected below is the outcome that decides the run.
+        lineReader.on("error", () => undefined);
         const linesDone = new Promise<void>((resolve) => {
           lineReader.once("close", resolve);
         });
