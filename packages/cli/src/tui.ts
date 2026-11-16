@@ -36,6 +36,7 @@ import {
   formatPermissionExplanation,
   formatTodos,
   formatWorkspaceTrust,
+  allWorkspaceTrustGrants,
   formatMcpServers,
   formatSessionList,
   isFallbackModel,
@@ -54,6 +55,7 @@ import {
   persistScopedRule,
   permissionBehaviorSummary,
   permissionProfileFor,
+  inspectSavedWorkspaceResourceTrust,
   previewWorkspaceTrustResources,
   readMcpConfig,
   removeMcpServer,
@@ -74,7 +76,7 @@ import {
   runDoctor,
   resolveConfiguredModel,
   resolveModelSelection,
-  saveWorkspaceTrust,
+  saveWorkspaceTrustGrants,
   signRun,
   staleLockReason,
   setConfiguredModel,
@@ -106,6 +108,9 @@ import {
   type WorkspaceCommitPreview,
   type WorkspaceDiff,
   type WorkspaceTrust,
+  WORKSPACE_TRUST_RESOURCE_KINDS,
+  workspaceTrustGrantsFromKinds,
+  type WorkspaceTrustResourceKind,
 } from "@codepunk/core";
 import type {
   ApprovalAnswer,
@@ -335,7 +340,7 @@ function permissionUsage(): string {
     "  /permissions filesystem workspace|full",
     "  /permissions rules",
     "  /permissions why -- <shell command>",
-    "  /trust [status|grant|revoke]",
+    "  /trust [status|grant|revoke] [config,policy,skills,instructions]",
   ].join("\n");
 }
 
@@ -375,7 +380,7 @@ export function codepunkHelp(): string {
     "  /permissions sandbox network [allow|deny <domain>...|clear]  set the sandbox egress lists",
     "  /permissions rules         list persisted exact-command rules",
     "  /permissions why -- <cmd>  explain a policy decision without running it",
-    "  /trust [status|grant|revoke] show or save workspace trust for future sessions",
+    "  /trust [status|grant|revoke] [kinds]  show or save per-resource workspace trust",
     "  !<command>                 run a shell command through the same policy gate",
     "  /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
     "                             start a child session from a discovered profile",
@@ -502,7 +507,7 @@ function permissionSummary(runtime: CodepunkRuntime): string {
   return [
     "Permissions",
     `profile: ${profile}`,
-    `workspace trust: ${runtime.workspaceTrust.trusted ? "trusted" : "untrusted"} (${runtime.workspaceTrust.source})`,
+    `workspace trust: ${trustDisplay(runtime.workspaceTrust)} (${runtime.workspaceTrust.source})`,
     `trust root: ${runtime.workspaceTrust.root}`,
     `approvals: ${runtime.config.approval.mode} (${approval})`,
     ...(runtime.config.approval.reviewer === "off"
@@ -988,7 +993,26 @@ function formatStatusSummary(runtime: CodepunkRuntime): string {
 }
 
 function trustDisplay(trust: WorkspaceTrust): string {
-  const value = trust.trusted ? "trusted" : "untrusted";
+  const allowed = trust.available.filter((kind) => trust.grants[kind]);
+  const value =
+    trust.mode === "all"
+      ? "trusted"
+      : trust.mode === "none"
+        ? "untrusted"
+        : allowed.length === 0
+          ? "custom"
+          : `custom (${allowed.join(", ")})`;
+  if (trust.mode === "custom") {
+    const scope =
+      trust.source === "prompt" && trust.savedPath === null
+        ? "session only"
+        : trust.source === "flag"
+          ? "one run"
+          : trust.source === "saved" || trust.savedPath !== null
+            ? "saved"
+            : null;
+    return scope === null ? value : `${value} · ${scope}`;
+  }
   if (trust.source === "prompt" && trust.savedPath === null) {
     return `${value} (session only)`;
   }
@@ -1063,11 +1087,11 @@ async function initializeProjectInstructions(
     context.ui.notify("usage: /init [--update]", "warning");
     return;
   }
-  if (!runtime.workspaceTrust.trusted) {
+  if (!runtime.workspaceTrust.grants.instructions) {
     context.ui.notify(
       [
-        "The workspace is not trusted, so a new AGENTS.md would not load.",
-        "Run /trust grant, then restart codepunk and run /init again.",
+        "Project instructions are not trusted, so a new AGENTS.md would not load.",
+        "Run /trust grant instructions, then restart codepunk and run /init again.",
         "/trust grant only changes future sessions.",
       ].join("\n"),
       "warning",
@@ -1877,7 +1901,7 @@ async function configurePermissions(
           [
             "permission profile trusted was removed because it collides with workspace trust.",
             "Use /permissions profile auto-approve for blanket approval.",
-            "Use /trust grant to trust this workspace's project config, policy, and skills.",
+            "Use /trust grant [kinds] to trust this workspace's project resources.",
           ].join("\n"),
           "warning",
         );
@@ -2082,23 +2106,66 @@ async function configureTrust(
     return;
   }
   const tokens = argument.split(/\s+/u).filter(Boolean);
-  if (tokens.length > 1) {
-    context.ui.notify("usage: /trust [status|grant|revoke]", "warning");
+  if (tokens.length > 2) {
+    context.ui.notify(
+      "usage: /trust [status|grant|revoke] [config,policy,skills,instructions]",
+      "warning",
+    );
     return;
   }
   const action = tokens[0] ?? "status";
   if (action === "grant" || action === "revoke") {
+    const requested = tokens[1];
+    let selected: WorkspaceTrustResourceKind[] = [];
+    if (requested !== undefined) {
+      selected = [
+        ...new Set(
+          requested
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0),
+        ),
+      ] as WorkspaceTrustResourceKind[];
+      const unknown = selected.find(
+        (kind) =>
+          !(WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(kind),
+      );
+      if (unknown !== undefined || selected.length === 0) {
+        context.ui.notify(
+          `unknown trust resource kind: ${
+            unknown ?? requested
+          }; use ${WORKSPACE_TRUST_RESOURCE_KINDS.join(",")}`,
+          "warning",
+        );
+        return;
+      }
+    }
     try {
-      const store = await saveWorkspaceTrust(
+      const grants =
+        selected.length === 0
+          ? allWorkspaceTrustGrants(action === "grant")
+          : workspaceTrustGrantsFromKinds(
+              action === "grant"
+                ? selected
+                : WORKSPACE_TRUST_RESOURCE_KINDS.filter(
+                    (kind) => !selected.includes(kind),
+                  ),
+            );
+      const saved = await saveWorkspaceTrustGrants(
         runtime.paths.home,
         runtime.workspaceTrust.root,
-        action === "grant",
+        grants,
+        "cli",
       );
       context.ui.notify(
         [
           `workspace trust saved as ${action === "grant" ? "trusted" : "untrusted"}`,
           `root: ${runtime.workspaceTrust.root}`,
-          `store: ${store}`,
+          `resources: ${WORKSPACE_TRUST_RESOURCE_KINDS.map(
+            (kind) => `${kind}=${grants[kind] ? "allowed" : "skipped"}`,
+          ).join(", ")}`,
+          `store: ${saved.storePath}`,
+          `resource store: ${saved.resourceStorePath}`,
           "the current session is unchanged; restart codepunk to load or skip project resources",
         ].join("\n"),
         action === "grant" ? "info" : "warning",
@@ -2114,10 +2181,14 @@ async function configureTrust(
     return;
   }
   if (action !== "status") {
-    context.ui.notify("usage: /trust [status|grant|revoke]", "warning");
+    context.ui.notify(
+      "usage: /trust [status|grant|revoke] [config,policy,skills,instructions]",
+      "warning",
+    );
     return;
   }
   let saved = "none";
+  let savedResources = "none for this checkout";
   try {
     const entry = readSavedWorkspaceTrust(
       runtime.paths.home,
@@ -2126,8 +2197,19 @@ async function configureTrust(
     if (entry !== null) {
       saved = `${entry.decision ? "trusted" : "untrusted"} (${entry.path})`;
     }
+    const resourceEntry = await inspectSavedWorkspaceResourceTrust(
+      runtime.paths.home,
+      runtime.workspaceTrust.root,
+    );
+    if (resourceEntry !== null) {
+      savedResources = WORKSPACE_TRUST_RESOURCE_KINDS.map(
+        (kind) =>
+          `${kind}=${resourceEntry.entry.grants[kind] ? "allowed" : "skipped"}`,
+      ).join(", ");
+    }
   } catch (error) {
     saved = `unreadable: ${error instanceof Error ? error.message : String(error)}`;
+    savedResources = saved;
   }
   context.ui.notify(
     [
@@ -2151,7 +2233,8 @@ async function configureTrust(
         },
       ),
       `saved decision: ${saved}`,
-      "Use /trust grant or /trust revoke to change future sessions.",
+      `saved resources: ${savedResources}`,
+      "Use /trust grant|revoke [kinds] to change future sessions.",
     ].join("\n"),
     "info",
   );
@@ -3444,7 +3527,7 @@ async function runSubagent(
     return;
   }
   const bundle = await loadAgentProfiles(runtime.paths, {
-    projectTrusted: runtime.workspaceTrust.trusted,
+    projectTrusted: runtime.workspaceTrust.grants.config,
   });
   if (bundle.warnings.length > 0) {
     context.ui.notify(bundle.warnings.join("\n"), "warning");
@@ -3526,15 +3609,11 @@ async function runSubagent(
   const thinking = profile?.thinking ?? activeThinking;
   const workspaceTrustOverride =
     isolation === "worktree"
-      ? runtime.workspaceTrust.trusted
-        ? ("trust" as const)
-        : ("no-trust" as const)
+      ? runtime.workspaceTrust.grants
       : runtime.workspaceTrust.source === "saved" ||
           runtime.workspaceTrust.source === "no-resources"
         ? undefined
-        : runtime.workspaceTrust.trusted
-          ? ("trust" as const)
-          : ("no-trust" as const);
+        : runtime.workspaceTrust.grants;
   const controller = new AbortController();
   const record: BackgroundSubagent = {
     childSessionId,
@@ -4413,7 +4492,7 @@ async function manageSubagents(
   }
   if (action === "profiles") {
     const bundle = await loadAgentProfiles(runtime.paths, {
-      projectTrusted: runtime.workspaceTrust.trusted,
+      projectTrusted: runtime.workspaceTrust.grants.config,
     });
     context.ui.notify(
       [formatAgentProfiles(bundle.profiles), ...bundle.warnings].join("\n"),

@@ -17,6 +17,7 @@ import {
   PERMISSION_PROFILES,
   DaemonClient,
   DaemonServer,
+  allWorkspaceTrustGrants,
   MemoryManager,
   collectCapabilities,
   configSummary,
@@ -76,7 +77,7 @@ import {
   resolveAdditionalWorkspaceRoots,
   resolveModelSelection,
   resolveWorkspaceTrust,
-  saveWorkspaceTrust,
+  saveWorkspaceTrustGrants,
   SessionStore,
   resolveSession,
   runDoctor,
@@ -102,7 +103,12 @@ import {
   type ScopedRule,
   type SkillBundle,
   type WorkspaceTrust,
+  type WorkspaceTrustGrants,
+  type WorkspaceTrustResourceKind,
   type WorkspaceTrustSource,
+  WORKSPACE_TRUST_RESOURCE_KINDS,
+  workspaceTrustGrantsFromKinds,
+  workspaceTrustMode,
 } from "@codepunk/core";
 import type {
   DaemonSessionListResult,
@@ -119,6 +125,7 @@ import {
   type TuiState,
 } from "./tui.ts";
 import {
+  selectTerminalCheckboxes,
   selectTerminalChoice,
   TerminalSelectCancelledError,
 } from "./terminal-select.ts";
@@ -159,6 +166,8 @@ interface CliOptions {
   sandbox: "required" | "uncovered" | undefined;
   filesystem: FilesystemMode | undefined;
   trust: "trusted" | "untrusted" | undefined;
+  trustResources: WorkspaceTrustResourceKind[] | undefined;
+  resources: WorkspaceTrustResourceKind[] | undefined;
   memory: boolean | undefined;
   allowPlugins: boolean;
   noMcp: boolean;
@@ -297,6 +306,7 @@ function usage(): string {
     "      --dangerously-bypass-approvals-and-sandbox",
     "                           approval=allow, sandbox=uncovered, filesystem=full",
     "      --trust / --no-trust one-run workspace trust decision",
+    "      --trust-resources <kinds>  load only config,policy,skills,instructions for this run",
     "      --memory <true|false>",
     "      --allow-plugins",
     "      --bare               disable instructions, skills, plugins, MCP, memory for this session",
@@ -392,7 +402,7 @@ function subcommandUsage(command: string | undefined): string | undefined {
       case "trust":
         return [
           "usage:",
-          "  codepunk trust [status|grant|revoke] [path] [--json]",
+          "  codepunk trust [status|grant|revoke] [path] [--resources config,policy,skills,instructions] [--json]",
           "  status is the default; grant and revoke save a decision for future sessions",
         ];
       case "capabilities":
@@ -481,6 +491,8 @@ function parseCli(argv: string[]): CliOptions {
       filesystem: { type: "string" },
       trust: { type: "boolean" },
       "no-trust": { type: "boolean" },
+      "trust-resources": { type: "string" },
+      resources: { type: "string" },
       memory: { type: "string" },
       "allow-plugins": { type: "boolean" },
       bare: { type: "boolean" },
@@ -684,6 +696,14 @@ function parseCli(argv: string[]): CliOptions {
   if (values.trust === true && values["no-trust"] === true) {
     throw new Error("--trust and --no-trust are mutually exclusive");
   }
+  if (
+    values["trust-resources"] !== undefined &&
+    (values.trust === true || values["no-trust"] === true)
+  ) {
+    throw new Error(
+      "--trust-resources cannot be combined with --trust or --no-trust",
+    );
+  }
   const tools =
     values.tools === undefined
       ? undefined
@@ -712,6 +732,60 @@ function parseCli(argv: string[]): CliOptions {
       : values["no-trust"] === true
         ? ("untrusted" as const)
         : undefined;
+  const trustResources =
+    values["trust-resources"] === undefined
+      ? undefined
+      : [
+          ...new Set(
+            values["trust-resources"]
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter((entry) => entry.length > 0),
+          ),
+        ];
+  if (trustResources !== undefined) {
+    if (trustResources.length === 0) {
+      throw new Error("--trust-resources must contain at least one kind");
+    }
+    for (const kind of trustResources) {
+      if (
+        !(WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(kind)
+      ) {
+        throw new Error(
+          `--trust-resources has unknown kind ${kind}; use ${WORKSPACE_TRUST_RESOURCE_KINDS.join(
+            ",",
+          )}`,
+        );
+      }
+    }
+  }
+  const resources =
+    values.resources === undefined
+      ? undefined
+      : [
+          ...new Set(
+            values.resources
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter((entry) => entry.length > 0),
+          ),
+        ];
+  if (resources !== undefined) {
+    if (resources.length === 0) {
+      throw new Error("--resources must contain at least one kind");
+    }
+    for (const kind of resources) {
+      if (
+        !(WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(kind)
+      ) {
+        throw new Error(
+          `--resources has unknown kind ${kind}; use ${WORKSPACE_TRUST_RESOURCE_KINDS.join(
+            ",",
+          )}`,
+        );
+      }
+    }
+  }
   let memory: boolean | undefined;
   if (values.memory !== undefined) {
     if (values.memory !== "true" && values.memory !== "false") {
@@ -771,6 +845,13 @@ function parseCli(argv: string[]): CliOptions {
     sandbox,
     filesystem,
     trust,
+    trustResources: trustResources?.filter(
+      (kind): kind is WorkspaceTrustResourceKind =>
+        (WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(kind),
+    ),
+    resources: resources?.filter((kind): kind is WorkspaceTrustResourceKind =>
+      (WORKSPACE_TRUST_RESOURCE_KINDS as readonly string[]).includes(kind),
+    ),
     memory,
     allowPlugins: values["allow-plugins"] === true,
     noMcp: bare || values["no-mcp"] === true,
@@ -910,21 +991,16 @@ async function resolveProject(options: CliOptions): Promise<{
     cwd: project.cwd,
     root: project.deliveryRoot,
     home: paths.home,
-    ...(options.trust === undefined
-      ? {}
-      : {
-          override: options.trust === "trusted",
-          source: "flag" as const,
-        }),
+    ...workspaceTrustOverride(options),
   });
-  if (workspaceTrust.trusted) {
+  if (workspaceTrust.grants.config || workspaceTrust.grants.policy) {
     await ensureProjectConfigDir(paths);
   }
   const loaded = await loadConfig(
     paths,
     process.env,
     await preparedConfigOverrides(options, paths),
-    { projectTrusted: workspaceTrust.trusted },
+    { projectTrusted: workspaceTrust.grants.config },
   );
   return { paths, config: loaded.config, workspaceTrust };
 }
@@ -939,19 +1015,14 @@ async function prepareFork(options: CliOptions): Promise<string | undefined> {
     cwd: project.cwd,
     root: project.deliveryRoot,
     home: paths.home,
-    ...(options.trust === undefined
-      ? {}
-      : {
-          override: options.trust === "trusted",
-          source: "flag" as const,
-        }),
+    ...workspaceTrustOverride(options),
   });
   const loaded = await loadConfig(
     paths,
     process.env,
     {},
     {
-      projectTrusted: workspaceTrust.trusted,
+      projectTrusted: workspaceTrust.grants.config,
     },
   );
   const result = await forkSession({
@@ -991,6 +1062,41 @@ async function readPrompt(positionals: string[]): Promise<string | null> {
   return value.length > 0 ? value : null;
 }
 
+function trustWithGrants(
+  trust: WorkspaceTrust,
+  grants: WorkspaceTrustGrants,
+  source: WorkspaceTrustSource,
+  savedPath: string | null = trust.savedPath,
+): WorkspaceTrust {
+  return {
+    ...trust,
+    grants,
+    mode: workspaceTrustMode(grants),
+    trusted: trust.available.every((kind) => grants[kind]),
+    source,
+    savedPath,
+  };
+}
+
+function workspaceTrustOverride(options: CliOptions): {
+  override?: boolean | WorkspaceTrustGrants;
+  source?: WorkspaceTrustSource;
+} {
+  if (options.trust !== undefined) {
+    return {
+      override: options.trust === "trusted",
+      source: "flag",
+    };
+  }
+  if (options.trustResources !== undefined) {
+    return {
+      override: workspaceTrustGrantsFromKinds(options.trustResources),
+      source: "flag",
+    };
+  }
+  return {};
+}
+
 async function resolveRunWorkspaceTrust(
   options: CliOptions,
   project: Awaited<ReturnType<typeof findDeliveryRoot>>,
@@ -1007,6 +1113,16 @@ async function resolveRunWorkspaceTrust(
       root: project.deliveryRoot,
       home: paths.home,
       override: options.trust === "trusted",
+      source: "flag",
+      ...resourceOptions,
+    });
+  }
+  if (options.trustResources !== undefined) {
+    return resolveWorkspaceTrust({
+      cwd: project.cwd,
+      root: project.deliveryRoot,
+      home: paths.home,
+      override: workspaceTrustGrantsFromKinds(options.trustResources),
       source: "flag",
       ...resourceOptions,
     });
@@ -1082,81 +1198,198 @@ async function resolveRunWorkspaceTrust(
       `codepunk: warning: the running dist is older than the package sources; run pnpm build (entry: ${build.entryPath})\n`,
     );
   }
-  const decision = await selectTerminalChoice(
-    "Project trust",
-    [
-      {
-        label: "Trust this workspace and remember",
-        value: "always" as const,
-        description: "Load resources · remember",
-      },
-      {
-        label: "Trust for this session only",
-        value: "session" as const,
-        description: "Load now · ask again next start",
-      },
-      {
-        label: "Do not trust and remember this decision",
-        value: "never" as const,
-        description: "Skip resources · remember",
-      },
-      {
-        label: "Do not trust for this session only",
-        value: "never-session" as const,
-        description: "Skip now · ask again next start",
-      },
-    ],
-    {
-      contextLines: [
-        `cwd: ${project.cwd}`,
-        `checkout root: ${resolved.root}`,
-        `saved decision: ${savedDecision}`,
-        ...(excluded.length === 0
-          ? []
-          : [`excluded for this run: ${excluded.join(", ")}`]),
-      ],
-      ...(build.stale === true ? { footerNote: formatBuildLabel(build) } : {}),
+  const kindCopy: Record<
+    WorkspaceTrustResourceKind,
+    { label: string; detail: string }
+  > = {
+    config: {
+      label: "Project configuration",
+      detail: "config.toml, local.toml, and project agent profiles",
     },
-  ).catch((error: unknown) => {
-    if (error instanceof TerminalSelectCancelledError) {
-      throw new Error(
-        "workspace trust was not decided; choose an option or pass --trust / --no-trust",
+    policy: {
+      label: "Project policy",
+      detail: "policy.toml rules and write set",
+    },
+    skills: {
+      label: "Project skills",
+      detail: ".codepunk/skills",
+    },
+    instructions: {
+      label: "Project instructions",
+      detail: "AGENTS.md and CLAUDE.md files",
+    },
+  };
+  const discoveredKinds = WORKSPACE_TRUST_RESOURCE_KINDS.filter((kind) =>
+    previews.some((preview) => preview.kind === kind),
+  );
+  const customChoices = discoveredKinds.map((kind) => ({
+    label: kindCopy[kind].label,
+    value: kind,
+    checked: true,
+    description: `${kindCopy[kind].detail} — ${previews
+      .filter((preview) => preview.kind === kind)
+      .map((preview) => preview.path)
+      .join(", ")}`,
+  }));
+  type TrustChoice =
+    "always" | "session" | "custom" | "never" | "never-session";
+  const promptContext = {
+    contextLines: [
+      `cwd: ${project.cwd}`,
+      `checkout root: ${resolved.root}`,
+      `saved decision: ${savedDecision}`,
+      ...(excluded.length === 0
+        ? []
+        : [`excluded for this run: ${excluded.join(", ")}`]),
+    ],
+    ...(build.stale === true ? { footerNote: formatBuildLabel(build) } : {}),
+  };
+  let decision: Exclude<TrustChoice, "custom"> | null = null;
+  while (decision === null) {
+    let choice: TrustChoice;
+    try {
+      choice = await selectTerminalChoice<TrustChoice>(
+        "Project trust",
+        [
+          {
+            label: "Trust this workspace and remember",
+            value: "always",
+            description: "Load all resources · remember",
+          },
+          {
+            label: "Trust for this session only",
+            value: "session",
+            description: "Load all now · ask again next start",
+          },
+          ...(customChoices.length > 1
+            ? [
+                {
+                  label: "Customize resources…",
+                  value: "custom" as const,
+                  description: "Pick which groups load",
+                },
+              ]
+            : []),
+          {
+            label: "Do not trust and remember this decision",
+            value: "never",
+            description: "Skip all resources · remember",
+          },
+          {
+            label: "Do not trust for this session only",
+            value: "never-session",
+            description: "Skip all now · ask again next start",
+          },
+        ],
+        promptContext,
       );
+    } catch (error) {
+      if (error instanceof TerminalSelectCancelledError) {
+        throw new Error(
+          "workspace trust was not decided; choose an option or pass --trust / --no-trust",
+        );
+      }
+      throw error;
     }
-    throw error;
-  });
-  if (decision === "session") {
-    return { ...resolved, trusted: true, source: "prompt" };
-  }
-  if (decision === "never-session") {
-    return { ...resolved, trusted: false, source: "prompt" };
-  }
-  if (decision === "always") {
-    const storePath = await saveWorkspaceTrust(paths.home, resolved.root, true);
+    if (choice !== "custom") {
+      decision = choice;
+      break;
+    }
+    const selectedKinds =
+      await selectTerminalCheckboxes<WorkspaceTrustResourceKind>(
+        "Load project resources",
+        customChoices,
+        {
+          contextLines: [
+            `cwd: ${project.cwd}`,
+            `checkout root: ${resolved.root}`,
+            "Space toggles one resource group; empty selection loads none.",
+          ],
+        },
+      );
+    if (selectedKinds === null) {
+      continue;
+    }
+    let scope: "session" | "remember" | "back";
+    try {
+      scope = await selectTerminalChoice<"session" | "remember" | "back">(
+        "Apply custom trust",
+        [
+          {
+            label: "Apply to this session",
+            value: "session",
+            description: "Use now · ask again next start",
+          },
+          {
+            label: "Apply and remember",
+            value: "remember",
+            description: "Use now and for future sessions",
+          },
+          {
+            label: "Back",
+            value: "back",
+            description: "Return to the trust menu",
+          },
+        ],
+        {
+          contextLines: [
+            `selected: ${
+              selectedKinds.length === 0 ? "none" : selectedKinds.join(", ")
+            }`,
+          ],
+        },
+      );
+    } catch (error) {
+      if (error instanceof TerminalSelectCancelledError) {
+        continue;
+      }
+      throw error;
+    }
+    if (scope === "back") {
+      continue;
+    }
+    const grants = workspaceTrustGrantsFromKinds(selectedKinds);
+    if (scope === "session") {
+      return trustWithGrants(resolved, grants, "prompt");
+    }
+    const saved = await saveWorkspaceTrustGrants(
+      paths.home,
+      resolved.root,
+      grants,
+      "prompt",
+    );
     return {
-      ...resolved,
-      trusted: true,
-      source: "prompt",
-      savedPath: resolved.root,
-      storePath,
+      ...trustWithGrants(resolved, grants, "prompt", resolved.root),
+      storePath: saved.storePath,
+      resourceStorePath: saved.resourceStorePath,
     };
   }
-  const storePath = await saveWorkspaceTrust(paths.home, resolved.root, false);
+  if (decision === "session") {
+    return trustWithGrants(resolved, allWorkspaceTrustGrants(true), "prompt");
+  }
+  if (decision === "never-session") {
+    return trustWithGrants(resolved, allWorkspaceTrustGrants(false), "prompt");
+  }
+  const grants = allWorkspaceTrustGrants(decision === "always");
+  const saved = await saveWorkspaceTrustGrants(
+    paths.home,
+    resolved.root,
+    grants,
+    "prompt",
+  );
   return {
-    ...resolved,
-    trusted: false,
-    source: "prompt",
-    savedPath: resolved.root,
-    storePath,
+    ...trustWithGrants(resolved, grants, "prompt", resolved.root),
+    storePath: saved.storePath,
+    resourceStorePath: saved.resourceStorePath,
   };
 }
 
 function trustRuntimeOptions(trust: WorkspaceTrust): {
-  projectTrusted: boolean;
+  projectTrust: WorkspaceTrustGrants;
   projectTrustSource: WorkspaceTrustSource;
 } {
   return {
-    projectTrusted: trust.trusted,
+    projectTrust: trust.grants,
     projectTrustSource: trust.source,
   };
 }
@@ -1903,7 +2136,7 @@ async function commandDoctor(options: CliOptions): Promise<number> {
     await runDoctor({
       paths,
       config,
-      projectTrusted: workspaceTrust.trusted,
+      projectTrusted: workspaceTrust.grants.skills,
       pluginEnabled: options.allowPlugins,
       packageVersion: build.version,
     }),
@@ -1922,24 +2155,19 @@ async function commandCapabilities(options: CliOptions): Promise<number> {
     cwd: project.cwd,
     root: project.deliveryRoot,
     home: paths.home,
-    ...(options.trust === undefined
-      ? {}
-      : {
-          override: options.trust === "trusted",
-          source: "flag" as const,
-        }),
+    ...workspaceTrustOverride(options),
   });
   const { config } = await loadConfig(
     paths,
     process.env,
     {},
     {
-      projectTrusted: workspaceTrust.trusted,
+      projectTrusted: workspaceTrust.grants.config,
     },
   );
   const snapshot = await collectCapabilities(paths, {
     pluginEnabled: options.allowPlugins || config.plugins.enabled,
-    projectTrusted: workspaceTrust.trusted,
+    projectTrusted: workspaceTrust.grants.skills,
   });
   process.stdout.write(
     options.json
@@ -2018,14 +2246,9 @@ async function commandMcp(options: CliOptions): Promise<number> {
     cwd: paths.cwd,
     root: paths.deliveryRoot,
     home: paths.home,
-    ...(options.trust === undefined
-      ? {}
-      : {
-          override: options.trust === "trusted",
-          source: "flag" as const,
-        }),
+    ...workspaceTrustOverride(options),
   });
-  const projectTrusted = workspaceTrust.trusted;
+  const projectTrusted = workspaceTrust.grants.skills;
   const action = options.positionals[1] ?? "list";
   if (action === "list") {
     const snapshot = await collectCapabilities(paths, {
@@ -2385,17 +2608,12 @@ async function commandSkills(options: CliOptions): Promise<number> {
       cwd: project.cwd,
       root: project.deliveryRoot,
       home: paths.home,
-      ...(options.trust === undefined
-        ? {}
-        : {
-            override: options.trust === "trusted",
-            source: "flag" as const,
-          }),
+      ...workspaceTrustOverride(options),
     });
     const bundle = await loadSkills({
       deliveryRoot: paths.deliveryRoot,
       codepunkHome: paths.home,
-      projectTrusted: workspaceTrust.trusted,
+      projectTrusted: workspaceTrust.grants.skills,
     });
     process.stdout.write(
       options.json
@@ -2556,9 +2774,27 @@ function formatPermissions(
   additionalRoots: readonly string[] = [],
 ): string {
   const profile = permissionProfileFor(config);
+  const trustWord =
+    workspaceTrust.mode === "all"
+      ? "trusted"
+      : workspaceTrust.mode === "none"
+        ? "untrusted"
+        : "custom";
   return [
     `profile: ${profile}`,
-    `trust: ${workspaceTrust.trusted ? "trusted" : "untrusted"} (${workspaceTrust.source})`,
+    `trust: ${trustWord} (${workspaceTrust.source})`,
+    ...(workspaceTrust.available.length === 0
+      ? []
+      : [
+          `trust resources: ${workspaceTrust.available
+            .map(
+              (kind) =>
+                `${kind}=${
+                  workspaceTrust.grants[kind] ? "allowed" : "skipped"
+                }`,
+            )
+            .join(", ")}`,
+        ]),
     `approvals: ${config.approval.mode}`,
     `approval reviewer: ${config.approval.reviewer}${
       config.approval.reviewer === "off"
@@ -2602,7 +2838,7 @@ function formatPermissions(
     "  codepunk permissions filesystem workspace|full",
     "  codepunk permissions rules",
     "  codepunk permissions why -- <shell command>",
-    "  codepunk trust [status|grant|revoke] [path]",
+    "  codepunk trust [status|grant|revoke] [path] [--resources <kinds>]",
   ].join("\n");
 }
 
@@ -2662,7 +2898,12 @@ async function commandTrust(options: CliOptions): Promise<number> {
   }
   const consumed = targetArgument === undefined ? 2 : 3;
   if (options.positionals.length > consumed) {
-    throw new Error("usage: codepunk trust [status|grant|revoke] [path]");
+    throw new Error(
+      "usage: codepunk trust [status|grant|revoke] [path] [--resources <kinds>]",
+    );
+  }
+  if (options.resources !== undefined && action === "status") {
+    throw new Error("--resources only applies to trust grant or trust revoke");
   }
   const target = path.resolve(targetArgument ?? process.cwd());
   let stat;
@@ -2678,10 +2919,20 @@ async function commandTrust(options: CliOptions): Promise<number> {
   const paths = projectPaths(project);
   if (action === "grant" || action === "revoke") {
     const trusted = action === "grant";
-    const storePath = await saveWorkspaceTrust(
+    const grants =
+      options.resources === undefined
+        ? allWorkspaceTrustGrants(trusted)
+        : allWorkspaceTrustGrants(!trusted);
+    if (options.resources !== undefined) {
+      for (const kind of options.resources) {
+        grants[kind] = trusted;
+      }
+    }
+    const saved = await saveWorkspaceTrustGrants(
       paths.home,
       project.deliveryRoot,
-      trusted,
+      grants,
+      "cli",
     );
     if (options.json) {
       process.stdout.write(
@@ -2689,7 +2940,9 @@ async function commandTrust(options: CliOptions): Promise<number> {
           action,
           root: project.deliveryRoot,
           decision: trusted ? "trusted" : "untrusted",
-          store: storePath,
+          grants,
+          store: saved.storePath,
+          resource_store: saved.resourceStorePath,
           applies: "future-sessions",
         })}\n`,
       );
@@ -2698,7 +2951,11 @@ async function commandTrust(options: CliOptions): Promise<number> {
         [
           `trust decision saved: ${trusted ? "trusted" : "untrusted"}`,
           `root: ${project.deliveryRoot}`,
-          `store: ${storePath}`,
+          `resources: ${WORKSPACE_TRUST_RESOURCE_KINDS.map(
+            (kind) => `${kind}=${grants[kind] ? "allowed" : "skipped"}`,
+          ).join(", ")}`,
+          `store: ${saved.storePath}`,
+          `resource store: ${saved.resourceStorePath}`,
           "applies to future sessions; restart Codepunk to load or skip project resources",
         ].join("\n") + "\n",
       );
@@ -2718,6 +2975,9 @@ async function commandTrust(options: CliOptions): Promise<number> {
     process.stdout.write(
       `${JSON.stringify({
         trusted: workspaceTrust.trusted,
+        mode: workspaceTrust.mode,
+        grants: workspaceTrust.grants,
+        available: workspaceTrust.available,
         source: workspaceTrust.source,
         cwd: workspaceTrust.cwd,
         root: workspaceTrust.root,
@@ -2725,12 +2985,13 @@ async function commandTrust(options: CliOptions): Promise<number> {
         resources: workspaceTrust.resources,
         resource_details: previews,
         store: workspaceTrust.storePath,
+        resource_store: workspaceTrust.resourceStorePath,
       })}\n`,
     );
   } else {
     process.stdout.write(
       `${formatWorkspaceTrust(workspaceTrust, previews)}\n` +
-        "Use codepunk trust grant|revoke to save a decision; --trust and --no-trust apply to one run.\n",
+        "Use codepunk trust grant|revoke [--resources <kinds>] to save a decision; --trust, --no-trust, and --trust-resources apply to one run.\n",
     );
   }
   return 0;
@@ -2794,7 +3055,7 @@ async function commandPermissions(options: CliOptions): Promise<number> {
     }
     const { paths, config, workspaceTrust } = await resolveProject(options);
     const policy = await loadPolicyFiles(paths, {
-      projectTrusted: workspaceTrust.trusted,
+      projectTrusted: workspaceTrust.grants.policy,
     });
     const writeSet = [
       ...new Set([
