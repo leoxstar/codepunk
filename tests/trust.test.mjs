@@ -15,6 +15,28 @@ import {
 const core = await importCore();
 const execFileAsync = promisify(execFile);
 
+function trustFixture(overrides = {}) {
+  const resources = overrides.resources ?? [];
+  const available = core.availableWorkspaceTrustKinds(resources);
+  const grants =
+    overrides.grants ??
+    core.allWorkspaceTrustGrants(overrides.trusted ?? false);
+  return {
+    trusted: available.every((kind) => grants[kind]),
+    mode: core.workspaceTrustMode(grants),
+    grants,
+    available,
+    source: "default",
+    cwd: "/workspace",
+    root: "/workspace",
+    resources,
+    storePath: "/home/trust.json",
+    resourceStorePath: "/home/workspace-trust.json",
+    savedPath: null,
+    ...overrides,
+  };
+}
+
 async function runCli(args, { cwd, home }) {
   return execFileAsync(process.execPath, [await ensureBuilt(), ...args], {
     cwd,
@@ -141,15 +163,13 @@ test("trust preview identifies resources without following symlinks", async () =
     assert.equal(instructions?.kind, "instructions");
 
     const formatted = core.formatWorkspaceTrust(
-      {
-        trusted: false,
-        source: "default",
+      trustFixture({
         cwd: project,
         root: project,
         resources: previews.map((preview) => preview.path),
         storePath: path.join(root, "home", "trust.json"),
-        savedPath: null,
-      },
+        resourceStorePath: path.join(root, "home", "workspace-trust.json"),
+      }),
       previews,
     );
     assert.match(formatted, /\[instructions\] AGENTS\.md/u);
@@ -172,20 +192,14 @@ test("trust preview identifies resources without following symlinks", async () =
 });
 
 test("every protected resource maps to an explicit skipped class", async () => {
-  const trust = {
-    trusted: false,
-    source: "default",
-    cwd: "/workspace",
-    root: "/workspace",
+  const trust = trustFixture({
     resources: [
       ".codepunk/config.toml",
       ".codepunk/local.toml",
       ".codepunk/policy.toml",
       ".codepunk/skills",
     ],
-    storePath: "/home/trust.json",
-    savedPath: null,
-  };
+  });
   assert.deepEqual(core.skippedProjectResources(trust), [
     "project-config",
     "project-policy",
@@ -195,12 +209,11 @@ test("every protected resource maps to an explicit skipped class", async () => {
     core.formatWorkspaceTrust(trust),
     /not loaded \(untrusted workspace\): project-config, project-policy, project-skills/u,
   );
-  const empty = {
-    ...trust,
+  const empty = trustFixture({
     resources: [],
     savedPath: "/tmp/project",
     source: "saved",
-  };
+  });
   assert.doesNotMatch(core.formatWorkspaceTrust(empty), /untrusted workspace/u);
   assert.doesNotMatch(core.formatWorkspaceTrust(empty), /scope:/u);
   assert.match(
@@ -247,15 +260,13 @@ test("trust preview reports an unreadable resource instead of failing startup", 
       assert.equal(skills?.reason, "unreadable");
       assert.match(
         core.formatWorkspaceTrust(
-          {
-            trusted: false,
-            source: "default",
+          trustFixture({
             cwd: project,
             root: project,
             resources,
             storePath: path.join(root, "home", "trust.json"),
-            savedPath: null,
-          },
+            resourceStorePath: path.join(root, "home", "workspace-trust.json"),
+          }),
           previews,
         ),
         /\[skills\] \.codepunk\/skills \(directory\)\n    unreadable/u,
@@ -300,15 +311,11 @@ test("trust preview does not read through a symlinked resource directory", async
 });
 
 test("trust status names resources excluded by one-session isolation", () => {
-  const trust = {
+  const trust = trustFixture({
     trusted: true,
     source: "no-resources",
-    cwd: "/workspace",
-    root: "/workspace",
     resources: [],
-    storePath: "/home/trust.json",
-    savedPath: null,
-  };
+  });
   assert.doesNotMatch(
     core.formatWorkspaceTrust(trust),
     /excluded from this session/u,
@@ -670,6 +677,7 @@ test("untrusted runtimes skip project config, policy, and skills", async () => {
         (event) => event.kind === "trust/decision",
       );
       assert.equal(decision?.data.decision, "untrusted");
+      assert.equal(decision?.data.mode, "none");
       assert.deepEqual(decision?.data.skipped, [
         "project-config",
         "project-policy",
@@ -905,5 +913,268 @@ test("a corrupt trust store fails closed instead of becoming no decision", async
         }),
       /workspace trust store .* could not be read/u,
     );
+  });
+});
+
+test("per-resource trust loads only the granted project layers", async () => {
+  await withTempDirectory("codepunk-trust-partial-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(project, ".codepunk", "config.toml"),
+      "[memory]\nmax_tokens = 400\n",
+    );
+    await writeFile(
+      path.join(project, ".codepunk", "policy.toml"),
+      'version = 1\nwrite_set = ["src/"]\n',
+    );
+    await writeFile(
+      path.join(project, ".codepunk", "skills", "team", "SKILL.md"),
+      "---\nname: team\ndescription: team\n---\nbody\n",
+    );
+    await writeFile(
+      path.join(project, ".codepunk", "agents", "reviewer.md"),
+      "---\nname: reviewer\ndescription: reviewer\ntools: read\n---\nreview\n",
+    );
+    await writeFile(
+      path.join(project, "AGENTS.md"),
+      "PROJECT_TRUST_SENTINEL\n",
+    );
+
+    assert.deepEqual(await core.findTrustRequiringProjectResources(project), [
+      ".codepunk/config.toml",
+      ".codepunk/policy.toml",
+      ".codepunk/skills",
+      ".codepunk/agents",
+      "AGENTS.md",
+    ]);
+
+    /* Positive control: config + instructions allowed, policy + skills denied. */
+    await core.saveWorkspaceTrustGrants(home, project, {
+      config: true,
+      policy: false,
+      skills: false,
+      instructions: true,
+    });
+    if (process.platform !== "win32") {
+      assert.equal(
+        (await fs.stat(path.join(home, "workspace-trust.json"))).mode & 0o777,
+        0o600,
+      );
+    }
+    const trust = await core.resolveWorkspaceTrust({
+      cwd: project,
+      root: project,
+      home,
+    });
+    assert.equal(trust.mode, "custom");
+    assert.equal(trust.trusted, false);
+    assert.deepEqual(trust.available, [
+      "config",
+      "policy",
+      "skills",
+      "instructions",
+    ]);
+    assert.deepEqual(trust.grants, {
+      config: true,
+      policy: false,
+      skills: false,
+      instructions: true,
+    });
+    assert.deepEqual(core.skippedProjectResources(trust), [
+      "project-policy",
+      "project-skills",
+    ]);
+
+    const partial = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      approvalChannel: null,
+    });
+    try {
+      assert.equal(partial.config.memory.max_tokens, 400);
+      assert.deepEqual(partial.policy.writeSet, []);
+      assert.deepEqual(partial.skills, []);
+      assert.match(
+        partial.host.session.systemPrompt,
+        /PROJECT_TRUST_SENTINEL/u,
+      );
+      const decision = partial.session.allEvents.find(
+        (event) => event.kind === "trust/decision",
+      );
+      assert.equal(decision?.data.decision, "untrusted");
+      assert.equal(decision?.data.mode, "custom");
+      assert.deepEqual(decision?.data.grants, {
+        config: true,
+        policy: false,
+        skills: false,
+        instructions: true,
+      });
+      assert.deepEqual(decision?.data.available, [
+        "config",
+        "policy",
+        "skills",
+        "instructions",
+      ]);
+      assert.deepEqual(decision?.data.skipped, [
+        "project-policy",
+        "project-skills",
+      ]);
+    } finally {
+      await partial.dispose();
+    }
+
+    /* Negative control: denying config must not be hidden by instruction trust. */
+    await core.saveWorkspaceTrustGrants(home, project, {
+      config: false,
+      policy: false,
+      skills: false,
+      instructions: true,
+    });
+    const instructionsOnly = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      approvalChannel: null,
+    });
+    try {
+      assert.equal(instructionsOnly.config.memory.max_tokens, 800);
+      assert.deepEqual(instructionsOnly.policy.writeSet, []);
+      assert.deepEqual(instructionsOnly.skills, []);
+      assert.match(
+        instructionsOnly.host.session.systemPrompt,
+        /PROJECT_TRUST_SENTINEL/u,
+      );
+    } finally {
+      await instructionsOnly.dispose();
+    }
+  });
+});
+
+test("a custom resource decision is exact-root and session overrides do not persist", async () => {
+  await withTempDirectory("codepunk-trust-partial-scope-", async (root) => {
+    const parent = path.join(root, "parent");
+    const nested = path.join(parent, "nested");
+    const home = path.join(root, "home");
+    await fs.mkdir(nested, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await writeFile(path.join(parent, "AGENTS.md"), "PARENT_RULE\n");
+    await writeFile(path.join(nested, "AGENTS.md"), "NESTED_RULE\n");
+    await core.saveWorkspaceTrustGrants(home, parent, {
+      config: true,
+      policy: true,
+      skills: true,
+      instructions: true,
+    });
+    const nestedTrust = await core.resolveWorkspaceTrust({
+      cwd: nested,
+      root: nested,
+      home,
+    });
+    assert.equal(nestedTrust.source, "default");
+    assert.equal(nestedTrust.mode, "none");
+    assert.deepEqual(nestedTrust.resources, ["AGENTS.md"]);
+
+    const sessionOnly = await core.resolveWorkspaceTrust({
+      cwd: nested,
+      root: nested,
+      home,
+      override: {
+        config: false,
+        policy: false,
+        skills: false,
+        instructions: true,
+      },
+      source: "prompt",
+    });
+    assert.equal(sessionOnly.mode, "custom");
+    assert.equal(sessionOnly.source, "prompt");
+    const stored = JSON.parse(
+      await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
+    );
+    assert.deepEqual(Object.keys(stored.workspaces), [
+      await fs.realpath(parent),
+    ]);
+  });
+});
+
+test("a malformed per-resource trust store fails closed and is not overwritten", async () => {
+  await withTempDirectory("codepunk-trust-partial-corrupt-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await writeFile(path.join(project, "AGENTS.md"), "PROJECT_RULE\n");
+    const storePath = path.join(home, "workspace-trust.json");
+    await writeFile(storePath, '{"version":1,"workspaces":[]}\n');
+
+    await assert.rejects(
+      () =>
+        core.resolveWorkspaceTrust({
+          cwd: project,
+          root: project,
+          home,
+        }),
+      /resource trust store .* could not be read/u,
+    );
+    await assert.rejects(
+      () =>
+        core.saveWorkspaceTrustGrants(home, project, {
+          config: true,
+          policy: true,
+          skills: true,
+          instructions: true,
+        }),
+      /resource trust store|no workspaces object/u,
+    );
+    assert.equal(
+      await fs.readFile(storePath, "utf8"),
+      '{"version":1,"workspaces":[]}\n',
+    );
+  });
+});
+
+test("trust grant --resources records a partial decision", async () => {
+  await withTempDirectory("codepunk-trust-partial-cli-", async (root) => {
+    const { project, home } = await setupProject(root);
+    const granted = await runCli(
+      ["trust", "grant", "--resources", "config", "--json"],
+      { cwd: project, home },
+    );
+    assert.deepEqual(JSON.parse(granted.stdout).grants, {
+      config: true,
+      policy: false,
+      skills: false,
+      instructions: false,
+    });
+    const status = JSON.parse(
+      (
+        await runCli(["trust", "status", "--json"], {
+          cwd: project,
+          home,
+        })
+      ).stdout,
+    );
+    assert.equal(status.mode, "custom");
+    assert.equal(status.trusted, true);
+    assert.deepEqual(status.available, ["config"]);
+    assert.equal(status.grants.config, true);
+    assert.equal(
+      status.resource_store,
+      path.join(home, "workspace-trust.json"),
+    );
+
+    const permissions = await runCli(
+      ["--trust-resources", "config", "permissions"],
+      { cwd: project, home },
+    );
+    assert.match(permissions.stdout, /trust: custom \(flag\)/u);
+    assert.match(permissions.stdout, /trust resources: config=allowed/u);
   });
 });
