@@ -420,6 +420,74 @@ test("read-only child cannot recover saved trust after a parent no-trust decisio
   });
 });
 
+test("read-only child inherits a per-resource parent decision", async () => {
+  await withTempDirectory("codepunk-child-partial-trust-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    const marker = "CHILD-PARTIAL-TRUST-INSTRUCTION";
+    await fs.mkdir(project);
+    await fs.writeFile(
+      path.join(project, "subagent-input.txt"),
+      "subagent input\n",
+    );
+    await fs.writeFile(path.join(project, "AGENTS.md"), `${marker}\n`);
+    initGitRepository(project);
+    const modelServer = await startChildModelServer({ emitToolCall: false });
+    await writeModelHome(home, modelServer.baseUrl);
+    await core.saveWorkspaceTrust(home, project, true);
+    const env = {
+      ...process.env,
+      CODEPUNK_HOME: home,
+      PI_OFFLINE: "1",
+      NO_COLOR: "1",
+    };
+    try {
+      const denied = await runChild({
+        cwd: project,
+        parentSessionId: "parent-partial-none",
+        childSessionId: "child-partial-none",
+        prompt: "answer without reading files",
+        workspaceTrustOverride: {
+          config: false,
+          policy: false,
+          skills: false,
+          instructions: false,
+        },
+        env,
+      });
+      assert.equal(denied.exit_code, 0);
+      assert.ok(
+        !JSON.stringify(modelServer.requests).includes(marker),
+        "a partial parent decision must not fall back to the saved full trust",
+      );
+
+      const requestsBeforeInstructions = modelServer.requests.length;
+      const instructionsOnly = await runChild({
+        cwd: project,
+        parentSessionId: "parent-partial-instructions",
+        childSessionId: "child-partial-instructions",
+        prompt: "answer without reading files",
+        workspaceTrustOverride: {
+          config: false,
+          policy: false,
+          skills: false,
+          instructions: true,
+        },
+        env,
+      });
+      assert.equal(instructionsOnly.exit_code, 0);
+      assert.ok(
+        JSON.stringify(
+          modelServer.requests.slice(requestsBeforeInstructions),
+        ).includes(marker),
+        "the instructions grant must load the project instruction in the child",
+      );
+    } finally {
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
 test("read-only child inherits bare isolation from the parent session", async () => {
   await withTempDirectory("codepunk-child-bare-", async (root) => {
     const project = path.join(root, "project");
