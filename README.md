@@ -543,6 +543,14 @@ Up to four children run in the background. `/agents` lists them,
 git repository with at least one commit. If it answers without calling a tool,
 the result reports no evidence run rather than inventing a hash.
 
+A mutating child is reviewed before it reaches the parent branch.
+`/agents review <id>` shows its status, changed files, bounded patch, and
+summary; `/agents transcript <id>` renders the stored child transcript;
+`/agents sign <id>` records the human complete or incomplete verdict;
+`/agents merge <id>` freezes the worktree, writes the handoff, and merges the
+signed exact commit; and `/agents discard <id>` removes an unmerged worktree
+after a separate confirmation. Codepunk never merges a child automatically.
+
 A mutating result stays in its worktree for inspection; the completion notice
 and `subagent/result` event record the absolute worktree path. Codepunk does
 not merge child changes automatically.
@@ -597,8 +605,11 @@ check for the broken entry.
 In the TUI, `/reload` re-discovers skills, re-reads `mcp.toml`, starts the new
 server set, stops the old processes, and rebuilds the wrapped tool surface
 without replacing the Codepunk session. It also re-scans user plugins and
-swaps Pi's extension/tool registry in place. Codepunk configuration still
-requires a restart.
+swaps Pi's extension/tool registry in place. Approval mode, ordinary autonomy
+and scoped rules, and plugin enablement apply live; sandbox, filesystem, and
+network grants, model routing, context and tool loadout, session/budget/memory
+policy, TUI chrome, and the reviewer binding are next-session settings, and
+`/reload` reports which is which.
 Transport comes from Pi's MCP client; Codepunk still approval-gates every
 server tool and records uncovered execution. `/mcp` shows the same inventory
 inside the TUI.

@@ -870,6 +870,29 @@ async function checkDocumentationContract(root, add) {
       }
     }
   }
+
+  // Help and README must describe the same human delivery commands. The
+  // earlier review found `/agents review|sign|merge|discard|transcript` in the
+  // TUI help while README listed only result/wait/stop.
+  const readmePath = "README.md";
+  if (existsSync(path.join(root, readmePath))) {
+    const readme = await readFile(path.join(root, readmePath), "utf8");
+    for (const requiredCommand of [
+      "/agents review",
+      "/agents sign",
+      "/agents merge",
+      "/agents discard",
+      "/agents transcript",
+    ]) {
+      if (!readme.includes(requiredCommand)) {
+        add(
+          "docs.contract",
+          readmePath,
+          `missing documented command ${requiredCommand}`,
+        );
+      }
+    }
+  }
 }
 
 function stripMarkdownCode(content) {
