@@ -383,9 +383,11 @@ redirections, and complex shell syntax are not eligible for reuse.
 same policy, scoped-rule, approval, and shell-availability chain as a real
 command, without executing it. It prints the effective decision, raw policy
 decision, approval decision, rule IDs and reasons, whether approval is
-required, shell availability, and the policy layer. A `sandbox.unavailable`
-result means the command would be denied even if its policy decision was
-`allow`.
+required, shell availability, and the policy layer. It also prints the stages
+it replayed and the stages it did not: the optional model reviewer, a human
+approval response, and the agent's own shell environment are outside the
+check. A `sandbox.unavailable` result means the command would be denied even
+if its policy decision was `allow`.
 `uncovered` is a sandbox mode, not permission to spawn a shell: the next
 interactive session has no shell unless it is started with
 `--allow-unsandboxed-shell` or

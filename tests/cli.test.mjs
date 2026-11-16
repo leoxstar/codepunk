@@ -705,6 +705,14 @@ test("permission commands show effective modes, explain commands, and persist pr
     assert.match(date.stdout, /rule: shell\.read\.date/u);
     assert.match(date.stdout, /requires approval: no/u);
     assert.match(date.stdout, /execution: available/u);
+    assert.match(
+      date.stdout,
+      /replayed: policy, scoped_rules, approval_mode, shell_availability/u,
+    );
+    assert.match(
+      date.stdout,
+      /not replayed: approval_reviewer, human_response, agent_shell_environment/u,
+    );
 
     const blocked = await runCli(["permissions", "why", "--", "date", "+%A"], {
       cwd: project,

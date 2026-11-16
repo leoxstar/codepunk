@@ -124,6 +124,12 @@ export interface PermissionExplanation {
   execution: PermissionExecution;
   layers: PolicyDecision["layers"];
   match: PolicyDecision["match"];
+  /**
+   * Stages this execution-free check did evaluate, in order. Anything absent
+   * from this list was not replayed and can change the real run's outcome.
+   */
+  replayed: readonly string[];
+  not_replayed: readonly string[];
 }
 
 export function shellUnavailableReason(mode: SandboxMode): string {
@@ -270,6 +276,12 @@ export async function explainPermission(input: {
     execution: input.execution,
     layers: input.policy.layers,
     match: input.policy.match,
+    replayed: ["policy", "scoped_rules", "approval_mode", "shell_availability"],
+    not_replayed: [
+      "approval_reviewer",
+      "human_response",
+      "agent_shell_environment",
+    ],
   };
 }
 
@@ -325,5 +337,7 @@ export function formatPermissionExplanation(
       : [
           `layers: ${explanation.layers.map((layer) => layer.layer).join(", ")}`,
         ]),
+    `replayed: ${explanation.replayed.join(", ")}`,
+    `not replayed: ${explanation.not_replayed.join(", ")}`,
   ].join("\n");
 }
