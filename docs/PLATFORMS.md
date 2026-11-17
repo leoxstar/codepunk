@@ -36,7 +36,10 @@ install and shell check on Windows hardware; hosted CI alone is insufficient.
 
 Until those checks pass, Windows behavior is fail-closed:
 
-- shell execution through the unsupported platform path is disabled;
+- the sandbox probe resolves the pinned `srt-win` helper and reports the
+  one-time elevated install needed to provision `srt-sandbox`;
+- shell execution stays disabled until that install exists; initialization
+  failures never fall back to an unsandboxed shell;
 - the local daemon does not start because it requires a Unix socket;
 - the product reports that Windows support is not implemented.
 

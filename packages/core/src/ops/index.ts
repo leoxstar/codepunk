@@ -111,7 +111,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     hint:
       sandboxIssue === null
         ? null
-        : "install the pinned srt dependency; shell tools stay disabled without it",
+        : /Windows sandbox|srt-win|not provisioned/u.test(sandboxIssue)
+          ? "provision the Windows sandbox once with `npx @anthropic-ai/sandbox-runtime windows-install`; shell tools stay disabled until then"
+          : "install the pinned srt dependency; shell tools stay disabled without it",
   });
   const modelIssue =
     typeof options.modelProbe === "function"

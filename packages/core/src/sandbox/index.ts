@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import {
   SandboxManager,
+  VENDORED_SRT_WIN_EXE,
   type SandboxDependencyCheck,
   type SandboxRuntimeConfig,
   type WrapWithSandboxOptions,
@@ -137,6 +138,12 @@ interface SrtManager {
 
 export interface CreateSrtSandboxOptions {
   manager?: SrtManager;
+  /**
+   * Test seam and embedding override. Production uses the running platform
+   * and the pinned runtime's vendored Windows helper.
+   */
+  platform?: NodeJS.Platform;
+  windowsSrtWinPath?: string;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -285,20 +292,41 @@ export class SrtSandbox implements ShellProvider {
     options: CreateSrtSandboxOptions = {},
   ): Promise<SrtSandbox> {
     const manager = options.manager ?? SandboxManager;
+    const platform = options.platform ?? process.platform;
     if (!manager.isSupportedPlatform()) {
       throw new SandboxUnavailableError(
         "srt does not support this platform; shell execution is disabled",
       );
     }
-    const dependencies = manager.checkDependencies();
-    if (dependencies.errors.length > 0) {
-      throw new SandboxUnavailableError(
-        `srt dependency check failed: ${dependencies.errors.join("; ")}`,
-      );
-    }
     const config = srtProfile(input);
+    const runtimeConfig: SandboxRuntimeConfig =
+      platform === "win32"
+        ? {
+            ...config,
+            windows: {
+              ...config.windows,
+              srtWin: {
+                path: options.windowsSrtWinPath ?? VENDORED_SRT_WIN_EXE,
+              },
+            },
+          }
+        : config;
+    // The runtime resolves srt-win from the configuration stored by
+    // initialize(), so a pre-initialize dependency check on Windows can
+    // only report "no srt-win path configured" even when the caller
+    // supplied one. Let initialize() perform the Windows probe; the
+    // post-initialize check below only collects its warnings.
+    let dependencies: SandboxDependencyCheck | null = null;
+    if (platform !== "win32") {
+      dependencies = manager.checkDependencies();
+      if (dependencies.errors.length > 0) {
+        throw new SandboxUnavailableError(
+          `srt dependency check failed: ${dependencies.errors.join("; ")}`,
+        );
+      }
+    }
     try {
-      await manager.initialize(config);
+      await manager.initialize(runtimeConfig);
     } catch (error) {
       throw new SandboxUnavailableError(
         `srt initialization failed: ${
@@ -307,7 +335,16 @@ export class SrtSandbox implements ShellProvider {
         { cause: error },
       );
     }
-    return new SrtSandbox(manager, config, dependencies.warnings);
+    if (platform === "win32") {
+      dependencies = manager.checkDependencies();
+      if (dependencies.errors.length > 0) {
+        await manager.reset?.();
+        throw new SandboxUnavailableError(
+          `srt dependency check failed: ${dependencies.errors.join("; ")}`,
+        );
+      }
+    }
+    return new SrtSandbox(manager, config, dependencies?.warnings ?? []);
   }
 
   private assertAvailable(): void {

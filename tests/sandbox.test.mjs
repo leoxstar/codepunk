@@ -68,6 +68,78 @@ test("missing srt dependencies disable execution", async () => {
   );
 });
 
+test("windows initialization passes the vendored srt-win helper", async () => {
+  const calls = [];
+  let captured = null;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => {
+      calls.push("check");
+      return { errors: [], warnings: [] };
+    },
+    initialize: async (config) => {
+      calls.push("initialize");
+      captured = config;
+    },
+    reset: async () => {},
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    { manager, platform: "win32" },
+  );
+  try {
+    assert.deepEqual(calls, ["initialize", "check"]);
+    assert.match(
+      captured.windows.srtWin.path,
+      /srt-win[\\/](?:x64|arm64)[\\/]srt-win\.exe$/u,
+    );
+    assert.equal(sandbox.descriptor.backend, "srt");
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("windows dependency failures after initialization fail closed", async () => {
+  let reset = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({
+      errors: ["Windows sandbox user is not provisioned"],
+      warnings: [],
+    }),
+    initialize: async () => {},
+    reset: async () => {
+      reset = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  await assert.rejects(
+    core.SrtSandbox.create(
+      {
+        cwd: "C:\\workspace",
+        workspaceRoot: "C:\\workspace",
+        deliveryRoot: "C:\\workspace",
+        codepunkHome: "C:\\codepunk-home",
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        windowsSrtWinPath: "C:\\runtime\\srt-win.exe",
+      },
+    ),
+    /srt dependency check failed: Windows sandbox user is not provisioned/u,
+  );
+  assert.equal(reset, true);
+});
+
 test("network allowlist reaches the srt profile and descriptor", async () => {
   let captured = null;
   const manager = {

@@ -49,6 +49,26 @@ test("doctor treats an unavailable model as a blocking issue", async () => {
   });
 });
 
+test("doctor gives the Windows sandbox provisioning command", async () => {
+  await withTempDirectory("codepunk-operations-windows-", async (root) => {
+    const { paths } = await makeProject(root);
+    const report = await core.runDoctor({
+      paths,
+      config: core.defaultConfig(),
+      environment: { PATH: "" },
+      sandboxProbe: async () =>
+        "srt initialization failed: Sandbox dependencies not available: Windows sandbox user is not provisioned",
+      modelProbe: async () => null,
+    });
+    const srt = report.checks.find((check) => check.id === "srt");
+    assert.equal(srt?.status, "error");
+    assert.match(
+      srt?.hint ?? "",
+      /npx @anthropic-ai\/sandbox-runtime windows-install/u,
+    );
+  });
+});
+
 test("doctor passes with an injected healthy environment", async () => {
   await withTempDirectory("codepunk-operations-", async (root) => {
     const { paths } = await makeProject(root);
