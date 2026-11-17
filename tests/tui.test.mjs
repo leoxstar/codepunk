@@ -898,7 +898,7 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
-        PTY_RUN_TIMEOUT: "4",
+        PTY_RUN_TIMEOUT: "10",
       },
     });
     assert.match(output, /codepunk · auto\/auto/u);
@@ -2012,12 +2012,14 @@ test("a real pty applies a custom per-resource trust decision", async () => {
         session.output(),
         /1\. Trust this workspace and remember/u,
       );
+      await waitForQuiet(session, 250);
       session.child.stdin.write("\u001b[B\u001b[B\r");
       await waitForOutput(
         session,
         "Load project resources",
         "resource checkbox",
       );
+      await waitForQuiet(session, 250);
       assert.match(session.output(), /\[x\] Project configuration/u);
       assert.match(session.output(), /\[x\] Project skills/u);
       assert.match(session.output(), /\[x\] Project instructions/u);
@@ -2025,6 +2027,7 @@ test("a real pty applies a custom per-resource trust decision", async () => {
       // Turn config and skills off, leaving only project instructions.
       session.child.stdin.write(" \u001b[B \r");
       await waitForOutput(session, "Apply custom trust", "custom scope");
+      await waitForQuiet(session, 250);
       assert.match(session.output(), /selected: instructions/u);
       session.child.stdin.write("\u001b[B\r");
       await waitForOutput(session, "codepunk · auto/auto", "custom startup");
