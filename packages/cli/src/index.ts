@@ -1549,6 +1549,25 @@ function writeRuntimeWarnings(runtime: CodepunkRuntime): void {
   }
 }
 
+function exhaustedBudgetMessage(runtime: CodepunkRuntime): string | null {
+  const maxTokens = runtime.config.budget.max_tokens;
+  const maxCostUsd = runtime.config.budget.max_cost_usd;
+  const usage = runtime.usage();
+  const tokensExhausted = maxTokens !== null && usage.total_tokens >= maxTokens;
+  const costExhausted = maxCostUsd !== null && usage.cost_total >= maxCostUsd;
+  if (!tokensExhausted && !costExhausted) {
+    return null;
+  }
+  const limits: string[] = [];
+  if (maxTokens !== null) {
+    limits.push(`${usage.total_tokens}/${maxTokens} tokens`);
+  }
+  if (maxCostUsd !== null) {
+    limits.push(`$${usage.cost_total}/$${maxCostUsd}`);
+  }
+  return `session budget exhausted (${limits.join(", ")}); start a new session to continue`;
+}
+
 async function runPrint(options: CliOptions, prompt: string): Promise<number> {
   if (options.allowUnsandboxedShell) {
     throw new Error("--allow-unsandboxed-shell is interactive only");
@@ -1619,6 +1638,10 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
     );
     if (modelIssue !== null) {
       throw new Error(modelIssue);
+    }
+    const budgetIssue = exhaustedBudgetMessage(runtime);
+    if (budgetIssue !== null) {
+      throw new Error(budgetIssue);
     }
     const sessionRuntime = await makeSessionRuntime(runtime);
     return await runPrintMode(sessionRuntime, {

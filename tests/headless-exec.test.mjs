@@ -474,6 +474,54 @@ test("a headless policy inside the repository is refused", async () => {
   });
 });
 
+test("print mode refuses an exhausted session budget", async () => {
+  await withTempDirectory("codepunk-headless-budget-", async (root) => {
+    const { project, home, modelServer } = await setup(root, [
+      "/bin/echo",
+      "unused",
+    ]);
+    try {
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        "[budget]\nmax_tokens = 1\n",
+      );
+      const first = await runCli(
+        ["-p", "first prompt", "--model", "local/local-test"],
+        { cwd: project, home },
+      );
+      assert.equal(first.code, 0, first.stderr);
+      assert.match(first.stdout, /finished/u);
+
+      const listed = await runCli(["sessions", "--json"], {
+        cwd: project,
+        home,
+      });
+      assert.equal(listed.code, 0, listed.stderr);
+      const sessionId = JSON.parse(listed.stdout)[0].id;
+
+      const second = await runCli(
+        [
+          "--session",
+          sessionId,
+          "-p",
+          "second prompt",
+          "--model",
+          "local/local-test",
+        ],
+        { cwd: project, home },
+      );
+      assert.equal(second.code, 1);
+      assert.match(
+        second.stderr,
+        /session budget exhausted \(6\/1 tokens\); start a new session to continue/u,
+      );
+      assert.doesNotMatch(second.stdout, /finished/u);
+    } finally {
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
+
 test("plugins are not loadable in print mode", async () => {
   await withTempDirectory("codepunk-headless-plugin-", async (root) => {
     const { project, home, modelServer } = await setup(root, [
