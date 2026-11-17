@@ -86,6 +86,13 @@ function compactionIssues(
 ): string[] {
   const issues: string[] = [];
   for (const event of eventForRun(events, runId, "compaction/decision")) {
+    if (
+      event.data.entries === 0 &&
+      event.data.failure !== undefined &&
+      /nothing to compact/iu.test(event.data.failure)
+    ) {
+      continue;
+    }
     if (event.data.reason === "manual" && event.data.cancelled) {
       issues.push("manual compaction was cancelled");
     } else if (event.data.cancelled) {

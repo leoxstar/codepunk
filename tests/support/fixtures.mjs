@@ -211,6 +211,7 @@ export function compactionEvent({
   entries = 0,
   head = null,
   seq = 2,
+  failure,
 } = {}) {
   return {
     type: "codepunk/event",
@@ -225,6 +226,7 @@ export function compactionEvent({
       entries,
       keep_recent_tokens: 0,
       evidence_head: head,
+      ...(failure === undefined ? {} : { failure }),
       ...(cancelled
         ? {}
         : {

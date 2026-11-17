@@ -298,6 +298,22 @@ test("malformed compaction, run-end head, and uncovered shell are unverifiable",
   assert.match(uncoveredResult.issues.join(" "), /uncovered/u);
 });
 
+test("a no-op manual compaction does not poison sign-off", () => {
+  const { records, head } = cleanRun();
+  const result = derive(records, [
+    runEndEvent({ head }),
+    compactionEvent({
+      reason: "manual",
+      cancelled: true,
+      entries: 0,
+      failure: "Compaction failed: Nothing to compact (session too small)",
+    }),
+    signOffEvent({ head }),
+  ]);
+  assert.equal(result.verdict.verdict, "complete");
+  assert.deepEqual(result.issues, []);
+});
+
 test("prepareSignOff succeeds on a clean run and binds the head", () => {
   const { records, head } = cleanRun();
   const result = core.prepareSignOff({
