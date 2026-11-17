@@ -10,7 +10,6 @@ import {
   ensureBuilt,
   withTempDirectory,
 } from "./support/helpers.mjs";
-import { writeFakeExecutable } from "./support/fake-executable.mjs";
 
 const core = await importCore();
 const PERMISSIVE_PARENT = {
@@ -956,10 +955,7 @@ test(
     await withTempDirectory("codepunk-child-shell-profile-", async (root) => {
       const project = path.join(root, "project");
       const home = path.join(root, "home");
-      const bin = path.join(root, "bin");
       await fs.mkdir(project);
-      await fs.mkdir(bin);
-      await writeFakeExecutable(bin, "printf", { stdout: "profile-shell" });
       await fs.writeFile(
         path.join(project, "subagent-input.txt"),
         "subagent input\n",
@@ -1018,7 +1014,6 @@ test(
           env: {
             ...process.env,
             CODEPUNK_HOME: home,
-            PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
             PI_OFFLINE: "1",
             NO_COLOR: "1",
           },
