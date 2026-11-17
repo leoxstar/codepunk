@@ -7,15 +7,17 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { importCore } from "./support/core.mjs";
+import { sandboxTempBase } from "./support/helpers.mjs";
 import { installScriptedStream, TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
 const execFileAsync = promisify(execFile);
 const TESTS_DIR = import.meta.dirname;
 
-async function setup() {
+async function setup(base = os.tmpdir()) {
+  await fs.mkdir(base, { recursive: true });
   const root = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), "codepunk-host-")),
+    await fs.mkdtemp(path.join(base, "codepunk-host-")),
   );
   const project = path.join(root, "project");
   const home = path.join(root, "home");
@@ -292,119 +294,124 @@ test("a replaced or extra registered tool aborts before the next request", async
   }
 });
 
-test(
-  "user_bash allow reaches srt and deny spawns no process",
-  {
-    skip:
-      process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
-        : false,
-  },
-  async () => {
-    const paths = await setup();
-    const fakeBin = path.join(paths.project, ".test-bin");
-    const marker = path.join(paths.project, "spawned-by-denied-command");
-    await fs.mkdir(fakeBin, { recursive: true });
+test("user_bash allow reaches srt and deny spawns no process", async () => {
+  const paths = await setup(
+    process.platform === "win32" ? sandboxTempBase() : os.tmpdir(),
+  );
+  const fakeBin = path.join(paths.project, ".test-bin");
+  const marker = path.join(paths.project, "spawned-by-denied-command");
+  await fs.mkdir(fakeBin, { recursive: true });
+  if (process.platform === "win32") {
+    await fs.writeFile(
+      path.join(fakeBin, "rm.cmd"),
+      `@echo off\r\ntype nul > "${marker}"\r\nexit /b 0\r\n`,
+    );
+  } else {
     await fs.writeFile(
       path.join(fakeBin, "rm"),
       `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`,
       { mode: 0o755 },
     );
-    const previousPath = process.env["PATH"];
-    process.env["PATH"] = `${fakeBin}:${previousPath ?? ""}`;
-    const sandbox = await core.SrtSandbox.create({
+  }
+  const pathKey =
+    Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ??
+    "PATH";
+  const previousPath = process.env[pathKey];
+  process.env[pathKey] = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+  const sandbox = await core.SrtSandbox.create({
+    cwd: paths.project,
+    workspaceRoot: paths.project,
+    deliveryRoot: paths.project,
+    codepunkHome: paths.home,
+    writeSet: [paths.project],
+  });
+  const { host, store, ledger } = await createHost(paths, { sandbox });
+  try {
+    const detector = await sandbox.execCommand(
+      "rm -rf detector",
+      paths.project,
+    );
+    assert.equal(detector.exitCode, 0, detector.output);
+    await fs.access(marker);
+    await fs.rm(marker);
+
+    const allowedCommand =
+      process.platform === "win32" ? "echo ok" : "printf ok";
+    const allowedHook = await host.session.extensionRunner.emitUserBash({
+      type: "user_bash",
+      command: allowedCommand,
+      excludeFromContext: false,
       cwd: paths.project,
-      workspaceRoot: paths.project,
-      deliveryRoot: paths.project,
-      codepunkHome: paths.home,
-      writeSet: [paths.project],
     });
-    const { host, store, ledger } = await createHost(paths, { sandbox });
-    try {
-      const detector = await sandbox.execCommand(
-        "rm -rf detector",
-        paths.project,
-      );
-      assert.equal(detector.exitCode, 0, detector.output);
-      await fs.access(marker);
-      await fs.rm(marker);
+    assert.ok(allowedHook);
+    assert.ok(allowedHook.operations);
+    assert.equal(allowedHook.result, undefined);
+    const result = await host.session.executeBash(allowedCommand, undefined, {
+      operations: allowedHook.operations,
+    });
+    assert.equal(result.output.trim(), "ok");
+    assert.equal(result.exitCode, 0);
+    const allowedEnds = store.allEvents.filter(
+      (event) =>
+        event.kind === "run/end" &&
+        event.data.run_id === host.currentRunId &&
+        event.data.state === "settled",
+    );
+    assert.equal(allowedEnds.length, 1);
 
-      const allowedHook = await host.session.extensionRunner.emitUserBash({
-        type: "user_bash",
-        command: "printf ok",
-        excludeFromContext: false,
-        cwd: paths.project,
-      });
-      assert.ok(allowedHook);
-      assert.ok(allowedHook.operations);
-      assert.equal(allowedHook.result, undefined);
-      const result = await host.session.executeBash("printf ok", undefined, {
-        operations: allowedHook.operations,
-      });
-      assert.equal(result.output.trim(), "ok");
-      assert.equal(result.exitCode, 0);
-      const allowedEnds = store.allEvents.filter(
-        (event) =>
-          event.kind === "run/end" &&
-          event.data.run_id === host.currentRunId &&
-          event.data.state === "settled",
-      );
-      assert.equal(allowedEnds.length, 1);
+    const deniedCommand = "rm -rf /";
+    const runBeforeDenied = host.currentRunId;
+    const deniedHook = await host.session.extensionRunner.emitUserBash({
+      type: "user_bash",
+      command: deniedCommand,
+      excludeFromContext: false,
+      cwd: paths.project,
+    });
+    assert.ok(deniedHook);
+    assert.equal(deniedHook.operations, undefined);
+    assert.ok(deniedHook.result);
+    assert.equal(deniedHook.result.exitCode, 1);
+    assert.notEqual(host.currentRunId, runBeforeDenied);
+    const deniedEnds = store.allEvents.filter(
+      (event) =>
+        event.kind === "run/end" && event.data.run_id === host.currentRunId,
+    );
+    assert.equal(deniedEnds.length, 1);
+    assert.equal(deniedEnds[0].data.state, "failed");
+    assert.equal(await fs.readFile(marker, "utf8").catch(() => null), null);
 
-      const deniedCommand = "rm -rf /";
-      const runBeforeDenied = host.currentRunId;
-      const deniedHook = await host.session.extensionRunner.emitUserBash({
-        type: "user_bash",
-        command: deniedCommand,
-        excludeFromContext: false,
-        cwd: paths.project,
-      });
-      assert.ok(deniedHook);
-      assert.equal(deniedHook.operations, undefined);
-      assert.ok(deniedHook.result);
-      assert.equal(deniedHook.result.exitCode, 1);
-      assert.notEqual(host.currentRunId, runBeforeDenied);
-      const deniedEnds = store.allEvents.filter(
-        (event) =>
-          event.kind === "run/end" && event.data.run_id === host.currentRunId,
-      );
-      assert.equal(deniedEnds.length, 1);
-      assert.equal(deniedEnds[0].data.state, "failed");
-      assert.equal(await fs.readFile(marker, "utf8").catch(() => null), null);
-
-      const records = await core.readEvidenceFile(
-        path.join(paths.root, "evidence.jsonl"),
-      );
-      const allowed = records.records.find(
-        (record) => record.command === "printf ok",
-      );
-      assert.ok(allowed);
-      assert.equal(allowed.source, "user_bash");
-      assert.equal(allowed.decision, "allow");
-      assert.equal(allowed.executor, "srt");
-      assert.equal(allowed.exit_code, 0);
-      assert.equal(allowed.sandbox.backend, "srt");
-      const denied = records.records.find(
-        (record) => record.command === deniedCommand,
-      );
-      assert.ok(denied);
-      assert.equal(denied.decision, "deny");
-      assert.equal(denied.rule, "shell.dangerous");
-      assert.equal(denied.executor, null);
-      assert.equal(denied.exit_code, null);
-      assert.match(ledger.head ?? "", /^sha256:/u);
-    } finally {
-      await host.dispose();
-      await sandbox.close();
-      if (previousPath === undefined) {
-        delete process.env["PATH"];
-      } else {
-        process.env["PATH"] = previousPath;
-      }
-      await fs.rm(paths.root, { recursive: true, force: true });
+    const records = await core.readEvidenceFile(
+      path.join(paths.root, "evidence.jsonl"),
+    );
+    const allowed = records.records.find(
+      (record) => record.command === allowedCommand,
+    );
+    assert.ok(allowed);
+    assert.equal(allowed.source, "user_bash");
+    assert.equal(allowed.decision, "allow");
+    assert.equal(allowed.executor, "srt");
+    assert.equal(allowed.exit_code, 0);
+    assert.equal(allowed.sandbox.backend, "srt");
+    const denied = records.records.find(
+      (record) => record.command === deniedCommand,
+    );
+    assert.ok(denied);
+    assert.equal(denied.decision, "deny");
+    assert.equal(denied.rule, "shell.dangerous");
+    assert.equal(denied.executor, null);
+    assert.equal(denied.exit_code, null);
+    assert.match(ledger.head ?? "", /^sha256:/u);
+  } finally {
+    await host.dispose();
+    await sandbox.close();
+    if (previousPath === undefined) {
+      delete process.env[pathKey];
+    } else {
+      process.env[pathKey] = previousPath;
     }
-  },
-);
+    await fs.rm(paths.root, { recursive: true, force: true });
+  }
+});
 
 test("a discovered skill file is readable without opening Codepunk home", async () => {
   const paths = await setup();
@@ -470,7 +477,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses the POSIX TZ/date command"
         : false,
   },
   async () => {

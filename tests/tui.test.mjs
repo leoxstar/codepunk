@@ -2084,6 +2084,7 @@ test("a real pty applies a custom per-resource trust decision", async () => {
           instructions: false,
         },
       );
+      await waitForQuiet(session, 1_000);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -2091,7 +2092,11 @@ test("a real pty applies a custom per-resource trust decision", async () => {
           setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
         ),
       ]);
-      assert.deepEqual(result, { code: 0, signal: null });
+      assert.deepEqual(
+        result,
+        { code: 0, signal: null },
+        stripAnsi(session.output()).slice(-4_000),
+      );
     } finally {
       await stopPty(session);
     }
@@ -2405,7 +2410,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX date and rm commands"
         : false,
   },
   async () => {
@@ -2584,7 +2589,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX touch and shell syntax"
         : false,
   },
   async () => {
@@ -2859,7 +2864,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX shell syntax"
         : false,
   },
   async () => {
@@ -2948,7 +2953,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX shell syntax"
         : false,
   },
   async () => {
@@ -4214,11 +4219,15 @@ test("a real pty navigates the session tree and forks into a child session", asy
         ];
         const parentId = idMatches.at(-1)?.[1];
         assert.ok(parentId);
-        const files = await fs.readdir(home, { recursive: true });
-        const stateEntry = files.find((entry) =>
-          entry.endsWith(path.join("sessions", parentId, "agent-state.json")),
+        const stateEntry = await waitFor(
+          async () =>
+            (await fs.readdir(home, { recursive: true })).find((entry) =>
+              entry.endsWith(
+                path.join("sessions", parentId, "agent-state.json"),
+              ),
+            ) ?? null,
+          "parent agent state",
         );
-        assert.ok(stateEntry);
         const statePath = path.join(home, stateEntry);
         const parentState = JSON.parse(await fs.readFile(statePath, "utf8"));
         const firstEntry = parentState.branch.find(
@@ -4235,10 +4244,13 @@ test("a real pty navigates the session tree and forks into a child session", asy
           `/tree ${firstEntry.id}`,
           `moved to ${firstEntry.id}`,
         );
-        const sessionLog = files.find((entry) =>
-          entry.endsWith(path.join("sessions", parentId, "session.jsonl")),
+        const sessionLog = await waitFor(
+          async () =>
+            (await fs.readdir(home, { recursive: true })).find((entry) =>
+              entry.endsWith(path.join("sessions", parentId, "session.jsonl")),
+            ) ?? null,
+          "parent session log",
         );
-        assert.ok(sessionLog);
         const logRecords = (
           await fs.readFile(path.join(home, sessionLog), "utf8")
         )
@@ -4270,19 +4282,26 @@ test("a real pty navigates the session tree and forks into a child session", asy
         const childId = childMatches.at(-1)?.[1];
         assert.ok(childId);
         assert.notEqual(childId, parentId);
-        const childFiles = await fs.readdir(home, { recursive: true });
-        const childStateEntry = childFiles.find((entry) =>
-          entry.endsWith(path.join("sessions", childId, "agent-state.json")),
+        const childStateEntry = await waitFor(
+          async () =>
+            (await fs.readdir(home, { recursive: true })).find((entry) =>
+              entry.endsWith(
+                path.join("sessions", childId, "agent-state.json"),
+              ),
+            ) ?? null,
+          "child agent state",
         );
-        assert.ok(childStateEntry);
         const childState = JSON.parse(
           await fs.readFile(path.join(home, childStateEntry), "utf8"),
         );
         assert.equal(childState.header.id, childId);
-        const childLogEntry = childFiles.find((entry) =>
-          entry.endsWith(path.join("sessions", childId, "session.jsonl")),
+        const childLogEntry = await waitFor(
+          async () =>
+            (await fs.readdir(home, { recursive: true })).find((entry) =>
+              entry.endsWith(path.join("sessions", childId, "session.jsonl")),
+            ) ?? null,
+          "child session log",
         );
-        assert.ok(childLogEntry);
         const childLog = (
           await fs.readFile(path.join(home, childLogEntry), "utf8")
         )

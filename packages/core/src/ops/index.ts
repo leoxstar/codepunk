@@ -7,7 +7,10 @@ import {
   type ProjectPaths,
 } from "../platform/paths.ts";
 import { resolveSearchBinary } from "../search/index.ts";
-import { SrtSandbox as SandboxProvider } from "../sandbox/index.ts";
+import {
+  probeSrtSandbox,
+  SrtSandbox as SandboxProvider,
+} from "../sandbox/index.ts";
 import { loadMcpTools, readMcpConfig } from "../mcp/index.ts";
 
 export type DoctorStatus = "ok" | "warn" | "error";
@@ -49,6 +52,18 @@ export interface DoctorOptions {
 async function defaultSandboxProbe(
   paths: ProjectPaths,
 ): Promise<string | null> {
+  // Windows initialize() stamps persistent ACLs over the workspace. A
+  // doctor probe must answer "can this shell run?" without changing the
+  // filesystem, so it uses the stateless dependency check there.
+  if (process.platform === "win32") {
+    return probeSrtSandbox({
+      cwd: paths.cwd,
+      workspaceRoot: paths.deliveryRoot,
+      deliveryRoot: paths.deliveryRoot,
+      codepunkHome: paths.home,
+      writeSet: [paths.cwd],
+    });
+  }
   try {
     const sandbox = await SandboxProvider.create({
       cwd: paths.cwd,
@@ -112,7 +127,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       sandboxIssue === null
         ? null
         : /Windows sandbox|srt-win|not provisioned/u.test(sandboxIssue)
-          ? "provision the Windows sandbox once with `npx @anthropic-ai/sandbox-runtime windows-install`; shell tools stay disabled until then"
+          ? "provision the Windows sandbox once with `npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install`; add `--skip-profile-grant` when the user profile must stay unreadable; shell tools stay disabled until then"
           : "install the pinned srt dependency; shell tools stay disabled without it",
   });
   const modelIssue =

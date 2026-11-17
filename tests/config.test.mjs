@@ -8,6 +8,7 @@ import {
   canCreateFileSymlink,
   createDirectoryLink,
   makeProject,
+  withSandboxTempDirectory,
   withTempDirectory,
   writeFile,
 } from "./support/helpers.mjs";
@@ -257,42 +258,33 @@ test("config reload turns loaded plugins off without restarting", async () => {
   });
 });
 
-test(
-  "read-only autonomy removes the runtime sandbox write grant",
-  {
-    skip:
-      process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
-        : false,
-  },
-  async () => {
-    await withTempDirectory("codepunk-config-readonly-", async (root) => {
-      const { projectRoot, paths } = await makeProject(root);
-      await writeFile(
-        path.join(paths.home, "config.toml"),
-        ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
-      );
-      const runtime = await core.createRuntime({
-        cwd: projectRoot,
-        environment: { CODEPUNK_HOME: paths.home },
-        approvalChannel: null,
-        allowMissingModel: true,
-      });
-      try {
-        assert.ok(runtime.sandbox);
-        const target = path.join(projectRoot, "read-only-probe.txt");
-        const write = await runtime.sandbox.execCommand(
-          `printf blocked > ${JSON.stringify(target)}`,
-          projectRoot,
-        );
-        assert.notEqual(write.exitCode, 0, write.output);
-        await assert.rejects(fs.stat(target), { code: "ENOENT" });
-      } finally {
-        await runtime.dispose();
-      }
+test("read-only autonomy removes the runtime sandbox write grant", async () => {
+  await withSandboxTempDirectory("codepunk-config-readonly-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "config.toml"),
+      ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
+    );
+    const runtime = await core.createRuntime({
+      cwd: projectRoot,
+      environment: { CODEPUNK_HOME: paths.home },
+      approvalChannel: null,
+      allowMissingModel: true,
     });
-  },
-);
+    try {
+      assert.ok(runtime.sandbox);
+      const target = path.join(projectRoot, "read-only-probe.txt");
+      const write = await runtime.sandbox.execCommand(
+        `node -e "require('fs').writeFileSync('read-only-probe.txt','blocked')"`,
+        projectRoot,
+      );
+      assert.notEqual(write.exitCode, 0, write.output);
+      await assert.rejects(fs.stat(target), { code: "ENOENT" });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
 
 test("read-only autonomy skips plugins enabled by persisted config", async () => {
   await withTempDirectory("codepunk-config-readonly-plugins-", async (root) => {

@@ -64,7 +64,7 @@ test("doctor gives the Windows sandbox provisioning command", async () => {
     assert.equal(srt?.status, "error");
     assert.match(
       srt?.hint ?? "",
-      /npx @anthropic-ai\/sandbox-runtime windows-install/u,
+      /npx --yes @anthropic-ai\/sandbox-runtime@0\.0\.82 windows-install/u,
     );
   });
 });

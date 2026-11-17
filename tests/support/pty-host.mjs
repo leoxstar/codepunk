@@ -25,12 +25,23 @@ const spawnMarker = path.join(project, "rm-spawned");
 await fs.mkdir(project, { recursive: true });
 await fs.mkdir(home, { recursive: true });
 await fs.mkdir(fakeBin, { recursive: true });
-await fs.writeFile(
-  path.join(fakeBin, "rm"),
-  `#!/bin/sh\ntouch ${JSON.stringify(spawnMarker)}\nexit 0\n`,
-  { mode: 0o755 },
-);
-process.env["PATH"] = `${fakeBin}:${process.env["PATH"] ?? ""}`;
+if (process.platform === "win32") {
+  await fs.writeFile(
+    path.join(fakeBin, "rm.cmd"),
+    `@echo off\r\ntype nul > "${spawnMarker}"\r\nexit /b 0\r\n`,
+  );
+} else {
+  await fs.writeFile(
+    path.join(fakeBin, "rm"),
+    `#!/bin/sh\ntouch ${JSON.stringify(spawnMarker)}\nexit 0\n`,
+    { mode: 0o755 },
+  );
+}
+const pathKey =
+  Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ??
+  "PATH";
+process.env[pathKey] =
+  `${fakeBin}${path.delimiter}${process.env[pathKey] ?? ""}`;
 process.env["PI_OFFLINE"] = "1";
 
 const ledger = await core.EvidenceLedger.open(evidencePath);

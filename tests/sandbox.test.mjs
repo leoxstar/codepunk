@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,13 +11,18 @@ import {
   readFakeEnv,
   writeFakeExecutable,
 } from "./support/fake-executable.mjs";
+import {
+  windowsSrtSkipReason,
+  withSandboxTempDirectory,
+} from "./support/helpers.mjs";
 
 const core = await importCore();
 const execFileAsync = promisify(execFile);
-const SRT_SKIP =
+const POSIX_SRT_SKIP =
   process.platform === "win32"
-    ? "the srt sandbox is not provisioned on this Windows host"
+    ? "the assertion uses POSIX shell commands and paths"
     : false;
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 
 async function setup() {
   const root = await fs.realpath(
@@ -63,6 +69,7 @@ test("missing srt dependencies disable execution", async () => {
         }),
         initialize: async () => {},
       },
+      platform: "linux",
     }),
     /dependency check failed/u,
   );
@@ -73,15 +80,14 @@ test("windows initialization passes the vendored srt-win helper", async () => {
   let captured = null;
   const manager = {
     isSupportedPlatform: () => true,
-    checkDependencies: () => {
-      calls.push("check");
-      return { errors: [], warnings: [] };
-    },
+    checkDependencies: () => ({
+      errors: ["unexpected manager probe"],
+      warnings: [],
+    }),
     initialize: async (config) => {
       calls.push("initialize");
       captured = config;
     },
-    reset: async () => {},
     cleanupAfterCommand: () => {},
   };
   const sandbox = await core.SrtSandbox.create(
@@ -92,10 +98,18 @@ test("windows initialization passes the vendored srt-win helper", async () => {
       codepunkHome: "C:\\codepunk-home",
       writeSet: ["."],
     },
-    { manager, platform: "win32" },
+    {
+      manager,
+      platform: "win32",
+      windowsDependencyCheck: async (config) => {
+        calls.push("check");
+        captured = config;
+        return { errors: [], warnings: [] };
+      },
+    },
   );
   try {
-    assert.deepEqual(calls, ["initialize", "check"]);
+    assert.deepEqual(calls, ["check", "initialize"]);
     assert.match(
       captured.windows.srtWin.path,
       /srt-win[\\/](?:x64|arm64)[\\/]srt-win\.exe$/u,
@@ -106,17 +120,13 @@ test("windows initialization passes the vendored srt-win helper", async () => {
   }
 });
 
-test("windows dependency failures after initialization fail closed", async () => {
-  let reset = false;
+test("windows dependency failures happen before initialization", async () => {
+  let initialized = false;
   const manager = {
     isSupportedPlatform: () => true,
-    checkDependencies: () => ({
-      errors: ["Windows sandbox user is not provisioned"],
-      warnings: [],
-    }),
-    initialize: async () => {},
-    reset: async () => {
-      reset = true;
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
     },
     cleanupAfterCommand: () => {},
   };
@@ -133,12 +143,306 @@ test("windows dependency failures after initialization fail closed", async () =>
         manager,
         platform: "win32",
         windowsSrtWinPath: "C:\\runtime\\srt-win.exe",
+        windowsDependencyCheck: async () => ({
+          errors: ["Windows sandbox user is not provisioned"],
+          warnings: [],
+        }),
       },
     ),
     /srt dependency check failed: Windows sandbox user is not provisioned/u,
   );
-  assert.equal(reset, true);
+  assert.equal(initialized, false);
 });
+
+test("windows initialization retries a transient proxy port collision", async () => {
+  let attempts = 0;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error(
+          "listen EADDRINUSE: address already in use 127.0.0.1:60089",
+        );
+        error.code = "EADDRINUSE";
+        throw error;
+      }
+    },
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "win32",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+    },
+  );
+  try {
+    assert.equal(attempts, 3);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("windows probe checks dependencies without initialization", async () => {
+  let initialized = false;
+  let checked = false;
+  const issue = await core.probeSrtSandbox(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager: {
+        isSupportedPlatform: () => true,
+        checkDependencies: () => ({
+          errors: ["unexpected manager probe"],
+          warnings: [],
+        }),
+        initialize: async () => {
+          initialized = true;
+        },
+      },
+      platform: "win32",
+      windowsDependencyCheck: async () => {
+        checked = true;
+        return {
+          errors: ["Windows sandbox user is not provisioned"],
+          warnings: [],
+        };
+      },
+    },
+  );
+  assert.equal(checked, true);
+  assert.equal(initialized, false);
+  assert.match(issue, /Windows sandbox user is not provisioned/u);
+});
+
+test("windows shell commands use argv wrapping without a shell", async () => {
+  let captured = null;
+  const cwd = process.cwd();
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({
+      errors: ["unexpected manager probe"],
+      warnings: [],
+    }),
+    initialize: async () => {},
+    wrapWithSandbox: async () => {
+      throw new Error("Windows must not use the string shell wrapper");
+    },
+    wrapWithSandboxArgv: async (
+      command,
+      _shell,
+      _config,
+      _signal,
+      cwd,
+      options,
+    ) => {
+      captured = { command, cwd, options };
+      return {
+        argv: [process.execPath, "-e", "process.stdout.write('argv-shell-ok')"],
+        env: { ...process.env, CODEPUNK_ARGV_PROBE: "yes" },
+      };
+    },
+    annotateStderrWithSandboxFailures: (_command, stderr) => stderr,
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "win32",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+    },
+  );
+  try {
+    const result = await sandbox.execCommand("echo argv-shell-ok", cwd);
+    assert.equal(result.exitCode, 0, result.output);
+    assert.equal(result.output, "argv-shell-ok");
+    assert.equal(result.executor, "srt");
+    assert.equal(captured.command, "echo argv-shell-ok");
+    assert.equal(captured.cwd, cwd);
+    assert.match(captured.options.commandId, /^[0-9a-f-]{36}$/u);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("windows shell output decodes the OEM code page after strict UTF-8", () => {
+  assert.equal(
+    core.decodeShellOutput(Buffer.from("plain ascii")),
+    "plain ascii",
+  );
+  assert.equal(
+    core.decodeShellOutput(Buffer.from("拒绝访问。", "utf8"), "win32"),
+    "拒绝访问。",
+  );
+  assert.equal(
+    core.decodeShellOutput(
+      Buffer.from([0xbe, 0xdc, 0xbe, 0xf8, 0xb7, 0xc3, 0xce, 0xca, 0xa1, 0xa3]),
+      "win32",
+    ),
+    "拒绝访问。",
+  );
+  assert.equal(
+    core.decodeShellOutput(Buffer.from("wide", "utf16le"), "win32"),
+    "wide",
+  );
+});
+
+test("windows execArgv replaces the runtime shell tail with argv", async () => {
+  let captured = null;
+  const cwd = process.cwd();
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({
+      errors: ["unexpected manager probe"],
+      warnings: [],
+    }),
+    initialize: async () => {},
+    wrapWithSandboxArgv: async (
+      command,
+      binShell,
+      _config,
+      _signal,
+      _cwd,
+      options,
+    ) => {
+      captured = { command, binShell, options };
+      return {
+        argv: [
+          process.execPath,
+          "-e",
+          "console.log(JSON.stringify(process.argv.slice(1)))",
+          binShell.exe,
+          command,
+        ],
+        env: process.env,
+      };
+    },
+    annotateStderrWithSandboxFailures: (_command, stderr) => stderr,
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "win32",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+    },
+  );
+  try {
+    const target = [process.execPath, "--version"];
+    const result = await sandbox.execArgv(target, cwd);
+    assert.equal(result.exitCode, 0, result.output);
+    assert.deepEqual(JSON.parse(result.output), target);
+    assert.equal(captured.command, "__CODEPUNK_ARGV_SENTINEL__");
+    assert.equal(captured.binShell.exe, "C:\\__codepunk_argv__\\runner.exe");
+    assert.match(captured.options.commandText, /node(?:\.exe)?/u);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("windows execArgv rejects script launchers", async () => {
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({
+      errors: ["unexpected manager probe"],
+      warnings: [],
+    }),
+    initialize: async () => {},
+    wrapWithSandboxArgv: async () => {
+      throw new Error("script launchers must be rejected before wrapping");
+    },
+    annotateStderrWithSandboxFailures: (_command, stderr) => stderr,
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\workspace",
+      workspaceRoot: "C:\\workspace",
+      deliveryRoot: "C:\\workspace",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "win32",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+    },
+  );
+  try {
+    await assert.rejects(
+      sandbox.execArgv(["C:\\tools\\run.cmd", "arg"], "C:\\workspace"),
+      /cannot start a Windows script/u,
+    );
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test(
+  "windows executable resolution uses PATH and PATHEXT",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codepunk-which-"));
+    try {
+      const bin = path.join(root, "bin");
+      await fs.mkdir(bin);
+      const executable = path.join(bin, "probe-tool.EXE");
+      await fs.writeFile(executable, "");
+      assert.equal(
+        core.resolveWindowsExecutable("probe-tool", {
+          PATH: bin,
+          PATHEXT: ".EXE",
+        }),
+        executable,
+      );
+      assert.equal(
+        core.resolveWindowsExecutable("probe-tool", {
+          PaTh: bin,
+          pAtHeXt: ".EXE",
+        }),
+        executable,
+      );
+      await assert.rejects(
+        async () =>
+          core.resolveWindowsExecutable("missing-probe-tool", {
+            PATH: bin,
+            PATHEXT: ".EXE",
+          }),
+        /not found on PATH/u,
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("network allowlist reaches the srt profile and descriptor", async () => {
   let captured = null;
@@ -162,7 +466,7 @@ test("network allowlist reaches the srt profile and descriptor", async () => {
       networkAllow: ["registry.npmjs.org", "*.npmjs.org"],
       networkDeny: ["evil.npmjs.org"],
     },
-    { manager },
+    { manager, platform: "linux" },
   );
   assert.deepEqual(captured.network.allowedDomains, [
     "*.npmjs.org",
@@ -181,7 +485,7 @@ test("network allowlist reaches the srt profile and descriptor", async () => {
 test(
   "srt runs allowed commands and confines reads and writes",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
@@ -241,7 +545,7 @@ test(
 test(
   "srt protects git config and hook execution surfaces",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
@@ -376,7 +680,7 @@ test("agent shell disables optional git locks so status cannot rewrite the index
 test(
   "read-only autonomy removes the workspace write grant",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
@@ -415,5 +719,157 @@ test(
     } finally {
       await readOnly.close();
     }
+  },
+);
+
+test(
+  "windows srt runs shell commands, confines writes, and executes argv",
+  {
+    skip: WINDOWS_SRT_SKIP,
+  },
+  async () => {
+    await withSandboxTempDirectory("codepunk-sandbox-win-", async (root) => {
+      const home = path.join(root, "home");
+      const project = path.join(root, "project");
+      const writable = path.join(project, "writable");
+      await fs.mkdir(path.join(project, ".codepunk"), { recursive: true });
+      await fs.mkdir(writable, { recursive: true });
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(
+        path.join(project, ".codepunk", "policy.toml"),
+        "protected\n",
+      );
+
+      const sandbox = await core.SrtSandbox.create({
+        cwd: project,
+        workspaceRoot: project,
+        deliveryRoot: project,
+        codepunkHome: home,
+        writeSet: [writable],
+      });
+      try {
+        const shell = await sandbox.execCommand("echo shell-ok", project);
+        assert.equal(shell.exitCode, 0, shell.output);
+        assert.equal(shell.output.trim(), "shell-ok");
+        assert.equal(shell.executor, "srt");
+
+        const inside = await sandbox.execCommand(
+          `node -e "require('fs').writeFileSync('inside.txt','inside')"`,
+          writable,
+        );
+        assert.equal(inside.exitCode, 0, inside.output);
+        assert.equal(
+          await fs.readFile(path.join(writable, "inside.txt"), "utf8"),
+          "inside",
+        );
+
+        const outsideTarget = path.join(project, "outside.txt");
+        const outside = await sandbox.execCommand(
+          `node -e "require('fs').writeFileSync('..\\\\outside.txt','outside')"`,
+          writable,
+        );
+        assert.notEqual(outside.exitCode, 0, outside.output);
+        await assert.rejects(fs.readFile(outsideTarget), { code: "ENOENT" });
+
+        const protectedRead = await sandbox.execCommand(
+          `node -e "process.stdout.write(require('fs').readFileSync('.codepunk/policy.toml','utf8'))"`,
+          project,
+        );
+        assert.notEqual(protectedRead.exitCode, 0, protectedRead.output);
+        assert.doesNotMatch(protectedRead.output, /^protected$/mu);
+
+        const argv = await sandbox.execArgv(
+          [process.execPath, "-e", "process.stdout.write('argv-ok')"],
+          project,
+        );
+        assert.equal(argv.exitCode, 0, argv.output);
+        assert.equal(argv.output, "argv-ok");
+      } finally {
+        await sandbox.close();
+      }
+    });
+  },
+);
+
+test(
+  "windows srt blocks network egress unless the destination is allowed",
+  {
+    skip: WINDOWS_SRT_SKIP,
+  },
+  async () => {
+    await withSandboxTempDirectory("codepunk-network-win-", async (root) => {
+      const home = path.join(root, "home");
+      const project = path.join(root, "project");
+      await fs.mkdir(home, { recursive: true });
+      await fs.mkdir(project, { recursive: true });
+      await fs.writeFile(
+        path.join(project, "probe.mjs"),
+        [
+          "const target = process.argv[2];",
+          "fetch(target, { signal: AbortSignal.timeout(15000) })",
+          '  .then((response) => { console.log("OK", response.status); process.exit(0); })',
+          '  .catch((error) => { console.error("FAIL", error.name, error.message); process.exit(1); });',
+          "",
+        ].join("\n"),
+      );
+
+      const loopback = http.createServer((_request, response) => {
+        response.end("loopback-ok");
+      });
+      await new Promise((resolve) => {
+        loopback.listen(0, "127.0.0.1", resolve);
+      });
+      const address = loopback.address();
+      assert.ok(address && typeof address === "object");
+      const loopbackUrl = `http://127.0.0.1:${address.port}/`;
+
+      try {
+        const denied = await core.SrtSandbox.create({
+          cwd: project,
+          workspaceRoot: project,
+          deliveryRoot: project,
+          codepunkHome: home,
+          writeSet: [project],
+        });
+        try {
+          const external = await denied.execCommand(
+            "node probe.mjs https://example.com/",
+            project,
+          );
+          assert.notEqual(external.exitCode, 0, external.output);
+          assert.match(external.output, /deny network-outbound example\.com/u);
+
+          const local = await denied.execCommand(
+            `node probe.mjs ${loopbackUrl}`,
+            project,
+          );
+          assert.notEqual(local.exitCode, 0, local.output);
+          assert.match(local.output, /deny network-outbound 127\.0\.0\.1/u);
+        } finally {
+          await denied.close();
+        }
+
+        const allowed = await core.SrtSandbox.create({
+          cwd: project,
+          workspaceRoot: project,
+          deliveryRoot: project,
+          codepunkHome: home,
+          writeSet: [project],
+          networkAllow: ["example.com"],
+        });
+        try {
+          const external = await allowed.execCommand(
+            "node probe.mjs https://example.com/",
+            project,
+          );
+          assert.equal(external.exitCode, 0, external.output);
+          assert.match(external.output, /OK 200/u);
+        } finally {
+          await allowed.close();
+        }
+      } finally {
+        await new Promise((resolve) => loopback.close(resolve));
+      }
+    });
   },
 );

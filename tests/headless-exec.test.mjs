@@ -5,12 +5,20 @@ import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
-import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
+import { importCore } from "./support/core.mjs";
+import {
+  ensureBuilt,
+  windowsSrtSkipReason,
+  withSandboxTempDirectory,
+  withTempDirectory,
+} from "./support/helpers.mjs";
 
-const SRT_SKIP =
+const core = await importCore();
+const POSIX_SRT_SKIP =
   process.platform === "win32"
-    ? "headless exec requires the srt sandbox, which is not provisioned here"
+    ? "the fixture uses POSIX executables and shell syntax"
     : false;
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 
 function digest(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -157,7 +165,7 @@ async function readEvidence(home) {
 async function setup(root, argv) {
   const project = path.join(root, "project");
   const home = path.join(root, "home");
-  await fs.mkdir(project);
+  await fs.mkdir(project, { recursive: true });
   await fs.mkdir(home);
   await fs.writeFile(
     path.join(home, "auth.json"),
@@ -197,7 +205,7 @@ async function setup(root, argv) {
 test(
   "an explicit headless policy allows exact argv exec",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-exec-", async (root) => {
@@ -251,7 +259,7 @@ test(
 test(
   "an argv change is denied without a new approval",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-exec-deny-", async (root) => {
@@ -301,7 +309,7 @@ test(
 test(
   "a symlinked shell is denied despite an approved digest",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-symlink-", async (root) => {
@@ -352,7 +360,7 @@ test(
 test(
   "a shebang script is denied as non-native",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-script-", async (root) => {
@@ -403,12 +411,14 @@ test(
 );
 
 async function runInterpreterCase({ root, withScriptDigest, scriptBytes }) {
-  const script = path.join(root, "approved.mjs");
+  const project = path.join(root, "project");
+  const script = path.join(project, "approved.mjs");
+  await fs.mkdir(project, { recursive: true });
   await fs.writeFile(script, 'process.stdout.write("SCRIPT_OK\\n");\n');
   const argv = [process.execPath, script];
   const exeDigest = digest(await fs.readFile(process.execPath));
   const scriptDigest = digest(scriptBytes);
-  const { project, home, modelServer } = await setup(root, argv);
+  const { home, modelServer } = await setup(root, argv);
   const policy = path.join(root, "headless.toml");
   await fs.writeFile(
     policy,
@@ -451,7 +461,7 @@ async function runInterpreterCase({ root, withScriptDigest, scriptBytes }) {
 test(
   "an interpreter is allowed once its script digest is approved",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-interp-", async (root) => {
@@ -468,9 +478,33 @@ test(
 );
 
 test(
+  "windows headless exec runs an approved interpreter with argv",
+  {
+    skip:
+      process.platform !== "win32"
+        ? "Windows-only srt argv path"
+        : WINDOWS_SRT_SKIP,
+  },
+  async () => {
+    await withSandboxTempDirectory("codepunk-headless-win-", async (root) => {
+      const bytes = Buffer.from('process.stdout.write("SCRIPT_OK\\n");\n');
+      const exec = await runInterpreterCase({
+        root,
+        withScriptDigest: true,
+        scriptBytes: bytes,
+      });
+      assert.equal(exec.decision, "allow");
+      assert.equal(exec.executor, "srt");
+      assert.equal(exec.coverage, "enforced");
+      assert.match(exec.output_preview, /SCRIPT_OK/u);
+    });
+  },
+);
+
+test(
   "an interpreter without a pinned script digest stays denied",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-interp-", async (root) => {
@@ -488,7 +522,7 @@ test(
 test(
   "an interpreter whose script digest changed is denied",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     await withTempDirectory("codepunk-headless-interp-", async (root) => {
