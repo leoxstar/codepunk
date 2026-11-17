@@ -4,12 +4,24 @@ import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  assertPrivateFile,
+  createDirectoryLink,
   makeProject,
   withTempDirectory,
   writeFile,
 } from "./support/helpers.mjs";
 
 const core = await importCore();
+
+const SAFE_EXECUTABLE =
+  process.platform === "win32"
+    ? path.join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "Robocopy.exe",
+      )
+    : "/bin/mkdir";
+const SAFE_COMMAND = process.platform === "win32" ? "robocopy" : "mkdir";
 
 async function executableSha(executable) {
   const bytes = await fs.readFile(executable);
@@ -37,10 +49,10 @@ function ruleBlock(id, argv, cwd, digest) {
 test("scoped rules are exact argv plus digest plus cwd", async () => {
   await withTempDirectory("codepunk-autonomy-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);
-    const digest = await executableSha("/bin/mkdir");
+    const digest = await executableSha(SAFE_EXECUTABLE);
     const file = await rulesFile(root, [
       "version = 1",
-      ...ruleBlock("make-one", ["mkdir", "made"], projectRoot, digest),
+      ...ruleBlock("make-one", [SAFE_COMMAND, "made"], projectRoot, digest),
     ]);
     const loaded = await core.loadScopedRules(file, paths);
     assert.equal(loaded.rules.length, 1);
@@ -54,20 +66,20 @@ test("scoped rules are exact argv plus digest plus cwd", async () => {
     });
     const allowed = await controller.authorize({
       tool: "bash",
-      command: "mkdir made",
+      command: `${SAFE_COMMAND} made`,
       cwd: projectRoot,
     });
     assert.equal(allowed?.id, "make-one");
     const userBash = await controller.authorize({
       tool: "user_bash",
-      command: "mkdir made",
+      command: `${SAFE_COMMAND} made`,
       cwd: projectRoot,
     });
     assert.equal(userBash?.id, "make-one");
     assert.equal(
       await controller.authorize({
         tool: "bash",
-        command: "mkdir made-other",
+        command: `${SAFE_COMMAND} made-other`,
         cwd: projectRoot,
       }),
       null,
@@ -75,7 +87,7 @@ test("scoped rules are exact argv plus digest plus cwd", async () => {
     assert.equal(
       await controller.authorize({
         tool: "bash",
-        command: "mkdir made",
+        command: `${SAFE_COMMAND} made`,
         cwd: paths.home,
       }),
       null,
@@ -83,7 +95,7 @@ test("scoped rules are exact argv plus digest plus cwd", async () => {
     assert.equal(
       await controller.authorize({
         tool: "bash",
-        command: "mkdir made && touch escape",
+        command: `${SAFE_COMMAND} made && touch escape`,
         cwd: projectRoot,
       }),
       null,
@@ -108,7 +120,7 @@ test("scoped rules are exact argv plus digest plus cwd", async () => {
     assert.equal(
       await controller.authorize({
         tool: "bash",
-        command: "mkdir made",
+        command: `${SAFE_COMMAND} made`,
         cwd: projectRoot,
       }),
       null,
@@ -120,11 +132,11 @@ test("scoped rules compare cwd through symlinks", async () => {
   await withTempDirectory("codepunk-autonomy-symlink-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);
     const link = path.join(root, "project-link");
-    await fs.symlink(projectRoot, link, "dir");
-    const digest = await executableSha("/bin/mkdir");
+    await createDirectoryLink(projectRoot, link);
+    const digest = await executableSha(SAFE_EXECUTABLE);
     const file = await rulesFile(root, [
       "version = 1",
-      ...ruleBlock("make-through-link", ["mkdir", "made"], link, digest),
+      ...ruleBlock("make-through-link", [SAFE_COMMAND, "made"], link, digest),
     ]);
     const loaded = await core.loadScopedRules(file, paths);
     assert.equal(loaded.rules[0].cwd, await fs.realpath(projectRoot));
@@ -137,7 +149,7 @@ test("scoped rules compare cwd through symlinks", async () => {
     for (const cwd of [projectRoot, link]) {
       const allowed = await controller.authorize({
         tool: "bash",
-        command: "mkdir made",
+        command: `${SAFE_COMMAND} made`,
         cwd,
       });
       assert.equal(allowed?.id, "make-through-link", cwd);
@@ -148,7 +160,7 @@ test("scoped rules compare cwd through symlinks", async () => {
 test("scoped autonomy rejects cwd-only, glob, and project files", async () => {
   await withTempDirectory("codepunk-autonomy-negative-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);
-    const digest = await executableSha("/bin/mkdir");
+    const digest = await executableSha(SAFE_EXECUTABLE);
     const cwdOnly = await rulesFile(root, [
       "version = 1",
       "[[rules]]",
@@ -165,7 +177,7 @@ test("scoped autonomy rejects cwd-only, glob, and project files", async () => {
       "version = 1",
       "[[rules]]",
       'id = "glob"',
-      'argv = ["mkdir", "build-*"]',
+      `argv = [${JSON.stringify(SAFE_COMMAND)}, "build-*"]`,
       `cwd = ${JSON.stringify(projectRoot)}`,
       `executable_sha256 = ${JSON.stringify(digest)}`,
     ]);
@@ -178,7 +190,7 @@ test("scoped autonomy rejects cwd-only, glob, and project files", async () => {
       "version = 1",
       "[[rules]]",
       'id = "prefix"',
-      'argv = ["mkdir", "build"]',
+      `argv = [${JSON.stringify(SAFE_COMMAND)}, "build"]`,
       'prefix = "build"',
       `cwd = ${JSON.stringify(projectRoot)}`,
       `executable_sha256 = ${JSON.stringify(digest)}`,
@@ -193,7 +205,7 @@ test("scoped autonomy rejects cwd-only, glob, and project files", async () => {
       inside,
       [
         "version = 1",
-        ...ruleBlock("inside", ["mkdir", "made"], projectRoot, digest),
+        ...ruleBlock("inside", [SAFE_COMMAND, "made"], projectRoot, digest),
       ].join("\n"),
     );
     await fs.chmod(inside, 0o600);
@@ -216,10 +228,10 @@ test("scoped autonomy rejects cwd-only, glob, and project files", async () => {
 test("only exact scoped rules pass and argv changes ask again", async () => {
   await withTempDirectory("codepunk-autonomy-policy-", async (root) => {
     const { projectRoot, paths } = await makeProject(root);
-    const digest = await executableSha("/bin/mkdir");
+    const digest = await executableSha(SAFE_EXECUTABLE);
     const file = await rulesFile(root, [
       "version = 1",
-      ...ruleBlock("make-one", ["mkdir", "made"], projectRoot, digest),
+      ...ruleBlock("make-one", [SAFE_COMMAND, "made"], projectRoot, digest),
     ]);
     const loaded = await core.loadScopedRules(file, paths);
     const controller = new core.AutonomyController({
@@ -277,7 +289,7 @@ test("only exact scoped rules pass and argv changes ask again", async () => {
     });
     const allowed = await wrapped.execute(
       "call-1",
-      { command: "mkdir made" },
+      { command: `${SAFE_COMMAND} made` },
       undefined,
       undefined,
       undefined,
@@ -293,7 +305,7 @@ test("only exact scoped rules pass and argv changes ask again", async () => {
 
     const denied = await wrapped.execute(
       "call-2",
-      { command: "mkdir made-other" },
+      { command: `${SAFE_COMMAND} made-other` },
       undefined,
       undefined,
       undefined,
@@ -564,7 +576,7 @@ test("autonomy profile can change live but scoped still requires rules", () => {
 
   const rule = {
     id: "make-one",
-    argv: ["/bin/mkdir", "made"],
+    argv: [SAFE_COMMAND, "made"],
     cwd: path.resolve("/tmp"),
     executable_sha256: `sha256:${"0".repeat(64)}`,
     rule_sha256: `sha256:${"1".repeat(64)}`,
@@ -602,22 +614,22 @@ test("persisted approval rules are exact, deduplicated, and reloadable", async (
     const file = path.join(paths.home, "scoped-rules.toml");
     const first = await core.persistScopedRule({
       paths,
-      argv: ["mkdir", "made"],
+      argv: [SAFE_COMMAND, "made"],
       cwd: projectRoot,
       filePath: file,
     });
     assert.equal(first.created, true);
     assert.match(first.rule.id, /^approval-[0-9a-f]{12}$/u);
-    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+    await assertPrivateFile(file);
 
     const loaded = await core.loadScopedRules(file, paths);
     assert.equal(loaded.rules.length, 1);
-    assert.deepEqual(loaded.rules[0].argv, ["mkdir", "made"]);
+    assert.deepEqual(loaded.rules[0].argv, [SAFE_COMMAND, "made"]);
     assert.equal(loaded.rules[0].cwd, await fs.realpath(projectRoot));
 
     const duplicate = await core.persistScopedRule({
       paths,
-      argv: ["mkdir", "made"],
+      argv: [SAFE_COMMAND, "made"],
       cwd: projectRoot,
       filePath: file,
     });
@@ -649,10 +661,14 @@ test("persisted approval rules reject shells, globs, escapes, and unsafe config"
       const file = path.join(paths.home, "scoped-rules.toml");
       for (const request of [
         { argv: ["/bin/sh", "-c", "true"], error: /cannot launch a shell/u },
-        { argv: ["mkdir", "build-*"], error: /glob or pattern/u },
-        { argv: ["mkdir", "made"], cwd: "relative", error: /absolute path/u },
+        { argv: [SAFE_COMMAND, "build-*"], error: /glob or pattern/u },
         {
-          argv: ["mkdir", "made"],
+          argv: [SAFE_COMMAND, "made"],
+          cwd: "relative",
+          error: /absolute path/u,
+        },
+        {
+          argv: [SAFE_COMMAND, "made"],
           filePath: path.join(projectRoot, "rules.toml"),
           error: /outside the repository/u,
         },
@@ -713,10 +729,10 @@ test(
   async () => {
     await withTempDirectory("codepunk-autonomy-mode-", async (root) => {
       const { projectRoot, paths } = await makeProject(root);
-      const digest = await executableSha("/bin/mkdir");
+      const digest = await executableSha(SAFE_EXECUTABLE);
       const file = await rulesFile(root, [
         "version = 1",
-        ...ruleBlock("make-one", ["mkdir", "made"], projectRoot, digest),
+        ...ruleBlock("make-one", [SAFE_COMMAND, "made"], projectRoot, digest),
       ]);
       await fs.chmod(file, 0o666);
       await assert.rejects(

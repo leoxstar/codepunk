@@ -245,6 +245,14 @@ export async function persistScopedRule(
   }
   const cwd = resolveRealPath(normalizeAbsolute(input.cwd));
   const argv = [...input.argv];
+  // Refuse a shell launcher before resolving it. The refusal must not depend
+  // on whether this host happens to have /bin/sh or cmd.exe on disk.
+  if (isShellLauncher(argv)) {
+    throw new ConfigError(
+      "scoped rule cannot launch a shell or interpreter",
+      "autonomy.scoped_rules",
+    );
+  }
   const executable = await resolveExecutable(
     argv[0] ?? "",
     cwd,
