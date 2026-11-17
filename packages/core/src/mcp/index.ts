@@ -816,6 +816,7 @@ function operationError(
   server: string,
   method: string,
   error: unknown,
+  authHint?: string,
 ): McpError {
   // connect() already maps transport failures. Do not turn a specific
   // mcp.auth_required or mcp.timeout code into a generic startup failure when
@@ -829,7 +830,8 @@ function operationError(
   ) {
     return new McpError(
       "mcp.auth_required",
-      `MCP server ${server} requires sign-in; run codepunk mcp login ${server}`,
+      authHint ??
+        `MCP server ${server} requires sign-in; run codepunk mcp login ${server}`,
     );
   }
   if (error instanceof McpAuthError) {
@@ -880,6 +882,9 @@ async function connect(
           store: new McpAuthStore(home),
           settings: oauthSettings(config.oauth, config.name, process.env),
         });
+    const authHint = hasAuthorization
+      ? `MCP server ${config.name} rejected its configured Authorization header; update it in mcp.toml or remove it to use OAuth`
+      : undefined;
     const transport = new StreamableHttpTransport({
       url: config.url,
       headers,
@@ -901,7 +906,7 @@ async function connect(
     } catch (error) {
       await client.close().catch(() => {});
       await authProvider?.settled().catch(() => {});
-      throw operationError(config.name, "initialize", error);
+      throw operationError(config.name, "initialize", error, authHint);
     }
   }
   const env = expandReferences(config.env, config.name, "environment variable");

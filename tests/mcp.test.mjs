@@ -935,6 +935,42 @@ test("a user-scope Streamable HTTP server reuses Pi transport and expands header
   });
 });
 
+test("a rejected static HTTP Authorization header explains the header", async () => {
+  await withTempDirectory("codepunk-mcp-http-auth-", async (root) => {
+    const project = await makeRepo(root);
+    const home = path.join(root, "home");
+    const paths = await projectPaths(root, project, home);
+    const server = await startHttpMcpServer("http-test-token");
+    try {
+      await writeFile(
+        path.join(home, "mcp.toml"),
+        [
+          "[servers.remote]",
+          `url = ${JSON.stringify(server.url)}`,
+          "",
+          "[servers.remote.headers]",
+          'Authorization = "Bearer wrong-token"',
+          "",
+        ].join("\n"),
+      );
+      const bundle = await core.loadMcpTools({ paths, strict: false });
+      try {
+        assert.equal(bundle.failures.length, 1);
+        assert.equal(bundle.failures[0].code, "mcp.auth_required");
+        assert.match(
+          bundle.failures[0].message,
+          /rejected its configured Authorization header/u,
+        );
+        assert.doesNotMatch(bundle.failures[0].message, /mcp login/u);
+      } finally {
+        await bundle.close();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 test("HTTP MCP configuration accepts OAuth settings and rejects unsafe variants", async () => {
   await withTempDirectory("codepunk-mcp-http-invalid-", async (root) => {
     const project = await makeRepo(root);
