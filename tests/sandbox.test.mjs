@@ -23,6 +23,7 @@ const POSIX_SRT_SKIP =
     ? "the assertion uses POSIX shell commands and paths"
     : false;
 const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
+const WINDOWS_HOME_PROTECTION_NOOP = async () => {};
 
 async function setup() {
   const root = await fs.realpath(
@@ -106,6 +107,7 @@ test("windows initialization passes the vendored srt-win helper", async () => {
         captured = config;
         return { errors: [], warnings: [] };
       },
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {
@@ -243,6 +245,7 @@ test("windows still accepts a project beneath the user profile", async () => {
       platform: "win32",
       userHome: "C:\\Users\\probe",
       windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {
@@ -283,6 +286,191 @@ test("the user-profile write-root guard does not apply on POSIX", async () => {
   }
 });
 
+test("windows protects an out-of-root codepunk home instead of walking its parent", async () => {
+  await withSandboxTempDirectory("codepunk-home-deny-", async (root) => {
+    const project = path.join(root, "project");
+    const codepunkHome = path.join(root, "home", ".codepunk");
+    await fs.mkdir(project, { recursive: true });
+    const protectedHomes = [];
+    let captured = null;
+    const manager = {
+      isSupportedPlatform: () => true,
+      checkDependencies: () => ({ errors: [], warnings: [] }),
+      initialize: async (config) => {
+        captured = config;
+      },
+      cleanupAfterCommand: () => {},
+    };
+    const sandbox = await core.SrtSandbox.create(
+      {
+        cwd: project,
+        workspaceRoot: project,
+        deliveryRoot: project,
+        codepunkHome,
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        windowsSrtWinPath: "C:\\srt-win.exe",
+        windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+        protectWindowsCodepunkHome: async (home, srtWinPath) => {
+          protectedHomes.push({ home, srtWinPath });
+        },
+      },
+    );
+    try {
+      assert.deepEqual(protectedHomes, [
+        { home: path.resolve(codepunkHome), srtWinPath: "C:\\srt-win.exe" },
+      ]);
+      const denyRead = captured.filesystem.denyRead.map((entry) =>
+        path.resolve(entry),
+      );
+      const denyWrite = captured.filesystem.denyWrite.map((entry) =>
+        path.resolve(entry),
+      );
+      assert.equal(denyRead.includes(path.resolve(codepunkHome)), false);
+      assert.equal(denyWrite.includes(path.resolve(codepunkHome)), false);
+      assert.ok(
+        denyWrite.includes(path.resolve(path.join(project, ".codepunk"))),
+      );
+      assert.ok(denyWrite.includes(path.resolve(path.join(project, ".git"))));
+    } finally {
+      await sandbox.close();
+    }
+  });
+});
+
+test("windows keeps a codepunk home inside the write root in the srt policy", async () => {
+  await withSandboxTempDirectory("codepunk-home-inside-", async (root) => {
+    const project = path.join(root, "project");
+    const codepunkHome = path.join(project, ".codepunk-home");
+    await fs.mkdir(codepunkHome, { recursive: true });
+    let protectedHome = null;
+    let captured = null;
+    const manager = {
+      isSupportedPlatform: () => true,
+      checkDependencies: () => ({ errors: [], warnings: [] }),
+      initialize: async (config) => {
+        captured = config;
+      },
+      cleanupAfterCommand: () => {},
+    };
+    const sandbox = await core.SrtSandbox.create(
+      {
+        cwd: project,
+        workspaceRoot: project,
+        deliveryRoot: project,
+        codepunkHome,
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+        protectWindowsCodepunkHome: async (home) => {
+          protectedHome = home;
+        },
+      },
+    );
+    try {
+      assert.equal(protectedHome, null);
+      const denyRead = captured.filesystem.denyRead.map((entry) =>
+        path.resolve(entry),
+      );
+      const denyWrite = captured.filesystem.denyWrite.map((entry) =>
+        path.resolve(entry),
+      );
+      assert.ok(denyRead.includes(path.resolve(codepunkHome)));
+      assert.ok(denyWrite.includes(path.resolve(codepunkHome)));
+    } finally {
+      await sandbox.close();
+    }
+  });
+});
+
+test("the codepunk-home protection does not run on POSIX", async () => {
+  await withSandboxTempDirectory("codepunk-home-posix-", async (root) => {
+    const project = path.join(root, "project");
+    const codepunkHome = path.join(root, "home", ".codepunk");
+    await fs.mkdir(project, { recursive: true });
+    let protectedHome = null;
+    let captured = null;
+    const manager = {
+      isSupportedPlatform: () => true,
+      checkDependencies: () => ({ errors: [], warnings: [] }),
+      initialize: async (config) => {
+        captured = config;
+      },
+      cleanupAfterCommand: () => {},
+    };
+    const sandbox = await core.SrtSandbox.create(
+      {
+        cwd: project,
+        workspaceRoot: project,
+        deliveryRoot: project,
+        codepunkHome,
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "linux",
+        protectWindowsCodepunkHome: async (home) => {
+          protectedHome = home;
+        },
+      },
+    );
+    try {
+      assert.equal(protectedHome, null);
+      assert.ok(
+        captured.filesystem.denyRead
+          .map((entry) => path.resolve(entry))
+          .includes(path.resolve(codepunkHome)),
+      );
+      assert.ok(
+        captured.filesystem.denyWrite
+          .map((entry) => path.resolve(entry))
+          .includes(path.resolve(codepunkHome)),
+      );
+    } finally {
+      await sandbox.close();
+    }
+  });
+});
+
+test("windows startup fails closed when codepunk-home protection fails", async () => {
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  await assert.rejects(
+    core.SrtSandbox.create(
+      {
+        cwd: "/workspace",
+        workspaceRoot: "/workspace",
+        deliveryRoot: "/workspace",
+        codepunkHome: "/srv/codepunk-home",
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+        protectWindowsCodepunkHome: async () => {
+          throw new Error("icacls denied");
+        },
+      },
+    ),
+    /icacls denied/u,
+  );
+  assert.equal(initialized, false);
+});
+
 test("windows initialization retries a transient proxy port collision", async () => {
   let attempts = 0;
   const manager = {
@@ -312,6 +500,7 @@ test("windows initialization retries a transient proxy port collision", async ()
       manager,
       platform: "win32",
       windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {
@@ -400,6 +589,7 @@ test("windows shell commands use argv wrapping without a shell", async () => {
       manager,
       platform: "win32",
       windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {
@@ -482,6 +672,7 @@ test("windows execArgv replaces the runtime shell tail with argv", async () => {
       manager,
       platform: "win32",
       windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {
@@ -523,6 +714,7 @@ test("windows execArgv rejects script launchers", async () => {
       manager,
       platform: "win32",
       windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
     },
   );
   try {

@@ -232,6 +232,15 @@ export interface CreateSrtSandboxOptions {
    * write root. Production uses the current user's home directory.
    */
   userHome?: string;
+  /**
+   * Test seam for the Windows deny ACE that keeps the codepunk home out of
+   * the srt ACL walk. Production applies an inheritable deny ACE for the
+   * sandbox user with `icacls`.
+   */
+  protectWindowsCodepunkHome?: (
+    codepunkHome: string,
+    srtWinPath: string | undefined,
+  ) => Promise<void>;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -295,6 +304,196 @@ function assertWindowsWriteRootsAreScoped(
       );
     }
   }
+}
+
+interface WindowsCommandResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+async function runWindowsCommand(
+  executable: string,
+  args: readonly string[],
+): Promise<WindowsCommandResult> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(executable, [...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new Error(
+          `${path.win32.basename(executable)} timed out after 30 seconds`,
+        ),
+      );
+    }, 30_000);
+    timer.unref();
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        code,
+        stdout: decodeShellOutput(Buffer.concat(stdout), "win32"),
+        stderr: decodeShellOutput(Buffer.concat(stderr), "win32"),
+      });
+    });
+  });
+}
+
+function windowsSystemExecutable(name: string): string {
+  const systemRoot =
+    process.env["SystemRoot"] ?? process.env["windir"] ?? "C:\\Windows";
+  const candidate = path.win32.join(systemRoot, "System32", name);
+  return existsSync(candidate) ? candidate : name;
+}
+
+function windowsPathKey(value: string): string {
+  return path.win32.resolve(value).toLowerCase();
+}
+
+function hasInheritableSandboxDeny(
+  aclOutput: string,
+  sid: string,
+  name: string | undefined,
+): boolean {
+  return aclOutput.split(/\r?\n/u).some((line) => {
+    const namesSandboxUser =
+      line.includes(sid) || (name !== undefined && line.includes(name));
+    return (
+      namesSandboxUser &&
+      line.includes("(N)") &&
+      line.includes("(OI)") &&
+      line.includes("(CI)")
+    );
+  });
+}
+
+/**
+ * srt-win's deny stamp also writes a FILE_DELETE_CHILD ACE on the target's
+ * parent. For the codepunk home that parent is the user profile, and the
+ * walk over it can burn CPU for minutes with no output. Protect the
+ * directory directly instead: an inheritable deny ACE for the sandbox user
+ * costs one `icacls` call, needs no parent walk, and stays correct for every
+ * later session because no sandboxed command should ever reach this tree.
+ */
+export async function protectWindowsCodepunkHome(
+  codepunkHome: string,
+  srtWinPath?: string,
+): Promise<void> {
+  const srtWin = resolveSrtWin({
+    path: srtWinPath ?? VENDORED_SRT_WIN_EXE,
+  });
+  const status = await runWindowsCommand(srtWin.exe, [
+    ...srtWin.prependArgs,
+    "user",
+    "status",
+  ]);
+  if (status.code !== 0) {
+    throw new SandboxUnavailableError(
+      `cannot protect ${codepunkHome}: srt-win user status exited ${status.code}: ${status.stderr.trim() || status.stdout.trim()}`,
+    );
+  }
+  let sid: string | undefined;
+  let name: string | undefined;
+  try {
+    const parsed = JSON.parse(status.stdout) as {
+      user?: { sid?: unknown; name?: unknown };
+    };
+    if (typeof parsed.user?.sid === "string" && parsed.user.sid.length > 0) {
+      sid = parsed.user.sid;
+    }
+    if (typeof parsed.user?.name === "string") {
+      name = parsed.user.name;
+    }
+  } catch (error) {
+    throw new SandboxUnavailableError(
+      `cannot protect ${codepunkHome}: srt-win user status did not return JSON`,
+      { cause: error },
+    );
+  }
+  if (sid === undefined) {
+    throw new SandboxUnavailableError(
+      `cannot protect ${codepunkHome}: srt-win user status did not return the sandbox user SID`,
+    );
+  }
+  const icacls = windowsSystemExecutable("icacls.exe");
+  const current = await runWindowsCommand(icacls, [codepunkHome]);
+  if (current.code !== 0) {
+    throw new SandboxUnavailableError(
+      `cannot inspect the access list of ${codepunkHome}: ${current.stderr.trim() || `icacls exited ${current.code}`}`,
+    );
+  }
+  if (hasInheritableSandboxDeny(current.stdout, sid, name)) {
+    return;
+  }
+  const removed = await runWindowsCommand(icacls, [
+    codepunkHome,
+    "/remove:d",
+    `*${sid}`,
+  ]);
+  if (removed.code !== 0) {
+    throw new SandboxUnavailableError(
+      `cannot replace the access list of ${codepunkHome}: ${removed.stderr.trim() || `icacls exited ${removed.code}`}`,
+    );
+  }
+  const denied = await runWindowsCommand(icacls, [
+    codepunkHome,
+    "/deny",
+    `*${sid}:(OI)(CI)(F)`,
+  ]);
+  if (denied.code !== 0) {
+    throw new SandboxUnavailableError(
+      `cannot deny the sandbox user access to ${codepunkHome}: ${denied.stderr.trim() || `icacls exited ${denied.code}`}`,
+    );
+  }
+  const verified = await runWindowsCommand(icacls, [codepunkHome]);
+  if (
+    verified.code !== 0 ||
+    !hasInheritableSandboxDeny(verified.stdout, sid, name)
+  ) {
+    throw new SandboxUnavailableError(
+      `the sandbox user deny ACE did not appear on ${codepunkHome}`,
+    );
+  }
+}
+
+function windowsCodepunkHomeIsOutsideWriteRoots(
+  input: SrtProfileInput,
+): boolean {
+  const home = windowsPathKey(input.codepunkHome);
+  return !writeRoots(input).some((root) => {
+    const relative = path.win32.relative(windowsPathKey(root), home);
+    return (
+      relative === "" ||
+      (!relative.startsWith("..") && !path.win32.isAbsolute(relative))
+    );
+  });
+}
+
+function withoutWindowsCodepunkHomeDenies(
+  config: SandboxRuntimeConfig,
+  codepunkHome: string,
+): SandboxRuntimeConfig {
+  const home = windowsPathKey(codepunkHome);
+  const keep = (entry: string | { path: string; literal: true }): boolean =>
+    typeof entry !== "string" || windowsPathKey(entry) !== home;
+  return {
+    ...config,
+    filesystem: {
+      ...config.filesystem,
+      denyRead: config.filesystem.denyRead.filter(keep),
+      denyWrite: config.filesystem.denyWrite.filter(keep),
+    },
+  };
 }
 
 export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
@@ -580,8 +779,8 @@ export class SrtSandbox implements ShellProvider {
     if (platform === "win32" && input.readOnly !== true) {
       assertWindowsWriteRootsAreScoped(input, options.userHome ?? os.homedir());
     }
-    const config = srtProfile(input);
-    const runtimeConfig = runtimeConfigFor(
+    let config = srtProfile(input);
+    let runtimeConfig = runtimeConfigFor(
       config,
       platform,
       options.windowsSrtWinPath,
@@ -595,6 +794,19 @@ export class SrtSandbox implements ShellProvider {
     if (dependencies.errors.length > 0) {
       throw new SandboxUnavailableError(
         `srt dependency check failed: ${dependencies.errors.join("; ")}`,
+      );
+    }
+    if (platform === "win32" && windowsCodepunkHomeIsOutsideWriteRoots(input)) {
+      const codepunkHome = normalizeAbsolute(input.codepunkHome);
+      await (options.protectWindowsCodepunkHome ?? protectWindowsCodepunkHome)(
+        codepunkHome,
+        options.windowsSrtWinPath,
+      );
+      config = withoutWindowsCodepunkHomeDenies(config, codepunkHome);
+      runtimeConfig = runtimeConfigFor(
+        config,
+        platform,
+        options.windowsSrtWinPath,
       );
     }
     try {
