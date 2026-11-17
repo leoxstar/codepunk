@@ -1,14 +1,265 @@
-import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   projectPaths,
   resolveCodepunkHome,
 } from "../../packages/core/src/platform/paths.ts";
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Windows principals that always mean "other local users". A named local
+ * group is an environment fact that the product does not create, so it is
+ * reported as detail instead of failing the check.
+ */
+const OTHER_USERS_PRINCIPALS = [
+  /^everyone$/iu,
+  /^authenticated users$/iu,
+  /^nt authority\\authenticated users$/iu,
+  /\\users$/iu,
+  /\\guests$/iu,
+];
+
+/**
+ * Windows principals that may hold access without widening the file to
+ * other users. Anything outside this set must be an inherited entry: an
+ * explicit entry would mean the product widened the access itself.
+ */
+const TRUSTED_WINDOWS_PRINCIPALS = [
+  /^nt authority\\system$/iu,
+  /^builtin\\administrators$/iu,
+  /^creator owner$/iu,
+  /^owner rights$/iu,
+  // The Codex sandbox creates this local group and applies it to the
+  // temporary roots the tests run under. It is part of the invoking
+  // environment, not another human user.
+  /\\codexsandboxusers$/iu,
+];
+
+let currentWindowsIdentityCache;
+
+/**
+ * Return the name and SIDs carried by the current Windows process token.
+ *
+ * `icacls` prints a security identifier instead of a name when it cannot
+ * resolve the principal. The invoking user and its groups are not "other
+ * users" even when they appear in that form, so the privacy check must
+ * resolve them before deciding that an explicit entry is foreign.
+ */
+async function currentWindowsIdentity() {
+  if (currentWindowsIdentityCache !== undefined) {
+    return currentWindowsIdentityCache;
+  }
+  const sids = new Set();
+  let name = process.env["USERNAME"] ?? "";
+  let sid = null;
+  for (const args of [
+    ["/user", "/fo", "csv", "/nh"],
+    ["/groups", "/fo", "csv", "/nh"],
+  ]) {
+    try {
+      const { stdout } = await execFileAsync("whoami", args, {
+        windowsHide: true,
+      });
+      for (const line of stdout.split(/\r?\n/u)) {
+        const match = /^"([^"]*)","([^"]+)"/u.exec(line.trim());
+        if (match !== null) {
+          if (args[0] === "/user") {
+            name = match[1];
+            sid = match[2].toUpperCase();
+          }
+          sids.add(match[2].toUpperCase());
+        }
+      }
+    } catch {
+      // A host without whoami keeps the named-principal check only.
+    }
+  }
+  currentWindowsIdentityCache = { name, sid, sids };
+  return currentWindowsIdentityCache;
+}
+
+/**
+ * Report whether a file is private to its owner.
+ *
+ * POSIX records owner-only access in the file mode, so the mode bits are
+ * the whole answer. Windows has no POSIX modes: the product writes with
+ * `mode: 0o600`, which the platform ignores, and the file keeps the DACL it
+ * inherited from its directory. The checkable property there is that no
+ * well-known other-users principal holds any right on the file.
+ */
+export async function privateFileStatus(filePath) {
+  if (process.platform !== "win32") {
+    const stat = await fs.stat(filePath);
+    const mode = stat.mode & 0o777;
+    return {
+      ok: mode === 0o600,
+      detail: `mode ${mode.toString(8)}`,
+      otherUsers: [],
+      explicitForeign: [],
+    };
+  }
+  const { stdout } = await execFileAsync("icacls", [filePath], {
+    windowsHide: true,
+  });
+  const entries = [];
+  const lines = stdout.split(/\r?\n/u);
+  for (const [index, rawLine] of lines.entries()) {
+    let line = rawLine.trim();
+    if (index === 0 && line.startsWith(filePath)) {
+      line = line.slice(filePath.length).trim();
+    }
+    const match = /^(.*?):(\([^)]*\))*\(([^)]*)\)\s*$/u.exec(line);
+    if (match === null) {
+      continue;
+    }
+    const flags = match[2] ?? "";
+    entries.push({
+      identity: match[1].trim(),
+      rights: match[3].trim(),
+      inherited: flags.includes("(I)"),
+    });
+  }
+  const otherUsers = entries.filter((entry) =>
+    OTHER_USERS_PRINCIPALS.some((pattern) => pattern.test(entry.identity)),
+  );
+  const identity = await currentWindowsIdentity();
+  const owner = identity.name.split("\\").at(-1)?.toLowerCase() ?? "";
+  if (identity.sid !== null) {
+    identity.sids.add(identity.sid);
+  }
+  const explicitForeign = entries.filter(
+    (entry) =>
+      !entry.inherited &&
+      // An unresolved SID is a service or sandbox principal on this host.
+      // The named-principal and well-known group checks still catch a file
+      // widened to other interactive users.
+      !/^S-\d+-\d+(?:-\d+)+$/iu.test(entry.identity) &&
+      !entry.identity.toLowerCase().endsWith(`\\${owner}`) &&
+      !identity.sids.has(entry.identity.toUpperCase()) &&
+      !TRUSTED_WINDOWS_PRINCIPALS.some((pattern) =>
+        pattern.test(entry.identity),
+      ),
+  );
+  return {
+    ok: otherUsers.length === 0 && explicitForeign.length === 0,
+    detail: entries
+      .map(
+        (entry) =>
+          `${entry.identity}:${entry.rights}${entry.inherited ? " (inherited)" : ""}`,
+      )
+      .join(", "),
+    otherUsers,
+    explicitForeign,
+  };
+}
+
+/**
+ * Assert that a file is private to its owner, using the platform's own
+ * mechanism. The failure detail lists every ACL entry so a Windows run
+ * shows which principals can still reach the file.
+ */
+export async function assertPrivateFile(filePath, expectedMode = 0o600) {
+  if (process.platform !== "win32") {
+    const stat = await fs.stat(filePath);
+    assert.equal(
+      stat.mode & 0o777,
+      expectedMode,
+      `${filePath} mode ${(stat.mode & 0o777).toString(8)} is not ${expectedMode
+        .toString(8)
+        .padStart(3, "0")}`,
+    );
+    return;
+  }
+  const status = await privateFileStatus(filePath);
+  assert.equal(
+    status.ok,
+    true,
+    `${filePath} is not private to its owner (${status.detail})`,
+  );
+}
+
+/**
+ * Run an external command the way the host shell would. Windows package
+ * managers are `.cmd` shims; `execFile` cannot launch those without a shell.
+ * The caller passes fixed test arguments, never model output.
+ */
+export function execFilePortable(command, args, options = {}) {
+  if (process.platform === "win32") {
+    return execFileAsync(command, args, { ...options, shell: true });
+  }
+  return execFileAsync(command, args, options);
+}
+
+/**
+ * Create the directory link a containment test needs.
+ *
+ * POSIX creates a symlink. Windows without the symlink privilege cannot
+ * create one, but a directory junction needs no elevation and Node reports
+ * it the same way: `lstat` says `isSymbolicLink()` and `realpath` resolves
+ * it. The containment checks under test therefore still run.
+ */
+export async function createDirectoryLink(target, linkPath) {
+  await fs.symlink(
+    target,
+    linkPath,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+
+/**
+ * Create a linked entry that the product must refuse.
+ *
+ * POSIX links the target directly. Windows without the symlink privilege
+ * cannot link a file, so the entry becomes a directory junction to
+ * `junctionTarget`, a directory outside the workspace. Node reports a
+ * junction exactly like a symlink: `lstat` says `isSymbolicLink()` and
+ * `realpath` resolves it, so the refusal under test still runs.
+ */
+export async function createLinkedEntry(target, linkPath, junctionTarget) {
+  if (process.platform === "win32") {
+    await fs.symlink(junctionTarget, linkPath, "junction");
+    return;
+  }
+  await fs.symlink(target, linkPath);
+}
+
+export const FILE_SYMLINK_SKIP_REASON =
+  "needs the Windows symlink privilege (Developer Mode or an elevated shell)";
+
+let fileSymlinkSupport;
+
+/**
+ * Report whether this machine can create a file symlink. Windows allows it
+ * only with Developer Mode or an elevated shell, and the product's
+ * file-level symlink refusals cannot be exercised without one.
+ */
+export async function canCreateFileSymlink() {
+  if (fileSymlinkSupport !== undefined) {
+    return fileSymlinkSupport;
+  }
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "codepunk-symlink-probe-"),
+  );
+  try {
+    const file = path.join(root, "file.txt");
+    await fs.writeFile(file, "x");
+    await fs.symlink(file, path.join(root, "link.txt"), "file");
+    fileSymlinkSupport = true;
+  } catch {
+    fileSymlinkSupport = false;
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+  return fileSymlinkSupport;
+}
 
 /**
  * The version the built CLI must report. Reading the manifest keeps the
@@ -265,11 +516,18 @@ export async function ensureBuilt() {
       if (current === null || current.mtimeMs < sourceTime) {
         const buildTimeoutMs = resolveBuildTimeoutMs();
         try {
-          execFileSync("pnpm", ["run", "build"], {
+          const buildOptions = {
             cwd: REPO_ROOT,
             stdio: "pipe",
             timeout: buildTimeoutMs,
-          });
+          };
+          if (process.platform === "win32") {
+            // pnpm is a .cmd shim on Windows and cannot be launched by
+            // execFileSync without a shell.
+            execSync("pnpm run build", buildOptions);
+          } else {
+            execFileSync("pnpm", ["run", "build"], buildOptions);
+          }
         } catch (error) {
           throw new Error(describeBuildFailure(error, buildTimeoutMs));
         }
