@@ -107,6 +107,42 @@ test("write records before/after hashes and a denied write is byte-identical", a
   assert.equal(core.validateEvidenceForClass(denial).ok, true);
 });
 
+test("workspace-wide search records the cwd as its checked path", async () => {
+  const paths = await setup();
+  await fs.writeFile(path.join(paths.workspace, "needle.txt"), "needle\n");
+  const ledger = await core.EvidenceLedger.open(paths.evidence);
+  const definitions = await core.createCodepunkToolDefinitions(
+    paths.workspace,
+    null,
+    { enabledTools: ["read", "write", "edit", "search"] },
+  );
+  const searchDefinition = definitions.find(
+    (definition) => definition.name === "search",
+  );
+  assert.ok(searchDefinition);
+  const search = await core.wrapToolDefinition(
+    searchDefinition,
+    wrapOptions(paths, { ledger }),
+  );
+
+  const result = await search.execute(
+    "call-search",
+    { query: "needle" },
+    undefined,
+    undefined,
+    {},
+  );
+  assert.notEqual(result.isError, true);
+
+  const records = (await core.readEvidenceFile(paths.evidence)).records;
+  const record = records.find((entry) => entry.tool_call_id === "call-search");
+  assert.ok(record);
+  assert.equal(record.tool, "search");
+  assert.equal(record.path_check.performed, true);
+  assert.equal(record.path_check.target, paths.workspace);
+  assert.equal(core.validateEvidenceForClass(record).ok, true);
+});
+
 test("parallel writes record a serialized evidence chain for the same file", async () => {
   const paths = await setup();
   const target = path.join(paths.workspace, "parallel.txt");

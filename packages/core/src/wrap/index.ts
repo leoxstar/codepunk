@@ -484,15 +484,20 @@ function structuredString(result: AnyToolResult, key: string): string | null {
 }
 
 function targetPath(
+  tool: string,
   params: Record<string, unknown>,
   cwd: string,
 ): string | null {
   const candidate = params["path"];
-  return typeof candidate === "string"
-    ? normalizeAbsolute(
-        path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate),
-      )
-    : null;
+  if (typeof candidate === "string") {
+    return normalizeAbsolute(
+      path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate),
+    );
+  }
+  // A workspace-wide search has no path argument, but the policy still
+  // checks its cwd as the read target. Record that target so the evidence
+  // class check and verdict describe the check that actually happened.
+  return tool === "search" ? normalizeAbsolute(cwd) : null;
 }
 
 function diffHash(before: Buffer, after: Buffer, label: string): string | null {
@@ -790,7 +795,7 @@ export async function wrapToolDefinition(
       }
       const sandboxProvider = options.sandbox ?? null;
       const autonomy = options.autonomy ?? null;
-      const target = targetPath(params, options.cwd);
+      const target = targetPath(definition.name, params, options.cwd);
       const isMutation =
         definition.name === "write" || definition.name === "edit";
       const commandArgv = definition.name === "exec" ? argvParam(params) : null;
