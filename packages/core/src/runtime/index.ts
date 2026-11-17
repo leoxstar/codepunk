@@ -67,7 +67,7 @@ import {
   type ProjectPaths,
 } from "../platform/paths.ts";
 import { createUlid, sha256Bytes, sha256Text } from "../platform/hash.ts";
-import { normalizeAbsolute } from "../platform/path.ts";
+import { normalizeAbsolute, relativeDisplayPath } from "../platform/path.ts";
 import {
   ModelError,
   openModelRuntime,
@@ -715,7 +715,7 @@ async function createRuntimeInner(
   loadedConfig.warnings.push(...policy.warnings);
   for (const projectMcpConfig of await findProjectMcpConfigs(paths)) {
     loadedConfig.warnings.push(
-      `project MCP configuration ${path.relative(
+      `project MCP configuration ${relativeDisplayPath(
         paths.deliveryRoot,
         projectMcpConfig,
       )} is ignored; MCP configuration is user-scope only`,
