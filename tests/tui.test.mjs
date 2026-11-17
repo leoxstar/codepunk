@@ -1786,6 +1786,10 @@ test("/init sends the repository-evidence prompt to the selected model", async (
     try {
       await waitForOutput(session, "codepunk · local/local-test", "startup");
       await runCommandAfter(session, "/init", "CHILD_OK");
+      assert.match(
+        session.output(),
+        /The new file applies when the next session starts\./u,
+      );
       assert.ok(model.requests.length > 0);
       const request = JSON.stringify(model.requests);
       assert.match(request, /Create the repository guidance file/u);
