@@ -483,6 +483,23 @@ export function workspaceTrustGrantsFromKinds(
   return grants;
 }
 
+/**
+ * Apply a partial grant or revoke without touching resource kinds the caller
+ * did not name. A partial revoke must never widen trust, so callers should
+ * start from the saved decision rather than an all-true default.
+ */
+export function applyWorkspaceTrustGrantChanges(
+  grants: WorkspaceTrustGrants,
+  kinds: readonly WorkspaceTrustResourceKind[],
+  value: boolean,
+): WorkspaceTrustGrants {
+  const updated = { ...grants };
+  for (const kind of kinds) {
+    updated[kind] = value;
+  }
+  return updated;
+}
+
 export function workspaceTrustKindLabel(
   kind: WorkspaceTrustResourceKind,
 ): string {
@@ -693,6 +710,23 @@ export async function inspectSavedWorkspaceResourceTrust(
   const workspaces = await readResourceTrustStore(home);
   const entry = workspaces[canonical];
   return entry === undefined ? null : { path: canonical, entry };
+}
+
+/**
+ * The saved per-resource decision, or the legacy whole-workspace boolean when
+ * no sidecar exists. An unsaved workspace starts with every kind denied so a
+ * partial revoke cannot grant anything by omission.
+ */
+export async function readSavedWorkspaceTrustGrants(
+  home: string,
+  root: string,
+): Promise<WorkspaceTrustGrants> {
+  const savedResources = await inspectSavedWorkspaceResourceTrust(home, root);
+  if (savedResources !== null) {
+    return { ...savedResources.entry.grants };
+  }
+  const saved = readSavedWorkspaceTrust(home, root);
+  return allWorkspaceTrustGrants(saved?.decision ?? false);
 }
 
 export async function saveWorkspaceTrustGrants(

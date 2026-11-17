@@ -1201,3 +1201,61 @@ test("trust grant --resources records a partial decision", async () => {
     assert.match(permissions.stdout, /trust resources: config=allowed/u);
   });
 });
+
+test("partial trust changes preserve unrelated grants", async () => {
+  await withTempDirectory("codepunk-trust-partial-merge-", async (root) => {
+    const { project, home } = await setupProject(root);
+    const change = async (action, resources) => {
+      const result = await runCli(
+        ["trust", action, "--resources", resources, "--json"],
+        { cwd: project, home },
+      );
+      return JSON.parse(result.stdout).grants;
+    };
+
+    // A revoke on an unsaved workspace must not grant the kinds it omits.
+    assert.deepEqual(
+      await change("revoke", "config"),
+      core.allWorkspaceTrustGrants(false),
+    );
+    assert.deepEqual(await change("grant", "instructions"), {
+      config: false,
+      policy: false,
+      skills: false,
+      instructions: true,
+    });
+    assert.deepEqual(await change("grant", "config"), {
+      config: true,
+      policy: false,
+      skills: false,
+      instructions: true,
+    });
+    assert.deepEqual(await change("revoke", "instructions"), {
+      config: true,
+      policy: false,
+      skills: false,
+      instructions: false,
+    });
+    assert.deepEqual(await change("grant", "policy"), {
+      config: true,
+      policy: true,
+      skills: false,
+      instructions: false,
+    });
+
+    // A legacy whole-workspace decision is the base when the sidecar is
+    // absent, so a partial revoke keeps the other kinds allowed.
+    await core.saveWorkspaceTrust(home, project, true);
+    await fs.rm(path.join(home, "workspace-trust.json"));
+    assert.deepEqual(
+      await core.readSavedWorkspaceTrustGrants(home, project),
+      core.allWorkspaceTrustGrants(true),
+    );
+    assert.deepEqual(await change("revoke", "config"), {
+      config: false,
+      policy: true,
+      skills: true,
+      instructions: true,
+    });
+  });
+});

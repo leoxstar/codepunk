@@ -37,6 +37,7 @@ import {
   formatTodos,
   formatWorkspaceTrust,
   allWorkspaceTrustGrants,
+  applyWorkspaceTrustGrantChanges,
   formatMcpServers,
   formatSessionList,
   isFallbackModel,
@@ -67,6 +68,7 @@ import {
   readSkillInvocation,
   readWorkState,
   readSavedWorkspaceTrust,
+  readSavedWorkspaceTrustGrants,
   mergeHandoff,
   projectPaths,
   removeMergedWorktree,
@@ -111,7 +113,6 @@ import {
   type WorkspaceDiff,
   type WorkspaceTrust,
   WORKSPACE_TRUST_RESOURCE_KINDS,
-  workspaceTrustGrantsFromKinds,
   type WorkspaceTrustResourceKind,
 } from "@codepunk/core";
 import type {
@@ -2264,12 +2265,13 @@ async function configureTrust(
       const grants =
         selected.length === 0
           ? allWorkspaceTrustGrants(action === "grant")
-          : workspaceTrustGrantsFromKinds(
-              action === "grant"
-                ? selected
-                : WORKSPACE_TRUST_RESOURCE_KINDS.filter(
-                    (kind) => !selected.includes(kind),
-                  ),
+          : applyWorkspaceTrustGrantChanges(
+              await readSavedWorkspaceTrustGrants(
+                runtime.paths.home,
+                runtime.workspaceTrust.root,
+              ),
+              selected,
+              action === "grant",
             );
       const saved = await saveWorkspaceTrustGrants(
         runtime.paths.home,

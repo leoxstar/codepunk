@@ -20,6 +20,7 @@ import {
   DaemonClientError,
   DaemonServer,
   allWorkspaceTrustGrants,
+  applyWorkspaceTrustGrantChanges,
   MemoryManager,
   collectCapabilities,
   configFilePaths,
@@ -77,6 +78,7 @@ import {
   projectPaths,
   removeMcpServer,
   readMcpConfig,
+  readSavedWorkspaceTrustGrants,
   removeModelsProvider,
   removeSkill,
   removeUserPlugin,
@@ -3317,12 +3319,14 @@ async function commandTrust(options: CliOptions): Promise<number> {
     const grants =
       options.resources === undefined
         ? allWorkspaceTrustGrants(trusted)
-        : allWorkspaceTrustGrants(!trusted);
-    if (options.resources !== undefined) {
-      for (const kind of options.resources) {
-        grants[kind] = trusted;
-      }
-    }
+        : applyWorkspaceTrustGrantChanges(
+            await readSavedWorkspaceTrustGrants(
+              paths.home,
+              project.deliveryRoot,
+            ),
+            options.resources,
+            trusted,
+          );
     const saved = await saveWorkspaceTrustGrants(
       paths.home,
       project.deliveryRoot,

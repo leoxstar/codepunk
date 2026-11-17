@@ -2055,6 +2055,40 @@ test("a real pty applies a custom per-resource trust decision", async () => {
         stripAnsi(session.output().slice(mark)),
         /config=skipped, policy=skipped, skills=skipped, instructions=allowed/u,
       );
+      await runCommandAfter(
+        session,
+        "/trust grant config",
+        "workspace trust saved as trusted",
+      );
+      const savedAfterGrant = JSON.parse(
+        await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
+      );
+      assert.deepEqual(
+        savedAfterGrant.workspaces[await fs.realpath(project)].grants,
+        {
+          config: true,
+          policy: false,
+          skills: false,
+          instructions: true,
+        },
+      );
+      await runCommandAfter(
+        session,
+        "/trust revoke instructions",
+        "workspace trust saved as untrusted",
+      );
+      const savedAfterRevoke = JSON.parse(
+        await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
+      );
+      assert.deepEqual(
+        savedAfterRevoke.workspaces[await fs.realpath(project)].grants,
+        {
+          config: true,
+          policy: false,
+          skills: false,
+          instructions: false,
+        },
+      );
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,

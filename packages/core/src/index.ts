@@ -255,6 +255,7 @@ export {
 } from "./config/index.ts";
 export {
   allWorkspaceTrustGrants,
+  applyWorkspaceTrustGrantChanges,
   availableWorkspaceTrustKinds,
   findTrustRequiringProjectResources,
   formatWorkspaceTrustResourcePreview,
@@ -262,6 +263,7 @@ export {
   inspectSavedWorkspaceResourceTrust,
   inspectSavedWorkspaceTrust,
   previewWorkspaceTrustResources,
+  readSavedWorkspaceTrustGrants,
   readSavedWorkspaceTrust,
   resolveWorkspaceTrust,
   saveWorkspaceTrust,
