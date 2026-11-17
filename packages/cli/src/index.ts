@@ -76,6 +76,7 @@ import {
   previewWorkspaceTrustResources,
   probeConfiguredModel,
   projectPaths,
+  probeSrtSandbox,
   removeMcpServer,
   readMcpConfig,
   readSavedWorkspaceTrustGrants,
@@ -3262,6 +3263,22 @@ async function permissionExecutionForWhy(
       : {
           status: "blocked",
           reason: shellUnavailableReason("uncovered"),
+        };
+  }
+  if (process.platform === "win32") {
+    const issue = await probeSrtSandbox({
+      cwd: paths.cwd,
+      workspaceRoot: paths.deliveryRoot,
+      deliveryRoot: paths.deliveryRoot,
+      additionalRoots,
+      codepunkHome: paths.home,
+      writeSet,
+    });
+    return issue === null
+      ? { status: "available", reason: null }
+      : {
+          status: "blocked",
+          reason: `${shellUnavailableReason("required")} (${issue})`,
         };
   }
   try {

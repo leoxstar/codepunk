@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
+  checkWindowsDependenciesAsync,
+  resolveSrtWin,
   SandboxManager,
   VENDORED_SRT_WIN_EXE,
   type SandboxDependencyCheck,
@@ -125,7 +128,7 @@ interface SrtManager {
   ): Promise<string>;
   wrapWithSandboxArgv(
     command: string,
-    binShell?: string,
+    binShell?: string | WindowsBinShell,
     customConfig?: Partial<SandboxRuntimeConfig>,
     abortSignal?: AbortSignal,
     cwd?: string,
@@ -136,6 +139,77 @@ interface SrtManager {
   reset?(): Promise<void>;
 }
 
+export interface WindowsBinShell {
+  exe: string;
+  args: readonly string[];
+}
+
+const WINDOWS_ARGV_MARKER = "C:\\__codepunk_argv__\\runner.exe";
+const WINDOWS_ARGV_SENTINEL = "__CODEPUNK_ARGV_SENTINEL__";
+const WINDOWS_SCRIPT = /\.(?:cmd|bat|ps1)$/iu;
+
+function windowsEnvironmentValue(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined {
+  const direct = environment[name];
+  if (direct !== undefined) {
+    return direct;
+  }
+  const target = name.toUpperCase();
+  for (const [key, value] of Object.entries(environment)) {
+    if (key.toUpperCase() === target) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function resolveWindowsExecutable(
+  name: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const candidate = name.trim();
+  if (candidate.length === 0) {
+    throw new SandboxUnavailableError("argv executable is missing");
+  }
+  if (path.win32.isAbsolute(candidate)) {
+    return candidate;
+  }
+  if (candidate.includes("\\") || candidate.includes("/")) {
+    const resolved = path.win32.resolve(candidate);
+    if (existsSync(resolved)) {
+      return resolved;
+    }
+    throw new SandboxUnavailableError(`executable not found at ${resolved}`);
+  }
+  const searchPath = windowsEnvironmentValue(environment, "PATH") ?? "";
+  const extensions = (
+    windowsEnvironmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD"
+  )
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const names = path.win32.extname(candidate)
+    ? [candidate]
+    : [candidate, ...extensions.map((extension) => candidate + extension)];
+  for (const entry of searchPath.split(";")) {
+    const directory = entry.trim().replace(/^"(.*)"$/u, "$1");
+    if (directory.length === 0) {
+      continue;
+    }
+    for (const fileName of names) {
+      const fullPath = path.win32.join(directory, fileName);
+      if (existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  throw new SandboxUnavailableError(
+    `executable not found on PATH: ${candidate}`,
+  );
+}
+
 export interface CreateSrtSandboxOptions {
   manager?: SrtManager;
   /**
@@ -144,6 +218,14 @@ export interface CreateSrtSandboxOptions {
    */
   platform?: NodeJS.Platform;
   windowsSrtWinPath?: string;
+  /**
+   * Test seam for the Windows dependency probe. Production uses the
+   * stateless check exported by the pinned runtime, which does not
+   * initialize the sandbox or stamp filesystem ACLs.
+   */
+  windowsDependencyCheck?: (
+    config: SandboxRuntimeConfig,
+  ) => Promise<SandboxDependencyCheck>;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -264,20 +346,165 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function looksUtf16Le(buffer: Buffer): boolean {
+  if (buffer.length < 4) {
+    return false;
+  }
+  let zeroHighBytes = 0;
+  const pairs = Math.floor(buffer.length / 2);
+  for (let index = 1; index < buffer.length; index += 2) {
+    if (buffer[index] === 0) {
+      zeroHighBytes += 1;
+    }
+  }
+  return zeroHighBytes / pairs >= 0.6;
+}
+
+/**
+ * Decode a shell stream without assuming that every Windows tool writes
+ * UTF-8. Node, git and most modern tools do; cmd.exe built-ins and native
+ * Win32 tools use the active OEM code page, which is GBK on a Chinese
+ * Windows install. Strict UTF-8 is tried first so valid UTF-8 is never
+ * reinterpreted, then GB18030 (a superset of GBK) for those legacy tools.
+ */
+export function decodeShellOutput(
+  buffer: Buffer,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (buffer.length === 0) {
+    return "";
+  }
+  if (platform !== "win32") {
+    return buffer.toString("utf8");
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(buffer.subarray(2));
+  }
+  if (buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(buffer.subarray(2));
+  }
+  if (looksUtf16Le(buffer)) {
+    return new TextDecoder("utf-16le").decode(buffer);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    try {
+      return new TextDecoder("gb18030", { fatal: true }).decode(buffer);
+    } catch {
+      // Fall through to the replacement-character decode below.
+    }
+    return buffer.toString("utf8");
+  }
+}
+
+function runtimeConfigFor(
+  config: SandboxRuntimeConfig,
+  platform: NodeJS.Platform,
+  windowsSrtWinPath?: string,
+): SandboxRuntimeConfig {
+  if (platform !== "win32") {
+    return config;
+  }
+  return {
+    ...config,
+    windows: {
+      ...config.windows,
+      srtWin: {
+        path: windowsSrtWinPath ?? VENDORED_SRT_WIN_EXE,
+      },
+    },
+  };
+}
+
+async function checkWindowsDependencies(
+  config: SandboxRuntimeConfig,
+): Promise<SandboxDependencyCheck> {
+  if (config.windows?.srtWin === undefined) {
+    return {
+      errors: ["no srt-win path configured for the Windows dependency probe"],
+      warnings: [],
+    };
+  }
+  return checkWindowsDependenciesAsync({
+    srtWin: resolveSrtWin(config.windows.srtWin),
+  });
+}
+
+async function checkDependenciesFor(
+  manager: SrtManager,
+  config: SandboxRuntimeConfig,
+  platform: NodeJS.Platform,
+  windowsDependencyCheck: CreateSrtSandboxOptions["windowsDependencyCheck"],
+): Promise<SandboxDependencyCheck> {
+  if (platform === "win32") {
+    return (windowsDependencyCheck ?? checkWindowsDependencies)(config);
+  }
+  return manager.checkDependencies();
+}
+
+function isAddressInUse(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  if ("code" in error && error.code === "EADDRINUSE") {
+    return true;
+  }
+  return "cause" in error && isAddressInUse(error.cause);
+}
+
+/**
+ * Check whether srt can run without initializing a session. On Windows a
+ * full initialize stamps persistent filesystem ACLs, which is far too much
+ * work for `codepunk doctor` and must not happen before a dependency
+ * failure has been ruled out.
+ */
+export async function probeSrtSandbox(
+  input: SrtProfileInput,
+  options: CreateSrtSandboxOptions = {},
+): Promise<string | null> {
+  const manager = options.manager ?? SandboxManager;
+  const platform = options.platform ?? process.platform;
+  if (!manager.isSupportedPlatform()) {
+    return "srt does not support this platform; shell execution is disabled";
+  }
+  try {
+    const config = runtimeConfigFor(
+      srtProfile(input),
+      platform,
+      options.windowsSrtWinPath,
+    );
+    const dependencies = await checkDependenciesFor(
+      manager,
+      config,
+      platform,
+      options.windowsDependencyCheck,
+    );
+    return dependencies.errors.length > 0
+      ? `srt dependency check failed: ${dependencies.errors.join("; ")}`
+      : null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export class SrtSandbox implements ShellProvider {
   readonly descriptor: SandboxDescriptor;
   readonly sandboxed = true;
   readonly warnings: readonly string[];
   private readonly manager: SrtManager;
+  private readonly platform: NodeJS.Platform;
   private disposed = false;
 
   private constructor(
     manager: SrtManager,
     config: SandboxRuntimeConfig,
     warnings: readonly string[],
+    platform: NodeJS.Platform,
   ) {
     this.manager = manager;
     this.warnings = warnings;
+    this.platform = platform;
     this.descriptor = {
       backend: "srt",
       version: SRT_VERSION,
@@ -299,34 +526,38 @@ export class SrtSandbox implements ShellProvider {
       );
     }
     const config = srtProfile(input);
-    const runtimeConfig: SandboxRuntimeConfig =
-      platform === "win32"
-        ? {
-            ...config,
-            windows: {
-              ...config.windows,
-              srtWin: {
-                path: options.windowsSrtWinPath ?? VENDORED_SRT_WIN_EXE,
-              },
-            },
-          }
-        : config;
-    // The runtime resolves srt-win from the configuration stored by
-    // initialize(), so a pre-initialize dependency check on Windows can
-    // only report "no srt-win path configured" even when the caller
-    // supplied one. Let initialize() perform the Windows probe; the
-    // post-initialize check below only collects its warnings.
-    let dependencies: SandboxDependencyCheck | null = null;
-    if (platform !== "win32") {
-      dependencies = manager.checkDependencies();
-      if (dependencies.errors.length > 0) {
-        throw new SandboxUnavailableError(
-          `srt dependency check failed: ${dependencies.errors.join("; ")}`,
-        );
-      }
+    const runtimeConfig = runtimeConfigFor(
+      config,
+      platform,
+      options.windowsSrtWinPath,
+    );
+    const dependencies = await checkDependenciesFor(
+      manager,
+      runtimeConfig,
+      platform,
+      options.windowsDependencyCheck,
+    );
+    if (dependencies.errors.length > 0) {
+      throw new SandboxUnavailableError(
+        `srt dependency check failed: ${dependencies.errors.join("; ")}`,
+      );
     }
     try {
-      await manager.initialize(runtimeConfig);
+      // The Windows proxy range is shared by every process on the host. A
+      // parallel process can take the last free port between srt's probe
+      // and its bind; srt clears its partial state on a failed initialize,
+      // so retrying the same configuration is safe.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await manager.initialize(runtimeConfig);
+          break;
+        } catch (error) {
+          if (platform !== "win32" || !isAddressInUse(error) || attempt >= 5) {
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+        }
+      }
     } catch (error) {
       throw new SandboxUnavailableError(
         `srt initialization failed: ${
@@ -335,16 +566,7 @@ export class SrtSandbox implements ShellProvider {
         { cause: error },
       );
     }
-    if (platform === "win32") {
-      dependencies = manager.checkDependencies();
-      if (dependencies.errors.length > 0) {
-        await manager.reset?.();
-        throw new SandboxUnavailableError(
-          `srt dependency check failed: ${dependencies.errors.join("; ")}`,
-        );
-      }
-    }
-    return new SrtSandbox(manager, config, dependencies?.warnings ?? []);
+    return new SrtSandbox(manager, config, dependencies.warnings, platform);
   }
 
   private assertAvailable(): void {
@@ -361,8 +583,8 @@ export class SrtSandbox implements ShellProvider {
   ): Promise<ShellExecutionResult> {
     this.assertAvailable();
     const commandId = options.commandId ?? randomUUID();
-    let output = "";
-    let stderr = "";
+    const outputChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let timedOut = false;
     let cancelled = false;
     const child = spawn(argv[0]!, argv.slice(1), {
@@ -370,6 +592,7 @@ export class SrtSandbox implements ShellProvider {
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
       shell: useShell,
+      windowsHide: true,
     });
     const onAbort = () => {
       cancelled = true;
@@ -388,12 +611,12 @@ export class SrtSandbox implements ShellProvider {
       timer.unref();
     }
     child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+      outputChunks.push(chunk);
       options.onData?.(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-      output += chunk.toString("utf8");
+      stderrChunks.push(chunk);
+      outputChunks.push(chunk);
       options.onData?.(chunk);
     });
     const exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -405,6 +628,11 @@ export class SrtSandbox implements ShellProvider {
       }
       options.signal?.removeEventListener("abort", onAbort);
     });
+    const stderr = decodeShellOutput(
+      Buffer.concat(stderrChunks),
+      this.platform,
+    );
+    let output = decodeShellOutput(Buffer.concat(outputChunks), this.platform);
     const annotated = this.manager.annotateStderrWithSandboxFailures(
       commandId,
       stderr,
@@ -432,6 +660,26 @@ export class SrtSandbox implements ShellProvider {
       throw new SandboxUnavailableError("shell command is empty");
     }
     const commandId = options.commandId ?? randomUUID();
+    if (this.platform === "win32") {
+      const wrapped = await this.manager.wrapWithSandboxArgv(
+        command,
+        undefined,
+        undefined,
+        options.signal,
+        cwd,
+        { commandId },
+      );
+      return this.runProcess(
+        wrapped.argv,
+        cwd,
+        {
+          ...options,
+          commandId,
+          env: { ...wrapped.env, ...(options.env ?? {}) },
+        },
+        false,
+      );
+    }
     const wrapped = await this.manager.wrapWithSandbox(
       command,
       undefined,
@@ -448,12 +696,45 @@ export class SrtSandbox implements ShellProvider {
     options: ShellExecutionOptions = {},
   ): Promise<ShellExecutionResult> {
     this.assertAvailable();
-    if (commandArgv.length === 0 || commandArgv[0]?.length === 0) {
+    const executableName = commandArgv[0];
+    if (executableName === undefined || executableName.length === 0) {
       throw new SandboxUnavailableError("argv executable is missing");
     }
-    if (process.platform === "win32") {
-      throw new SandboxUnavailableError(
-        "argv-only headless execution is not supported on Windows",
+    if (this.platform === "win32") {
+      const executable = resolveWindowsExecutable(executableName);
+      if (WINDOWS_SCRIPT.test(executable)) {
+        throw new SandboxUnavailableError(
+          "argv-only execution cannot start a Windows script; invoke cmd.exe or powershell.exe explicitly",
+        );
+      }
+      const targetArgv = [executable, ...commandArgv.slice(1)];
+      const commandId = options.commandId ?? randomUUID();
+      const wrapped = await this.manager.wrapWithSandboxArgv(
+        WINDOWS_ARGV_SENTINEL,
+        { exe: WINDOWS_ARGV_MARKER, args: [] },
+        undefined,
+        options.signal,
+        cwd,
+        { commandId, commandText: targetArgv.join(" ") },
+      );
+      const tail = wrapped.argv.slice(-2);
+      if (
+        tail[0] !== WINDOWS_ARGV_MARKER ||
+        tail[1] !== WINDOWS_ARGV_SENTINEL
+      ) {
+        throw new SandboxUnavailableError(
+          "the pinned srt runtime changed its Windows argv layout; argv-only execution is disabled",
+        );
+      }
+      return this.runProcess(
+        [...wrapped.argv.slice(0, -2), ...targetArgv],
+        cwd,
+        {
+          ...options,
+          commandId,
+          env: { ...wrapped.env, ...(options.env ?? {}) },
+        },
+        false,
       );
     }
     const commandId = options.commandId ?? randomUUID();
@@ -514,7 +795,7 @@ export class UnsandboxedShell implements ShellProvider {
     useShell: boolean,
   ): Promise<ShellExecutionResult> {
     this.assertAvailable();
-    let output = "";
+    const outputChunks: Buffer[] = [];
     let timedOut = false;
     let cancelled = false;
     const child = spawn(argv[0]!, argv.slice(1), {
@@ -522,6 +803,7 @@ export class UnsandboxedShell implements ShellProvider {
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
       shell: useShell,
+      windowsHide: true,
     });
     const onAbort = () => {
       cancelled = true;
@@ -540,11 +822,11 @@ export class UnsandboxedShell implements ShellProvider {
       timer.unref();
     }
     child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+      outputChunks.push(chunk);
       options.onData?.(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+      outputChunks.push(chunk);
       options.onData?.(chunk);
     });
     const exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -556,6 +838,7 @@ export class UnsandboxedShell implements ShellProvider {
       }
       options.signal?.removeEventListener("abort", onAbort);
     });
+    const output = decodeShellOutput(Buffer.concat(outputChunks));
     return {
       output,
       exitCode: timedOut ? 124 : cancelled ? null : exitCode,
