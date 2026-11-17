@@ -854,8 +854,10 @@ async function readEvidence(home) {
   return records;
 }
 
-async function waitForBashResult(home, command) {
+async function waitForBashResult(home, command, minimumMatches = 1) {
   return waitFor(async () => {
+    let matches = 0;
+    let latest = null;
     const entries = await fs.readdir(home, { recursive: true });
     for (const entry of entries) {
       if (!entry.endsWith("session.jsonl")) {
@@ -871,12 +873,13 @@ async function waitForBashResult(home, command) {
           record.kind === "bash/result" &&
           record.data?.command === command
         ) {
-          return record;
+          matches += 1;
+          latest = record;
         }
       }
     }
-    return null;
-  }, `bash result for ${command}`);
+    return matches >= minimumMatches ? latest : null;
+  }, `bash result for ${command} (at least ${minimumMatches})`);
 }
 
 test("a real pty renders codepunk chrome and exit hints", async () => {
@@ -1496,6 +1499,7 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
         "first-run setup commands",
       );
 
+      await waitForQuiet(session, 250);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -1503,7 +1507,11 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
           setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
         ),
       ]);
-      assert.deepEqual(result, { code: 0, signal: null });
+      assert.deepEqual(
+        result,
+        { code: 0, signal: null },
+        stripAnsi(session.output()).slice(-4_000),
+      );
     } finally {
       await stopPty(session);
     }
@@ -2725,6 +2733,7 @@ test(
           "autonomy set to scoped",
           "scoped autonomy profile",
         );
+        await waitForQuiet(first, 250);
         first.child.stdin.write("/quit\r");
         const exited = await Promise.race([
           first.exited,
@@ -2735,7 +2744,11 @@ test(
             ),
           ),
         ]);
-        assert.deepEqual(exited, { code: 0, signal: null });
+        assert.deepEqual(
+          exited,
+          { code: 0, signal: null },
+          stripAnsi(first.output()).slice(-4_000),
+        );
       } finally {
         await stopPty(first);
       }
@@ -2773,6 +2786,8 @@ test(
           "persisted rule evidence",
         );
         assert.equal(reused.autonomy.profile, "scoped");
+        await waitForBashResult(home, "touch persisted-exact.txt", 2);
+        await waitForQuiet(second, 250);
         second.child.stdin.write("/quit\r");
         const exited = await Promise.race([
           second.exited,
@@ -2783,7 +2798,11 @@ test(
             ),
           ),
         ]);
-        assert.deepEqual(exited, { code: 0, signal: null });
+        assert.deepEqual(
+          exited,
+          { code: 0, signal: null },
+          stripAnsi(second.output()).slice(-4_000),
+        );
       } finally {
         await stopPty(second);
       }

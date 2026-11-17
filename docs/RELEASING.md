@@ -1,0 +1,281 @@
+# Releasing Codepunk
+
+This runbook describes the manual `0.1.0` npm release. Release from a clean
+checkout after the release commit has passed the repository checks and the
+platform statement in `docs/PLATFORMS.md` agrees with the matrix in
+`.github/workflows/ci.yml`.
+
+## Prerequisites
+
+- Use Node.js `>=22.19.0`, pnpm `12.18.0`, and npm from the active Node.js
+  installation.
+- Confirm the working tree is clean and the three packages all report version
+  `0.1.0`.
+- Confirm the package contents, metadata, and dependency versions with
+  `pnpm run verify` and the package checks below.
+- On Linux, install the sandbox dependencies required by
+  `scripts/ci-install-sandbox-deps.sh`; macOS uses the built-in Seatbelt
+  sandbox.
+- Confirm npm authentication and `@codepunk` publish access:
+
+  ```text
+  npm whoami
+  ```
+
+  `npm whoami` is the authentication check. `npm publish --dry-run` does not
+  prove that the current npm session is authenticated.
+
+## Preflight
+
+Run the following Bash commands from the repository root. Check versions,
+metadata, and tarball contents before publishing:
+
+```bash
+(
+  set -euo pipefail
+  for package in protocol core cli; do
+    jq -e '.version == "0.1.0" and
+      .repository.url == "git+https://github.com/leoxstar/codepunk.git" and
+      .publishConfig.access == "public"' "packages/$package/package.json"
+    (cd "packages/$package" && npm pack --dry-run --json) | jq -e '
+      .[0].files | map(.path) |
+      all(test("^(dist/|README\\.md$|LICENSE$|package\\.json$)")) and
+      any(. == "README.md") and any(. == "LICENSE") and
+      any(. == "package.json") and any(startswith("dist/"))'
+  done
+)
+```
+
+Run `pnpm run verify` on the release commit. Audit the current dependency tree
+and retain the JSON output and exit code with the release evidence:
+
+```bash
+(
+  set -euo pipefail
+  audit_file="$(mktemp)"
+  audit_status=0
+  pnpm audit --json > "$audit_file" || audit_status=$?
+  printf 'Audit output: %s; exit: %s\n' "$audit_file" "$audit_status"
+  test "$audit_status" -eq 1
+  jq -e --arg ghsa 'GHSA-mrhx-c7xc-m3w5' '
+    .metadata.vulnerabilities.high == 1 and
+    .metadata.vulnerabilities.critical == 0 and
+    ([.advisories[] | select(.severity == "high")] | length == 1) and
+    ([.advisories[] | select(.severity == "high" and
+      (.url | endswith("/" + $ghsa)))] | length == 1)' "$audit_file"
+)
+```
+
+The expected result is exit `1` with one high advisory,
+`GHSA-mrhx-c7xc-m3w5`. Stop if a new high advisory appears and review it before
+releasing. If an upstream version now supports a safe `zod >=4.6.6` path,
+upgrade, rerun all release checks, and remove the accepted-risk statement from
+`CHANGELOG.md` before publishing.
+
+Run the publish preview for each package. Use npm for this check; a pnpm dry
+run does not produce the npm publish output required here. Each command must
+exit `0`:
+
+```bash
+(cd packages/protocol && npm publish --dry-run --access public)
+(cd packages/core && npm publish --dry-run --access public)
+(cd packages/cli && npm publish --dry-run --access public)
+```
+
+Each preview must report the package name and `0.1.0`, include `public access
+(dry-run)`, and exit successfully. A preview does not publish anything.
+
+## Publish order
+
+Record the output and exit codes of this block as release evidence. It first
+requires all three versions to return a nonzero `E404`, then publishes in
+dependency order. Each successful publish is followed by a lookup every five
+seconds, for at most 60 seconds. The lookup prints its attempt count and stops
+on a non-`E404` error or when visibility is not confirmed within that window.
+It never repeats `npm publish`.
+
+```bash
+(
+  set -euo pipefail
+  trap 'status=$?; printf "Release stopped with exit %s; record the disposition.\n" "$status" >&2' ERR
+
+  require_absent() {
+    local package="$1" output status=0
+    output="$(npm view "@codepunk/$package@0.1.0" version 2>&1)" || status=$?
+    printf '%s: exit %s\n%s\n' "@codepunk/$package@0.1.0" "$status" "$output"
+    if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
+      return 1
+    fi
+  }
+
+  require_visible() {
+    local package="$1" output status=0
+    output="$(npm view "@codepunk/$package@0.1.0" version 2>&1)" || status=$?
+    printf '%s: exit %s\n%s\n' "@codepunk/$package@0.1.0" "$status" "$output"
+    test "$status" -eq 0 && test "$output" = '0.1.0'
+  }
+
+  wait_for_registry() {
+    local package="$1" start="$SECONDS" attempt=0 elapsed remaining timeout
+    local attempt_start output status wait_seconds
+    while :; do
+      elapsed=$((SECONDS - start))
+      if [ "$elapsed" -ge 60 ]; then break; fi
+      remaining=$((60 - elapsed))
+      timeout=$((remaining * 1000))
+      if [ "$timeout" -gt 5000 ]; then timeout=5000; fi
+      attempt_start="$SECONDS"
+      attempt=$((attempt + 1))
+      status=0
+      output="$(npm view "@codepunk/$package@0.1.0" version \
+        --fetch-retries=0 --fetch-timeout="$timeout" 2>&1)" || status=$?
+      printf '%s attempt %s: exit %s\n%s\n' \
+        "@codepunk/$package@0.1.0" "$attempt" "$status" "$output"
+      if [ "$status" -eq 0 ] && [ "$output" = '0.1.0' ]; then return 0; fi
+      if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
+        return 1
+      fi
+      wait_seconds=$((attempt_start + 5 - SECONDS))
+      if [ "$wait_seconds" -gt 0 ]; then sleep "$wait_seconds"; fi
+    done
+    printf 'No registry confirmation within 60 seconds after %s attempts.\n' "$attempt" >&2
+    return 1
+  }
+
+  for package in protocol core cli; do require_absent "$package"; done
+
+  (cd packages/protocol && npm publish --access public)
+  wait_for_registry protocol
+  (cd packages/core && npm publish --access public)
+  wait_for_registry core
+
+  require_visible protocol
+  require_visible core
+  require_absent cli
+
+  (cd packages/cli && npm publish --access public)
+  wait_for_registry cli
+)
+```
+
+Before the CLI publish, retain the printed evidence that protocol and core are
+visible and the CLI still returns `E404`.
+
+## Verify the release
+
+Verify versions, internal dependencies, and the registry tarballs:
+
+```bash
+(
+  set -euo pipefail
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$temp_dir"' EXIT
+  test "$(npm view @codepunk/cli@0.1.0 version)" = "0.1.0"
+  npm view @codepunk/core@0.1.0 dependencies --json | jq -e \
+    '.["@codepunk/protocol"] == "0.1.0"'
+  npm view @codepunk/cli@0.1.0 dependencies --json | jq -e \
+    '.["@codepunk/core"] == "0.1.0" and .["@codepunk/protocol"] == "0.1.0"'
+
+  for package in protocol core cli; do
+    tarball="$(npm view "@codepunk/$package@0.1.0" dist.tarball)"
+    curl -fsSL "$tarball" -o "$temp_dir/$package.tgz"
+    tar -tzf "$temp_dir/$package.tgz" > "$temp_dir/$package.entries"
+    for entry in package/LICENSE package/README.md package/package.json package/dist/index.js; do
+      count="$(grep -Fxc "$entry" "$temp_dir/$package.entries" || true)"
+      test "$count" -eq 1
+    done
+  done
+)
+```
+
+Perform a clean global-install smoke test with no Codepunk state in the
+temporary home. Run it on each release target with the sandbox dependencies
+installed. The only expected `doctor` error is the missing model; another
+error, including a missing sandbox dependency, fails the smoke test.
+
+```bash
+(
+  set -euo pipefail
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$temp_dir"' EXIT
+  mkdir "$temp_dir/home"
+  cd "$temp_dir"
+
+  install_status=0
+  HOME="$temp_dir/home" npm install -g --prefix "$temp_dir/prefix" @codepunk/cli@0.1.0 || install_status=$?
+  printf 'npm install exit: %s\n' "$install_status"
+  test "$install_status" -eq 0
+
+  version_status=0
+  version_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" --version 2>&1)" || version_status=$?
+  printf '%s\nversion exit: %s\n' "$version_output" "$version_status"
+  test "$version_status" -eq 0
+  test "$(printf '%s\n' "$version_output" | sed -n '1p')" = 'codepunk 0.1.0'
+  grep -Fq 'source: not installed (cannot compare)' <<< "$version_output"
+  ! grep -Fq 'STALE' <<< "$version_output"
+
+  doctor_status=0
+  doctor_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" doctor 2>&1)" || doctor_status=$?
+  printf '%s\ndoctor exit: %s\n' "$doctor_output" "$doctor_status"
+  test "$doctor_status" -eq 1
+  grep -Fq '[ok] distribution: package version 0.1.0' <<< "$doctor_output"
+  error_lines="$(grep -F '[error]' <<< "$doctor_output" || true)"
+  test "$error_lines" = '[error] model: no model configured'
+
+  self_install_status=0
+  self_install_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" install \
+    --package-version 0.1.0 --dry-run 2>&1)" || self_install_status=$?
+  printf '%s\nself-install exit: %s\n' "$self_install_output" "$self_install_status"
+  test "$self_install_status" -eq 0
+  grep -Fq 'npm install --global --no-audit --no-fund @codepunk/cli@0.1.0' <<< "$self_install_output"
+)
+```
+
+## Tag the release
+
+Create an annotated tag on the release commit, then push the tag and verify the
+remote ref:
+
+```text
+git tag -a v0.1.0 -m "Release v0.1.0"
+test "$(git cat-file -t v0.1.0)" = "tag"
+test "$(git rev-list -n1 v0.1.0)" = "$(git rev-parse HEAD)"
+git push origin v0.1.0
+git ls-remote --tags origin refs/tags/v0.1.0 | grep -q 'refs/tags/v0.1.0$'
+grep -q '^## \[0.1.0\]' CHANGELOG.md
+grep -q 'GHSA-mrhx-c7xc-m3w5' CHANGELOG.md
+```
+
+Confirm that `CHANGELOG.md` contains `## [0.1.0]` and
+`GHSA-mrhx-c7xc-m3w5` before considering the release recorded.
+
+## Failures and rollback
+
+Before publishing, revert the release commit if the verification fails; the
+registry has no side effects at that point. After a package is published, npm
+versions are immutable. Record the exact exit code and disposition for every
+failure; do not silently retry:
+
+- Do not republish the same version or delete the tag.
+- If only part of the ordered publish completed, do not republish the packages
+  that already succeeded. Fix the remaining packages and continue with the
+  original version only when already published contents do not need to change.
+  If published contents must change, deprecate `0.1.0` and release the corrected
+  package set as `0.1.1`.
+- If the tag or its push fails after publishing, fix or push the tag. If the
+  release commit cannot be tagged, publish a patch release and record the
+  correction in `CHANGELOG.md`.
+- If the clean-install smoke test fails, immediately deprecate every affected
+  version and publish a patch. For example:
+
+  ```text
+  npm deprecate @codepunk/protocol@0.1.0 "Use the corrected release instead."
+  ```
+
+  Repeat for each affected package.
+
+- If native dependency installation fails, stop and fix the installation path;
+  never use `--ignore-scripts` to conceal it. Stop as well if authentication,
+  scope access, or platform statements are inconsistent.
+- For a patch release, update `CHANGELOG.md` and create an annotated `v0.1.1`
+  tag.

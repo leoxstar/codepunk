@@ -64,6 +64,39 @@ explicit policy boundary around file and shell actions.
 - `codepunk completion bash|zsh|fish` prints a static completion script for
   the product commands, nested subcommands, and main permission/trust options.
 
+## Install
+
+Install the published CLI with npm:
+
+```text
+npm install --global @codepunk/cli@0.1.0
+```
+
+The CI matrix verifies Linux x64 on `ubuntu-latest` and macOS arm64 on
+`macos-latest`. macOS x64, Linux arm64, and WSL2 are not separately verified.
+Windows is not a verified platform.
+
+## Quick start
+
+Start Codepunk after installation:
+
+```text
+codepunk
+```
+
+On the first start, when no model is configured, Codepunk opens a model setup
+menu. Choose `/login` for a built-in provider or `/model` to select an
+authenticated model. You can also configure a default from the command line
+with `codepunk models import ...` followed by `codepunk models set
+<provider/model>`; see [`docs/MODELS.md`](docs/MODELS.md) for the provider
+options.
+
+Run the installation diagnostic at any time:
+
+```text
+codepunk doctor
+```
+
 ## Workspace trust
 
 Codepunk keeps Pi's whole-workspace boolean in `~/.codepunk/trust.json` and a
