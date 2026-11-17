@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   createScanner,
   LanguageVariant,
@@ -15,11 +16,13 @@ import {
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
+const execFileAsync = promisify(execFile);
 
 const ROOT_ENTRIES = new Set([
   ".github",
   ".gitignore",
   "AGENTS.md",
+  "CHANGELOG.md",
   "CONTRIBUTING.md",
   "LICENSE",
   "README.md",
@@ -160,7 +163,7 @@ const EXPECTED_CI_SHA256 =
   "06902bbaceeee07ca7dd0ab449d440a3fc1cda21ffc9726fe535919cd5b072d4";
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "8d43624e038574c7950806dbe471ce70ef7094a8768320578c9defd553007960";
+  "cb4e5db6953fda4b2ce0303e0db4d77843fae361917a091205d3495fe4f5a494";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -1072,6 +1075,22 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   if (manifest.license !== "MIT") {
     add("pkg.manifest", relativeManifest, "package license must be MIT");
   }
+  if (
+    manifest.repository?.url !== "git+https://github.com/leoxstar/codepunk.git"
+  ) {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "repository.url must be git+https://github.com/leoxstar/codepunk.git",
+    );
+  }
+  if (manifest.publishConfig?.access !== "public") {
+    add(
+      "pkg.manifest",
+      relativeManifest,
+      "publishConfig.access must be public",
+    );
+  }
   if (manifest.type !== "module") {
     add("pkg.manifest", relativeManifest, "package must be ESM");
   }
@@ -1105,14 +1124,12 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
     );
   }
   if (
-    !Array.isArray(manifest.files) ||
-    !manifest.files.includes("dist") ||
-    !manifest.files.includes("README.md")
+    JSON.stringify(manifest.files) !== JSON.stringify(["dist", "README.md"])
   ) {
     add(
       "pkg.manifest",
       relativeManifest,
-      "published files must include dist and README.md",
+      'published files must be exactly ["dist", "README.md"]',
     );
   }
 
@@ -1963,6 +1980,104 @@ async function checkPnpmWorkspace(root, add) {
   }
 }
 
+async function checkPackagePackaging(
+  root,
+  spec,
+  rootLicense,
+  requireBuilt,
+  add,
+) {
+  const relativeLicense = `${spec.dir}/LICENSE`;
+  try {
+    const license = await readFile(path.join(root, relativeLicense));
+    if (rootLicense && !license.equals(rootLicense)) {
+      add(
+        "pkg.license",
+        relativeLicense,
+        "package LICENSE must be byte-for-byte identical to root LICENSE",
+      );
+    }
+  } catch (error) {
+    add(
+      "pkg.license",
+      relativeLicense,
+      `cannot read package LICENSE: ${error.message}`,
+    );
+  }
+
+  let output;
+  try {
+    const result = await execFileAsync(
+      "npm",
+      ["pack", "--dry-run", "--json", "--ignore-scripts", "--offline"],
+      {
+        cwd: path.join(root, spec.dir),
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1_048_576,
+        env: { ...process.env, npm_config_update_notifier: "false" },
+      },
+    );
+    output = result.stdout;
+  } catch (error) {
+    const reason = error.killed
+      ? "timed out after 10000 ms"
+      : `${error.code ?? "unknown"}: ${(error.stderr?.trim() || error.message).slice(0, 1_000)}`;
+    add("pkg.pack", spec.dir, `npm pack --dry-run failed (${reason})`);
+    return;
+  }
+
+  let packages;
+  try {
+    packages = JSON.parse(output);
+  } catch {
+    add("pkg.pack", spec.dir, "npm pack did not return valid JSON");
+    return;
+  }
+  if (
+    !Array.isArray(packages) ||
+    packages.length !== 1 ||
+    !Array.isArray(packages[0]?.files) ||
+    !packages[0].files.every((file) => typeof file?.path === "string")
+  ) {
+    add(
+      "pkg.pack",
+      spec.dir,
+      "npm pack must return one package with a file path list",
+    );
+    return;
+  }
+  const packedPaths = packages[0].files.map((file) => file.path);
+  const requiredPaths = ["README.md", "LICENSE", "package.json"];
+  for (const packedPath of packedPaths) {
+    if (
+      !packedPath.startsWith("dist/") &&
+      !requiredPaths.includes(packedPath)
+    ) {
+      add(
+        "pkg.pack",
+        spec.dir,
+        `tarball contains unreviewed path ${packedPath}`,
+      );
+    }
+  }
+  for (const requiredPath of requiredPaths) {
+    if (!packedPaths.includes(requiredPath)) {
+      add("pkg.pack", spec.dir, `tarball is missing ${requiredPath}`);
+    }
+  }
+  if (
+    requireBuilt &&
+    !packedPaths.some((packedPath) => packedPath.startsWith("dist/"))
+  ) {
+    add(
+      "pkg.pack",
+      spec.dir,
+      "tarball is missing dist output; run pnpm run build",
+    );
+  }
+}
+
 async function checkBuiltEntries(root, files, add) {
   for (const spec of PACKAGE_SPECS) {
     const manifestPath = path.join(root, spec.dir, "package.json");
@@ -2097,6 +2212,13 @@ export async function checkRepository({
     }
   }
 
+  let rootLicense;
+  try {
+    rootLicense = await readFile(path.join(normalizedRoot, "LICENSE"));
+  } catch (error) {
+    add("pkg.license", "LICENSE", `cannot read root LICENSE: ${error.message}`);
+  }
+  const packagingChecks = [];
   for (const spec of PACKAGE_SPECS) {
     const manifest = await readJson(
       normalizedRoot,
@@ -2111,8 +2233,18 @@ export async function checkRepository({
         add,
         workspaceVersion,
       );
+      packagingChecks.push(
+        checkPackagePackaging(
+          normalizedRoot,
+          spec,
+          rootLicense,
+          requireBuilt,
+          add,
+        ),
+      );
     }
   }
+  await Promise.all(packagingChecks);
 
   const relativeLockfile = "pnpm-lock.yaml";
   let lockfileContent;

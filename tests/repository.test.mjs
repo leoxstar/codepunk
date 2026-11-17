@@ -35,7 +35,10 @@ const COPY_EXCLUSIONS = new Set([
   "tmp",
 ]);
 
-function runCheck(root, { requireBuilt = false, script = CHECK_SCRIPT } = {}) {
+function runCheck(
+  root,
+  { requireBuilt = false, script = CHECK_SCRIPT, env = process.env } = {},
+) {
   const argumentsList = [
     script,
     "--root",
@@ -45,7 +48,7 @@ function runCheck(root, { requireBuilt = false, script = CHECK_SCRIPT } = {}) {
   return spawnSync(process.execPath, argumentsList, {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...env, NO_COLOR: "1" },
     timeout: 20_000,
   });
 }
@@ -160,6 +163,278 @@ async function copyRepositoryToTemporaryDirectory() {
     },
   };
 }
+
+async function createPackagingFixture() {
+  const fixture = await copyRepositoryToTemporaryDirectory();
+  const license = await readFile(path.join(fixture.root, "LICENSE"));
+  for (const packageName of ["protocol", "core", "cli"]) {
+    const packageDirectory = `packages/${packageName}`;
+    await mutateJson(
+      fixture.root,
+      `${packageDirectory}/package.json`,
+      (manifest) => {
+        manifest.repository = {
+          type: "git",
+          url: "git+https://github.com/leoxstar/codepunk.git",
+        };
+        manifest.publishConfig = { access: "public" };
+      },
+    );
+    await writeFile(
+      path.join(fixture.root, packageDirectory, "LICENSE"),
+      license,
+    );
+  }
+  await writeFile(path.join(fixture.root, "CHANGELOG.md"), "# Changelog\n");
+  return fixture;
+}
+
+async function createNpmPackFixture(fixture, output, status = 0) {
+  const directory = path.join(fixture.temporaryRoot, "bin");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path.join(directory, "npm"),
+    [
+      "#!/usr/bin/env node",
+      `process.stdout.write(${JSON.stringify(output)});`,
+      `process.exitCode = ${status};`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return {
+    ...process.env,
+    PATH: `${directory}${path.delimiter}${process.env.PATH ?? ""}`,
+  };
+}
+
+const PACKAGING_NEGATIVE_CASES = [
+  {
+    name: "missing repository URL",
+    mutate(manifest) {
+      delete manifest.repository;
+    },
+  },
+  {
+    name: "incorrect repository URL",
+    mutate(manifest) {
+      manifest.repository.url = "git+https://example.com/other.git";
+    },
+  },
+  {
+    name: "missing publish access",
+    mutate(manifest) {
+      delete manifest.publishConfig;
+    },
+  },
+  {
+    name: "nonpublic publish access",
+    mutate(manifest) {
+      manifest.publishConfig.access = "restricted";
+    },
+  },
+  {
+    name: "extra published source entry",
+    mutate(manifest) {
+      manifest.files.push("src");
+    },
+  },
+  {
+    name: "explicit LICENSE files entry",
+    mutate(manifest) {
+      manifest.files.push("LICENSE");
+    },
+  },
+  {
+    name: "missing published README entry",
+    mutate(manifest) {
+      manifest.files = ["dist"];
+    },
+  },
+  {
+    name: "reordered published files",
+    mutate(manifest) {
+      manifest.files.reverse();
+    },
+  },
+  {
+    name: "duplicated published files",
+    mutate(manifest) {
+      manifest.files.push("dist");
+    },
+  },
+];
+
+test("packaging accepts a synthetic release tree with real offline npm packing", async () => {
+  const fixture = await createPackagingFixture();
+  try {
+    const result = await checkRepository({ root: fixture.root });
+    assert.deepEqual(result.errors, []);
+    for (const packageName of ["protocol", "core", "cli"]) {
+      assert.equal(
+        existsSync(
+          path.join(
+            fixture.root,
+            "packages",
+            packageName,
+            `codepunk-${packageName}-0.1.0.tgz`,
+          ),
+        ),
+        false,
+      );
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("packaging requires the CHANGELOG root allowlist entry", async () => {
+  const fixture = await createPackagingFixture();
+  try {
+    const script = path.join(fixture.temporaryRoot, "check-root-allowlist.mjs");
+    const content = await readFile(CHECK_SCRIPT, "utf8");
+    await writeFile(
+      script,
+      content
+        .replace('  "CHANGELOG.md",\n', "")
+        .replace(
+          '"typescript/unstable/ast"',
+          JSON.stringify(import.meta.resolve("typescript/unstable/ast")),
+        ),
+    );
+    assertRuleFailure(
+      runCheck(fixture.root, { script }),
+      "repo.root",
+      "CHANGELOG.md",
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("packaging rejects each manifest and byte-level license violation", async (t) => {
+  const fixture = await createPackagingFixture();
+  try {
+    for (const packageName of ["protocol", "core", "cli"]) {
+      const manifestPath = `packages/${packageName}/package.json`;
+      for (const negativeCase of PACKAGING_NEGATIVE_CASES) {
+        await t.test(`${packageName}: ${negativeCase.name}`, async () => {
+          const restore = await mutateJson(
+            fixture.root,
+            manifestPath,
+            negativeCase.mutate,
+          );
+          try {
+            assertRuleFailure(
+              runCheck(fixture.root),
+              "pkg.manifest",
+              manifestPath,
+            );
+          } finally {
+            await restore();
+          }
+        });
+      }
+      const licensePath = `packages/${packageName}/LICENSE`;
+      const license = await readFile(path.join(fixture.root, licensePath));
+      await t.test(`${packageName}: missing package LICENSE`, async () => {
+        await rm(path.join(fixture.root, licensePath));
+        try {
+          assertRuleFailure(runCheck(fixture.root), "pkg.license", licensePath);
+        } finally {
+          await writeFile(path.join(fixture.root, licensePath), license);
+        }
+      });
+      await t.test(`${packageName}: changed LICENSE bytes`, async () => {
+        await writeFile(
+          path.join(fixture.root, licensePath),
+          Buffer.concat([license, Buffer.from("\n")]),
+        );
+        try {
+          assertRuleFailure(runCheck(fixture.root), "pkg.license", licensePath);
+        } finally {
+          await writeFile(path.join(fixture.root, licensePath), license);
+        }
+      });
+    }
+    await t.test("missing root LICENSE", async () => {
+      const license = await readFile(path.join(fixture.root, "LICENSE"));
+      await rm(path.join(fixture.root, "LICENSE"));
+      try {
+        assertRuleFailure(runCheck(fixture.root), "pkg.license", "LICENSE");
+      } finally {
+        await writeFile(path.join(fixture.root, "LICENSE"), license);
+      }
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("packaging validates npm tarball evidence and allowed paths", async (t) => {
+  const fixture = await createPackagingFixture();
+  const validFiles = ["dist/index.js", "README.md", "LICENSE", "package.json"];
+  try {
+    for (const fixtureCase of [
+      { name: "accepted synthetic tarball", files: validFiles, clean: true },
+      { name: "source-only synthetic tarball", files: ["src/index.ts"] },
+      { name: "source leakage", files: [...validFiles, "src/index.ts"] },
+      {
+        name: "LICENSE absent from tarball",
+        files: validFiles.filter((file) => file !== "LICENSE"),
+      },
+      {
+        name: "README absent from tarball",
+        files: validFiles.filter((file) => file !== "README.md"),
+      },
+      {
+        name: "manifest absent from tarball",
+        files: validFiles.filter((file) => file !== "package.json"),
+      },
+      { name: "empty tarball", files: [] },
+      {
+        name: "built tarball without dist output",
+        files: ["README.md", "LICENSE", "package.json"],
+        requireBuilt: true,
+      },
+      { name: "malformed tarball paths", output: '[{"files":[{}]}]' },
+      { name: "missing tarball file list", output: "[{}]" },
+      { name: "missing tarball result", output: "[]" },
+      { name: "invalid npm JSON", output: "invalid JSON" },
+      { name: "failed npm pack command", output: "pack failed", status: 1 },
+    ]) {
+      await t.test(fixtureCase.name, async () => {
+        const env = await createNpmPackFixture(
+          fixture,
+          fixtureCase.output ??
+            JSON.stringify([
+              {
+                files: fixtureCase.files.map((file) => ({
+                  path: file,
+                  size: 1,
+                  mode: 420,
+                })),
+              },
+            ]),
+          fixtureCase.status,
+        );
+        const result = runCheck(fixture.root, {
+          env,
+          requireBuilt: fixtureCase.requireBuilt,
+        });
+        if (fixtureCase.clean) {
+          assertClean(result, fixtureCase.name);
+        } else {
+          for (const packageName of ["protocol", "core", "cli"]) {
+            assertRuleFailure(result, "pkg.pack", `packages/${packageName}`);
+          }
+        }
+      });
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
 
 const NEGATIVE_CASES = [
   {
