@@ -431,6 +431,11 @@ interface ShellScan {
 function shellScan(command: string): ShellScan {
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  // The Windows shell treats `\` as a path separator, not as an escape.
+  // Stripping it here turned `C:\work\...` into a drive-relative string
+  // before the path policy saw it, which could make an outside path look
+  // like it belonged to the workspace.
+  const backslashEscapes = process.platform !== "win32";
   let complex = false;
   const words: string[] = [];
   let current = "";
@@ -462,7 +467,7 @@ function shellScan(command: string): ShellScan {
       escaped = false;
       continue;
     }
-    if (character === "\\") {
+    if (backslashEscapes && character === "\\") {
       escaped = true;
       continue;
     }
@@ -471,7 +476,7 @@ function shellScan(command: string): ShellScan {
         quote = null;
         continue;
       }
-      if (quote === '"' && character === "\\") {
+      if (backslashEscapes && quote === '"' && character === "\\") {
         escaped = true;
         continue;
       }

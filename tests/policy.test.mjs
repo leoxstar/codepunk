@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  canCreateFileSymlink,
+  createDirectoryLink,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -11,8 +13,10 @@ import {
 
 const core = await importCore();
 
-const WORKSPACE = "/workspace";
-const CODEPUNK_HOME = "/workspace/.codepunk-home";
+// The policy layer resolves every path against the platform, so the
+// expectation has to be built from the same absolute path the product sees.
+const WORKSPACE = path.resolve("/workspace");
+const CODEPUNK_HOME = path.resolve("/workspace/.codepunk-home");
 
 function request(overrides = {}) {
   return {
@@ -29,7 +33,7 @@ function request(overrides = {}) {
 test("read inside the workspace is allowed", () => {
   const decision = core.decidePolicy(request());
   assert.equal(decision.decision, "allow");
-  assert.equal(decision.match.path, "/workspace/src/a.ts");
+  assert.equal(decision.match.path, path.join(WORKSPACE, "src", "a.ts"));
 });
 
 test("search defaults to the workspace and still rejects explicit escapes", () => {
@@ -83,11 +87,14 @@ test("symlinks cannot escape the workspace", async () => {
     await fs.mkdir(home);
     await fs.writeFile(path.join(outside, "secret.txt"), "secret\n");
     await fs.writeFile(path.join(workspace, "inside.txt"), "inside\n");
-    await fs.symlink(outside, path.join(workspace, "escape"), "dir");
-    await fs.symlink(
-      path.join(workspace, "inside.txt"),
-      path.join(workspace, "alias.txt"),
-    );
+    await createDirectoryLink(outside, path.join(workspace, "escape"));
+    const fileSymlinks = await canCreateFileSymlink();
+    if (fileSymlinks) {
+      await fs.symlink(
+        path.join(workspace, "inside.txt"),
+        path.join(workspace, "alias.txt"),
+      );
+    }
     const base = {
       cwd: workspace,
       workspaceRoot: workspace,
@@ -111,12 +118,14 @@ test("symlinks cannot escape the workspace", async () => {
     assert.equal(write.decision, "deny");
     assert.match(write.reason, /symlink outside the workspace/u);
 
-    const inside = core.decidePolicy({
-      ...base,
-      tool: "read",
-      args: { path: "alias.txt" },
-    });
-    assert.equal(inside.decision, "allow");
+    if (fileSymlinks) {
+      const inside = core.decidePolicy({
+        ...base,
+        tool: "read",
+        args: { path: "alias.txt" },
+      });
+      assert.equal(inside.decision, "allow");
+    }
   });
 });
 
@@ -604,7 +613,13 @@ test("shell parsing cannot hide mutation in quoted or chained segments", () => {
       userDefault: "allow",
     }),
   );
-  assert.equal(literal.decision, "allow");
+  // cmd.exe does not use a backslash to escape `$`, so a `$(` in the raw
+  // command stays a substitution candidate and the conservative answer is
+  // an approval request rather than an unconditional allow.
+  assert.equal(
+    literal.decision,
+    process.platform === "win32" ? "ask" : "allow",
+  );
 });
 
 test("environment queries are read-only but clock and hostname writes ask", () => {
@@ -1188,3 +1203,17 @@ test("rule hashes are canonical", () => {
     core.policyRuleHash({ decision: "allow", tool: "*", id: "a" }),
   );
 });
+
+test(
+  "Windows absolute arguments keep their path separators",
+  {
+    skip: process.platform !== "win32",
+  },
+  () => {
+    const argument = String.raw`C:\work\example\extra\a.txt`;
+    assert.deepEqual(core.simpleShellArgv(`cat ${argument}`), [
+      "cat",
+      argument,
+    ]);
+  },
+);
