@@ -1499,6 +1499,7 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
         "first-run setup commands",
       );
 
+      await waitForQuiet(session, 250);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -1506,7 +1507,11 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
           setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
         ),
       ]);
-      assert.deepEqual(result, { code: 0, signal: null });
+      assert.deepEqual(
+        result,
+        { code: 0, signal: null },
+        stripAnsi(session.output()).slice(-4_000),
+      );
     } finally {
       await stopPty(session);
     }
