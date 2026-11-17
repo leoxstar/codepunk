@@ -18,6 +18,10 @@ import {
 const core = await importCore();
 const protocol = await importProtocol();
 const execFileAsync = promisify(execFile);
+const UNIX_SOCKET_SKIP =
+  process.platform === "win32"
+    ? "the daemon requires a Unix socket; Windows is fail-closed"
+    : false;
 
 async function makeDaemonProject(root) {
   const project = path.join(root, "project");
@@ -182,279 +186,315 @@ async function waitForExit(child) {
   return code;
 }
 
-test("two clients interoperate and concurrent reads preserve the session", async () => {
-  await withTempDirectory("codepunk-daemon-protocol-", async (root) => {
-    assert.deepEqual(
-      [
-        protocol.DAEMON_REQUEST_MAX_BYTES,
-        protocol.DAEMON_RESPONSE_MAX_BYTES,
-        protocol.DAEMON_DEFAULT_PAGE_SIZE,
-        protocol.DAEMON_MAX_PAGE_SIZE,
-        protocol.DAEMON_MAX_CONNECTIONS,
-        protocol.DAEMON_REQUEST_TIMEOUT_MS,
-      ],
-      [64 * 1024, 1024 * 1024, 100, 100, 32, 5_000],
-    );
-    const { project, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const logBefore = await fileSha256(store.paths.logPath);
-    await fs.unlink(store.paths.metaPath);
-
-    const server = await core.DaemonServer.start({
-      paths,
-      now: fixedClock("2026-11-13T09:00:00.000Z"),
-    });
-    try {
-      const socketStat = await fs.lstat(server.socketPath);
-      assert.equal(socketStat.isSocket(), true);
-      assert.equal(socketStat.mode & 0o777, 0o600);
-      const directoryStat = await fs.stat(path.dirname(server.socketPath));
-      assert.equal(directoryStat.mode & 0o777, 0o700);
-
-      const first = new core.DaemonClient({ socketPath: server.socketPath });
-      const second = new core.DaemonClient({ socketPath: server.socketPath });
-      const [hello, listed, readByFirst, readBySecond] = await Promise.all([
-        first.hello(),
-        second.listSessions(),
-        first.readAllSession(store.sessionId),
-        second.readAllSession(store.sessionId),
-      ]);
-
-      assert.equal(hello.protocol_version, protocol.DAEMON_PROTOCOL_VERSION);
-      assert.equal(hello.read_only, false);
-      assert.deepEqual(hello.methods, [...protocol.DAEMON_METHODS]);
-      assert.equal(listed.sessions.length, 1);
-      assert.equal(listed.sessions[0].id, store.sessionId);
-      assert.equal(listed.sessions[0].last_seq, 2);
-      assert.equal(readByFirst.header.id, store.sessionId);
-      assert.equal(readBySecond.header.id, store.sessionId);
-      assert.equal(readByFirst.events.length, 2);
+test(
+  "two clients interoperate and concurrent reads preserve the session",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-protocol-", async (root) => {
       assert.deepEqual(
-        readByFirst.events.map((event) => event.seq),
-        [1, 2],
+        [
+          protocol.DAEMON_REQUEST_MAX_BYTES,
+          protocol.DAEMON_RESPONSE_MAX_BYTES,
+          protocol.DAEMON_DEFAULT_PAGE_SIZE,
+          protocol.DAEMON_MAX_PAGE_SIZE,
+          protocol.DAEMON_MAX_CONNECTIONS,
+          protocol.DAEMON_REQUEST_TIMEOUT_MS,
+        ],
+        [64 * 1024, 1024 * 1024, 100, 100, 32, 5_000],
       );
-      assert.equal(readByFirst.metadata.log_seq, 2);
-      assert.equal(readByFirst.metadata.updated_at, store.header.created_at);
-      assert.equal(
-        protocol.validateSchema(protocol.DaemonHelloResultSchema, hello).ok,
-        true,
-      );
-      assert.equal(
-        protocol.validateSchema(protocol.DaemonSessionListResultSchema, listed)
-          .ok,
-        true,
-      );
-      assert.equal(
-        protocol.validateSchema(
-          protocol.DaemonSessionReadResultSchema,
-          readByFirst,
-        ).ok,
-        true,
-      );
-      await assert.rejects(fs.access(store.paths.metaPath), /ENOENT/u);
-      assert.equal(await fileSha256(store.paths.logPath), logBefore);
-    } finally {
-      await server.close();
-    }
-  });
-});
+      const { project, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const logBefore = await fileSha256(store.paths.logPath);
+      await fs.unlink(store.paths.metaPath);
 
-test("mismatched versions and mutating methods are refused", async () => {
-  await withTempDirectory("codepunk-daemon-refusal-", async (root) => {
-    const { project, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const logBefore = await fileSha256(store.paths.logPath);
-    const server = await core.DaemonServer.start({ paths });
-    try {
-      for (const version of [0, 2]) {
-        const response = await rawRequest(
-          server.socketPath,
-          request("session/list", {}, version),
-        );
-        assert.equal(response.ok, false);
-        assert.equal(response.error.code, "protocol.version_mismatch");
-      }
-      for (const method of [
-        "session/append",
-        "approval/answer",
-        "verdict/sign_off",
-      ]) {
-        const response = await rawRequest(server.socketPath, request(method));
-        assert.equal(response.ok, false);
-        assert.equal(response.error.code, "daemon.read_only");
-      }
-      const extraField = {
-        ...request("session/list"),
-        write: "src/file.ts",
-      };
-      assert.equal(
-        (await rawRequest(server.socketPath, extraField)).error.code,
-        "protocol.invalid_request",
-      );
-      const pathTraversal = request("session/read", {
-        session_id: "../outside",
+      const server = await core.DaemonServer.start({
+        paths,
+        now: fixedClock("2026-11-13T09:00:00.000Z"),
       });
-      assert.equal(
-        (await rawRequest(server.socketPath, pathTraversal)).error.code,
-        "protocol.invalid_request",
-      );
-      assert.equal(
-        (await rawRequest(server.socketPath, "{not-json")).error.code,
-        "protocol.invalid_request",
-      );
-      const oversized = `{"type":"codepunk/daemon-request","padding":"${"x".repeat(
-        protocol.DAEMON_REQUEST_MAX_BYTES,
-      )}"}`;
-      assert.equal(
-        (await rawRequest(server.socketPath, oversized)).error.code,
-        "daemon.request_too_large",
-      );
-
-      const client = new core.DaemonClient({ socketPath: server.socketPath });
-      const after = await client.readAllSession(store.sessionId);
-      assert.equal(after.events.length, 2);
-      assert.equal(await fileSha256(store.paths.logPath), logBefore);
-    } finally {
-      await server.close();
-    }
-  });
-});
-
-test("session reads enforce ordering, page limits, and the response limit", async () => {
-  await withTempDirectory("codepunk-daemon-limits-", async (root) => {
-    const { project, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const server = await core.DaemonServer.start({ paths });
-    try {
-      const firstPage = await rawRequest(
-        server.socketPath,
-        request("session/read", {
-          session_id: store.sessionId,
-          limit: 1,
-        }),
-      );
-      assert.equal(firstPage.ok, true);
-      assert.deepEqual(
-        firstPage.result.events.map((event) => event.seq),
-        [1],
-      );
-      assert.equal(firstPage.result.next_seq, 1);
-      assert.equal(firstPage.result.has_more, true);
-
-      const secondPage = await rawRequest(
-        server.socketPath,
-        request("session/read", {
-          session_id: store.sessionId,
-          after_seq: firstPage.result.next_seq,
-          limit: 1,
-        }),
-      );
-      assert.equal(secondPage.ok, true);
-      assert.deepEqual(
-        secondPage.result.events.map((event) => event.seq),
-        [2],
-      );
-      assert.equal(secondPage.result.has_more, false);
-
-      const tooMany = await rawRequest(
-        server.socketPath,
-        request("session/read", {
-          session_id: store.sessionId,
-          limit: protocol.DAEMON_MAX_PAGE_SIZE + 1,
-        }),
-      );
-      assert.equal(tooMany.error.code, "protocol.invalid_request");
-    } finally {
-      await server.close();
-    }
-    const limited = await core.DaemonServer.start({
-      paths,
-      maxResponseBytes: 300,
-    });
-    try {
-      const tooLarge = await rawRequest(
-        limited.socketPath,
-        request("session/read", {
-          session_id: store.sessionId,
-          limit: protocol.DAEMON_MAX_PAGE_SIZE,
-        }),
-      );
-      assert.equal(tooLarge.error.code, "daemon.response_too_large");
-    } finally {
-      await limited.close();
-    }
-  });
-});
-
-test("socket paths reject symlinks and long paths fall back under /tmp", async () => {
-  await withTempDirectory("codepunk-daemon-link-", async (root) => {
-    const { paths } = await makeDaemonProject(root);
-    const socketPath = core.daemonSocketPath(paths);
-    await fs.symlink(path.join(root, "socket-target"), socketPath);
-    await assert.rejects(
-      () => core.DaemonServer.start({ paths }),
-      /symbolic link/u,
-    );
-    assert.equal((await fs.lstat(socketPath)).isSymbolicLink(), true);
-
-    const fallback = core.daemonSocketPath({
-      home: path.join(os.tmpdir(), "x".repeat(120), "home"),
-      projectId: "0123456789abcdef",
-    });
-    assert.match(
-      fallback,
-      new RegExp(
-        `^/tmp/codepunk-${process.getuid()}/0123456789abcdef\\.sock$`,
-        "u",
-      ),
-    );
-    assert.equal(Buffer.byteLength(fallback, "utf8") <= 103, true);
-  });
-});
-
-test("the daemon exposes at most 32 concurrent connections", async () => {
-  await withTempDirectory("codepunk-daemon-connections-", async (root) => {
-    const { paths } = await makeDaemonProject(root);
-    const server = await core.DaemonServer.start({
-      paths,
-      requestTimeoutMs: 10_000,
-    });
-    const idle = [];
-    try {
-      for (let index = 0; index < protocol.DAEMON_MAX_CONNECTIONS; index += 1) {
-        const socket = net.createConnection({ path: server.socketPath });
-        socket.on("error", () => {});
-        socket.once("connect", () => socket.write("{"));
-        idle.push(socket);
-        await once(socket, "connect");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const overflow = net.createConnection({ path: server.socketPath });
-      const overflowClosed = new Promise((resolve) =>
-        overflow.once("close", resolve),
-      );
-      overflow.on("error", () => {});
-      let received = "";
-      overflow.setEncoding("utf8");
-      overflow.on("data", (chunk) => {
-        received += chunk;
-      });
-      await once(overflow, "connect");
       try {
-        overflow.write(`${JSON.stringify(request("daemon/hello"))}\n`);
-      } catch (error) {
-        assert.equal(error.code, "EPIPE");
+        const socketStat = await fs.lstat(server.socketPath);
+        assert.equal(socketStat.isSocket(), true);
+        assert.equal(socketStat.mode & 0o777, 0o600);
+        const directoryStat = await fs.stat(path.dirname(server.socketPath));
+        assert.equal(directoryStat.mode & 0o777, 0o700);
+
+        const first = new core.DaemonClient({ socketPath: server.socketPath });
+        const second = new core.DaemonClient({ socketPath: server.socketPath });
+        const [hello, listed, readByFirst, readBySecond] = await Promise.all([
+          first.hello(),
+          second.listSessions(),
+          first.readAllSession(store.sessionId),
+          second.readAllSession(store.sessionId),
+        ]);
+
+        assert.equal(hello.protocol_version, protocol.DAEMON_PROTOCOL_VERSION);
+        assert.equal(hello.read_only, false);
+        assert.deepEqual(hello.methods, [...protocol.DAEMON_METHODS]);
+        assert.equal(listed.sessions.length, 1);
+        assert.equal(listed.sessions[0].id, store.sessionId);
+        assert.equal(listed.sessions[0].last_seq, 2);
+        assert.equal(readByFirst.header.id, store.sessionId);
+        assert.equal(readBySecond.header.id, store.sessionId);
+        assert.equal(readByFirst.events.length, 2);
+        assert.deepEqual(
+          readByFirst.events.map((event) => event.seq),
+          [1, 2],
+        );
+        assert.equal(readByFirst.metadata.log_seq, 2);
+        assert.equal(readByFirst.metadata.updated_at, store.header.created_at);
+        assert.equal(
+          protocol.validateSchema(protocol.DaemonHelloResultSchema, hello).ok,
+          true,
+        );
+        assert.equal(
+          protocol.validateSchema(
+            protocol.DaemonSessionListResultSchema,
+            listed,
+          ).ok,
+          true,
+        );
+        assert.equal(
+          protocol.validateSchema(
+            protocol.DaemonSessionReadResultSchema,
+            readByFirst,
+          ).ok,
+          true,
+        );
+        await assert.rejects(fs.access(store.paths.metaPath), /ENOENT/u);
+        assert.equal(await fileSha256(store.paths.logPath), logBefore);
+      } finally {
+        await server.close();
       }
-      await overflowClosed;
-      assert.equal(received, "");
-    } finally {
-      for (const socket of idle) {
-        socket.destroy();
+    });
+  },
+);
+
+test(
+  "mismatched versions and mutating methods are refused",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-refusal-", async (root) => {
+      const { project, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const logBefore = await fileSha256(store.paths.logPath);
+      const server = await core.DaemonServer.start({ paths });
+      try {
+        for (const version of [0, 2]) {
+          const response = await rawRequest(
+            server.socketPath,
+            request("session/list", {}, version),
+          );
+          assert.equal(response.ok, false);
+          assert.equal(response.error.code, "protocol.version_mismatch");
+        }
+        for (const method of [
+          "session/append",
+          "approval/answer",
+          "verdict/sign_off",
+        ]) {
+          const response = await rawRequest(server.socketPath, request(method));
+          assert.equal(response.ok, false);
+          assert.equal(response.error.code, "daemon.read_only");
+        }
+        const extraField = {
+          ...request("session/list"),
+          write: "src/file.ts",
+        };
+        assert.equal(
+          (await rawRequest(server.socketPath, extraField)).error.code,
+          "protocol.invalid_request",
+        );
+        const pathTraversal = request("session/read", {
+          session_id: "../outside",
+        });
+        assert.equal(
+          (await rawRequest(server.socketPath, pathTraversal)).error.code,
+          "protocol.invalid_request",
+        );
+        assert.equal(
+          (await rawRequest(server.socketPath, "{not-json")).error.code,
+          "protocol.invalid_request",
+        );
+        const oversized = `{"type":"codepunk/daemon-request","padding":"${"x".repeat(
+          protocol.DAEMON_REQUEST_MAX_BYTES,
+        )}"}`;
+        assert.equal(
+          (await rawRequest(server.socketPath, oversized)).error.code,
+          "daemon.request_too_large",
+        );
+
+        const client = new core.DaemonClient({ socketPath: server.socketPath });
+        const after = await client.readAllSession(store.sessionId);
+        assert.equal(after.events.length, 2);
+        assert.equal(await fileSha256(store.paths.logPath), logBefore);
+      } finally {
+        await server.close();
       }
-      await server.close();
-    }
-  });
-});
+    });
+  },
+);
+
+test(
+  "session reads enforce ordering, page limits, and the response limit",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-limits-", async (root) => {
+      const { project, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const server = await core.DaemonServer.start({ paths });
+      try {
+        const firstPage = await rawRequest(
+          server.socketPath,
+          request("session/read", {
+            session_id: store.sessionId,
+            limit: 1,
+          }),
+        );
+        assert.equal(firstPage.ok, true);
+        assert.deepEqual(
+          firstPage.result.events.map((event) => event.seq),
+          [1],
+        );
+        assert.equal(firstPage.result.next_seq, 1);
+        assert.equal(firstPage.result.has_more, true);
+
+        const secondPage = await rawRequest(
+          server.socketPath,
+          request("session/read", {
+            session_id: store.sessionId,
+            after_seq: firstPage.result.next_seq,
+            limit: 1,
+          }),
+        );
+        assert.equal(secondPage.ok, true);
+        assert.deepEqual(
+          secondPage.result.events.map((event) => event.seq),
+          [2],
+        );
+        assert.equal(secondPage.result.has_more, false);
+
+        const tooMany = await rawRequest(
+          server.socketPath,
+          request("session/read", {
+            session_id: store.sessionId,
+            limit: protocol.DAEMON_MAX_PAGE_SIZE + 1,
+          }),
+        );
+        assert.equal(tooMany.error.code, "protocol.invalid_request");
+      } finally {
+        await server.close();
+      }
+      const limited = await core.DaemonServer.start({
+        paths,
+        maxResponseBytes: 300,
+      });
+      try {
+        const tooLarge = await rawRequest(
+          limited.socketPath,
+          request("session/read", {
+            session_id: store.sessionId,
+            limit: protocol.DAEMON_MAX_PAGE_SIZE,
+          }),
+        );
+        assert.equal(tooLarge.error.code, "daemon.response_too_large");
+      } finally {
+        await limited.close();
+      }
+    });
+  },
+);
+
+test(
+  "socket paths reject symlinks and long paths fall back under /tmp",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-link-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const socketPath = core.daemonSocketPath(paths);
+      await fs.symlink(path.join(root, "socket-target"), socketPath);
+      await assert.rejects(
+        () => core.DaemonServer.start({ paths }),
+        /symbolic link/u,
+      );
+      assert.equal((await fs.lstat(socketPath)).isSymbolicLink(), true);
+
+      const fallback = core.daemonSocketPath({
+        home: path.join(os.tmpdir(), "x".repeat(120), "home"),
+        projectId: "0123456789abcdef",
+      });
+      assert.match(
+        fallback,
+        new RegExp(
+          `^/tmp/codepunk-${process.getuid()}/0123456789abcdef\\.sock$`,
+          "u",
+        ),
+      );
+      assert.equal(Buffer.byteLength(fallback, "utf8") <= 103, true);
+    });
+  },
+);
+
+test(
+  "the daemon exposes at most 32 concurrent connections",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-connections-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const server = await core.DaemonServer.start({
+        paths,
+        requestTimeoutMs: 10_000,
+      });
+      const idle = [];
+      try {
+        for (
+          let index = 0;
+          index < protocol.DAEMON_MAX_CONNECTIONS;
+          index += 1
+        ) {
+          const socket = net.createConnection({ path: server.socketPath });
+          socket.on("error", () => {});
+          socket.once("connect", () => socket.write("{"));
+          idle.push(socket);
+          await once(socket, "connect");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const overflow = net.createConnection({ path: server.socketPath });
+        const overflowClosed = new Promise((resolve) =>
+          overflow.once("close", resolve),
+        );
+        overflow.on("error", () => {});
+        let received = "";
+        overflow.setEncoding("utf8");
+        overflow.on("data", (chunk) => {
+          received += chunk;
+        });
+        await once(overflow, "connect");
+        try {
+          overflow.write(`${JSON.stringify(request("daemon/hello"))}\n`);
+        } catch (error) {
+          assert.equal(error.code, "EPIPE");
+        }
+        await overflowClosed;
+        assert.equal(received, "");
+      } finally {
+        for (const socket of idle) {
+          socket.destroy();
+        }
+        await server.close();
+      }
+    });
+  },
+);
 
 test("the daemon path fails closed on Windows", () => {
   const original = Object.getOwnPropertyDescriptor(process, "platform");
@@ -477,238 +517,273 @@ test("the daemon path fails closed on Windows", () => {
   }
 });
 
-test("stale sockets are replaced, non-sockets are preserved, and idle requests time out", async () => {
-  await withTempDirectory("codepunk-daemon-socket-", async (root) => {
-    const { paths } = await makeDaemonProject(root);
-    const socketPath = core.daemonSocketPath(paths);
-    const holder = spawn(
-      process.execPath,
-      [
-        "-e",
-        "const net=require('node:net');const s=net.createServer();s.listen(process.argv[1],()=>process.stdout.write('ready\\n'));",
-        socketPath,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("socket holder did not start")),
-        5_000,
+test(
+  "stale sockets are replaced, non-sockets are preserved, and idle requests time out",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-socket-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const socketPath = core.daemonSocketPath(paths);
+      const holder = spawn(
+        process.execPath,
+        [
+          "-e",
+          "const net=require('node:net');const s=net.createServer();s.listen(process.argv[1],()=>process.stdout.write('ready\\n'));",
+          socketPath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
       );
-      holder.stdout.once("data", (chunk) => {
-        clearTimeout(timer);
-        if (chunk.toString().includes("ready")) {
-          resolve();
-          return;
-        }
-        reject(new Error("socket holder returned an unexpected response"));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("socket holder did not start")),
+          5_000,
+        );
+        holder.stdout.once("data", (chunk) => {
+          clearTimeout(timer);
+          if (chunk.toString().includes("ready")) {
+            resolve();
+            return;
+          }
+          reject(new Error("socket holder returned an unexpected response"));
+        });
+        holder.once("exit", (code) => {
+          clearTimeout(timer);
+          reject(new Error(`socket holder exited early: ${code}`));
+        });
       });
-      holder.once("exit", (code) => {
-        clearTimeout(timer);
-        reject(new Error(`socket holder exited early: ${code}`));
-      });
-    });
-    holder.kill("SIGKILL");
-    await waitForExit(holder);
-    assert.equal((await fs.lstat(socketPath)).isSocket(), true);
+      holder.kill("SIGKILL");
+      await waitForExit(holder);
+      assert.equal((await fs.lstat(socketPath)).isSocket(), true);
 
-    const server = await core.DaemonServer.start({
-      paths,
-      requestTimeoutMs: 80,
-    });
-    try {
-      const client = new core.DaemonClient({ socketPath: server.socketPath });
-      assert.equal((await client.hello()).read_only, false);
+      const server = await core.DaemonServer.start({
+        paths,
+        requestTimeoutMs: 80,
+      });
+      try {
+        const client = new core.DaemonClient({ socketPath: server.socketPath });
+        assert.equal((await client.hello()).read_only, false);
+        await assert.rejects(
+          () => core.DaemonServer.start({ paths }),
+          /already running/u,
+        );
+        const timeout = await rawRequest(server.socketPath, null);
+        assert.equal(timeout.error.code, "daemon.timeout");
+      } finally {
+        await server.close();
+      }
+
+      await fs.writeFile(socketPath, "not a socket\n", { mode: 0o600 });
       await assert.rejects(
         () => core.DaemonServer.start({ paths }),
-        /already running/u,
+        /not a socket/u,
       );
-      const timeout = await rawRequest(server.socketPath, null);
-      assert.equal(timeout.error.code, "daemon.timeout");
-    } finally {
-      await server.close();
-    }
-
-    await fs.writeFile(socketPath, "not a socket\n", { mode: 0o600 });
-    await assert.rejects(
-      () => core.DaemonServer.start({ paths }),
-      /not a socket/u,
-    );
-    assert.equal(await fs.readFile(socketPath, "utf8"), "not a socket\n");
-    await fs.unlink(socketPath);
-  });
-});
-
-test("the CLI daemon serves the second read-only view surface", async () => {
-  await withTempDirectory("codepunk-daemon-cli-", async (root) => {
-    const { project, home, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const cli = await ensureBuilt();
-    const environment = {
-      ...process.env,
-      CODEPUNK_HOME: home,
-      NO_COLOR: "1",
-    };
-    const daemon = spawn(process.execPath, [cli, "daemon", "--json"], {
-      cwd: project,
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
+      assert.equal(await fs.readFile(socketPath, "utf8"), "not a socket\n");
+      await fs.unlink(socketPath);
     });
-    let socketPath;
-    try {
-      const started = await waitForJsonLine(daemon);
-      assert.equal(started.read_only, false);
-      assert.equal(started.protocol_version, protocol.DAEMON_PROTOCOL_VERSION);
-      assert.equal(typeof started.socket, "string");
-      socketPath = started.socket;
+  },
+);
 
-      const listed = await execFileAsync(
-        process.execPath,
-        [cli, "view", "--json"],
-        { cwd: project, env: environment },
-      );
-      const listResult = JSON.parse(listed.stdout);
-      assert.equal(listResult.sessions.length, 1);
-      assert.equal(listResult.sessions[0].id, store.sessionId);
-
-      const read = await execFileAsync(
-        process.execPath,
-        [cli, "view", store.sessionId, "--json"],
-        { cwd: project, env: environment },
-      );
-      const readResult = JSON.parse(read.stdout);
-      assert.equal(readResult.read_only, true);
-      assert.equal(readResult.header.id, store.sessionId);
-      assert.equal(readResult.events.length, 2);
-    } finally {
-      daemon.kill("SIGTERM");
-    }
-    assert.equal(await waitForExit(daemon), 0);
-    await assert.rejects(fs.access(socketPath), /ENOENT/u);
-  });
-});
-
-test("session/pin is the one write method and survives the round trip", async () => {
-  await withTempDirectory("codepunk-daemon-pin-", async (root) => {
-    const { project, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const server = await core.DaemonServer.start({ paths });
-    try {
-      const client = new core.DaemonClient({ socketPath: server.socketPath });
-      const hello = await client.hello();
-      assert.equal(hello.read_only, false);
-      assert.equal(hello.methods.includes("session/pin"), true);
-      assert.equal((await client.listSessions()).sessions[0].pinned, false);
-
-      const pinned = await client.pinSession(store.sessionId, true);
-      assert.deepEqual(pinned, { session_id: store.sessionId, pinned: true });
-      assert.equal((await client.listSessions()).sessions[0].pinned, true);
-
-      const unpinned = await client.pinSession(store.sessionId, false);
-      assert.equal(unpinned.pinned, false);
-      assert.equal((await client.listSessions()).sessions[0].pinned, false);
-    } finally {
-      await server.close();
-    }
-  });
-});
-
-test("session/pin reports a missing session and argv writes stay refused", async () => {
-  await withTempDirectory("codepunk-daemon-pin-refusal-", async (root) => {
-    const { project, paths } = await makeDaemonProject(root);
-    await seedSession(paths, project);
-    const server = await core.DaemonServer.start({ paths });
-    try {
-      const missing = await rawRequest(
-        server.socketPath,
-        request("session/pin", {
-          session_id: "01ZZZZZZZZZZZZZZZZZZZZZZZZ",
-          pinned: true,
-        }),
-      );
-      assert.equal(missing.ok, false);
-      assert.equal(missing.error.code, "daemon.not_found");
-
-      const malformed = await rawRequest(
-        server.socketPath,
-        request("session/pin", { session_id: "../outside", pinned: true }),
-      );
-      assert.equal(malformed.ok, false);
-      assert.equal(malformed.error.code, "protocol.invalid_request");
-
-      const append = await rawRequest(
-        server.socketPath,
-        request("session/append", {}),
-      );
-      assert.equal(append.ok, false);
-      assert.equal(append.error.code, "daemon.read_only");
-    } finally {
-      await server.close();
-    }
-  });
-});
-
-test("codepunk pin sends session/pin to a running daemon", async () => {
-  await withTempDirectory("cp1-", async (root) => {
-    const { project, home, paths } = await makeDaemonProject(root);
-    const store = await seedSession(paths, project);
-    const cli = await ensureBuilt();
-    const socketPath = path.join(home, "d.sock");
-    const seen = [];
-    const sockets = new Set();
-    const server = net.createServer((socket) => {
-      sockets.add(socket);
-      socket.setEncoding("utf8");
-      let buffer = "";
-      socket.on("data", (chunk) => {
-        buffer += chunk;
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) {
-          return;
-        }
-        const received = JSON.parse(buffer.slice(0, newline));
-        seen.push(received);
-        socket.end(
-          `${JSON.stringify({
-            type: "codepunk/daemon-response",
-            version: protocol.DAEMON_PROTOCOL_VERSION,
-            request_id: received.request_id,
-            ok: true,
-            result: {
-              session_id: received.params.session_id,
-              pinned: received.params.pinned,
-            },
-          })}\n`,
+test(
+  "the CLI daemon serves the second read-only view surface",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-cli-", async (root) => {
+      const { project, home, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const cli = await ensureBuilt();
+      const environment = {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        NO_COLOR: "1",
+      };
+      const daemon = spawn(process.execPath, [cli, "daemon", "--json"], {
+        cwd: project,
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let socketPath;
+      try {
+        const started = await waitForJsonLine(daemon);
+        assert.equal(started.read_only, false);
+        assert.equal(
+          started.protocol_version,
+          protocol.DAEMON_PROTOCOL_VERSION,
         );
-      });
-    });
-    await new Promise((resolve) => server.listen(socketPath, resolve));
-    try {
-      const result = await execFileAsync(
-        process.execPath,
-        [cli, "pin", store.sessionId, "--socket", socketPath],
-        {
-          cwd: project,
-          env: { ...process.env, CODEPUNK_HOME: home, NO_COLOR: "1" },
-        },
-      );
-      assert.equal(result.stdout.trim(), `pinned ${store.sessionId}`);
-      assert.equal(seen.length, 1);
-      assert.equal(seen[0].method, "session/pin");
-      assert.deepEqual(seen[0].params, {
-        session_id: store.sessionId,
-        pinned: true,
-      });
-      const meta = JSON.parse(await fs.readFile(store.paths.metaPath, "utf8"));
-      assert.equal(meta.pinned, false);
-    } finally {
-      for (const socket of sockets) {
-        socket.destroy();
+        assert.equal(typeof started.socket, "string");
+        socketPath = started.socket;
+
+        const listed = await execFileAsync(
+          process.execPath,
+          [cli, "view", "--json"],
+          { cwd: project, env: environment },
+        );
+        const listResult = JSON.parse(listed.stdout);
+        assert.equal(listResult.sessions.length, 1);
+        assert.equal(listResult.sessions[0].id, store.sessionId);
+
+        const read = await execFileAsync(
+          process.execPath,
+          [cli, "view", store.sessionId, "--json"],
+          { cwd: project, env: environment },
+        );
+        const readResult = JSON.parse(read.stdout);
+        assert.equal(readResult.read_only, true);
+        assert.equal(readResult.header.id, store.sessionId);
+        assert.equal(readResult.events.length, 2);
+      } finally {
+        daemon.kill("SIGTERM");
       }
-      await new Promise((resolve) => server.close(resolve));
-    }
-  });
-});
+      assert.equal(await waitForExit(daemon), 0);
+      await assert.rejects(fs.access(socketPath), /ENOENT/u);
+    });
+  },
+);
+
+test(
+  "session/pin is the one write method and survives the round trip",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-pin-", async (root) => {
+      const { project, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const server = await core.DaemonServer.start({ paths });
+      try {
+        const client = new core.DaemonClient({ socketPath: server.socketPath });
+        const hello = await client.hello();
+        assert.equal(hello.read_only, false);
+        assert.equal(hello.methods.includes("session/pin"), true);
+        assert.equal((await client.listSessions()).sessions[0].pinned, false);
+
+        const pinned = await client.pinSession(store.sessionId, true);
+        assert.deepEqual(pinned, { session_id: store.sessionId, pinned: true });
+        assert.equal((await client.listSessions()).sessions[0].pinned, true);
+
+        const unpinned = await client.pinSession(store.sessionId, false);
+        assert.equal(unpinned.pinned, false);
+        assert.equal((await client.listSessions()).sessions[0].pinned, false);
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "session/pin reports a missing session and argv writes stay refused",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-daemon-pin-refusal-", async (root) => {
+      const { project, paths } = await makeDaemonProject(root);
+      await seedSession(paths, project);
+      const server = await core.DaemonServer.start({ paths });
+      try {
+        const missing = await rawRequest(
+          server.socketPath,
+          request("session/pin", {
+            session_id: "01ZZZZZZZZZZZZZZZZZZZZZZZZ",
+            pinned: true,
+          }),
+        );
+        assert.equal(missing.ok, false);
+        assert.equal(missing.error.code, "daemon.not_found");
+
+        const malformed = await rawRequest(
+          server.socketPath,
+          request("session/pin", { session_id: "../outside", pinned: true }),
+        );
+        assert.equal(malformed.ok, false);
+        assert.equal(malformed.error.code, "protocol.invalid_request");
+
+        const append = await rawRequest(
+          server.socketPath,
+          request("session/append", {}),
+        );
+        assert.equal(append.ok, false);
+        assert.equal(append.error.code, "daemon.read_only");
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "codepunk pin sends session/pin to a running daemon",
+  {
+    skip: UNIX_SOCKET_SKIP,
+  },
+  async () => {
+    await withTempDirectory("cp1-", async (root) => {
+      const { project, home, paths } = await makeDaemonProject(root);
+      const store = await seedSession(paths, project);
+      const cli = await ensureBuilt();
+      const socketPath = path.join(home, "d.sock");
+      const seen = [];
+      const sockets = new Set();
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.setEncoding("utf8");
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk;
+          const newline = buffer.indexOf("\n");
+          if (newline === -1) {
+            return;
+          }
+          const received = JSON.parse(buffer.slice(0, newline));
+          seen.push(received);
+          socket.end(
+            `${JSON.stringify({
+              type: "codepunk/daemon-response",
+              version: protocol.DAEMON_PROTOCOL_VERSION,
+              request_id: received.request_id,
+              ok: true,
+              result: {
+                session_id: received.params.session_id,
+                pinned: received.params.pinned,
+              },
+            })}\n`,
+          );
+        });
+      });
+      await new Promise((resolve) => server.listen(socketPath, resolve));
+      try {
+        const result = await execFileAsync(
+          process.execPath,
+          [cli, "pin", store.sessionId, "--socket", socketPath],
+          {
+            cwd: project,
+            env: { ...process.env, CODEPUNK_HOME: home, NO_COLOR: "1" },
+          },
+        );
+        assert.equal(result.stdout.trim(), `pinned ${store.sessionId}`);
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0].method, "session/pin");
+        assert.deepEqual(seen[0].params, {
+          session_id: store.sessionId,
+          pinned: true,
+        });
+        const meta = JSON.parse(
+          await fs.readFile(store.paths.metaPath, "utf8"),
+        );
+        assert.equal(meta.pinned, false);
+      } finally {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  },
+);
 
 test("codepunk pin falls back to the store when no daemon is listening", async () => {
   await withTempDirectory("cp2-", async (root) => {
