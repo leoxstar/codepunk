@@ -7,6 +7,11 @@ import path from "node:path";
 import test from "node:test";
 import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
 
+const SRT_SKIP =
+  process.platform === "win32"
+    ? "headless exec requires the srt sandbox, which is not provisioned here"
+    : false;
+
 function digest(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
@@ -189,189 +194,213 @@ async function setup(root, argv) {
   return { project, home, modelServer };
 }
 
-test("an explicit headless policy allows exact argv exec", async () => {
-  await withTempDirectory("codepunk-headless-exec-", async (root) => {
-    const argv = ["/bin/echo", "headless-exec"];
-    const digestValue = digest(await fs.readFile("/bin/echo"));
-    const { project, home, modelServer } = await setup(root, argv);
-    const policy = path.join(root, "headless.toml");
-    await fs.writeFile(
-      policy,
-      [
-        "version = 1",
-        "[allow]",
-        'tools = ["exec"]',
-        "[[allow.commands]]",
-        `argv = ${JSON.stringify(argv)}`,
-        `executable_sha256 = ${JSON.stringify(digestValue)}`,
-        `cwd = ${JSON.stringify(project)}`,
-        "",
-      ].join("\n"),
-    );
-    try {
-      const result = await runCli(
+test(
+  "an explicit headless policy allows exact argv exec",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-exec-", async (root) => {
+      const argv = ["/bin/echo", "headless-exec"];
+      const digestValue = digest(await fs.readFile("/bin/echo"));
+      const { project, home, modelServer } = await setup(root, argv);
+      const policy = path.join(root, "headless.toml");
+      await fs.writeFile(
+        policy,
         [
-          "-p",
-          "run the approved command",
-          "--model",
-          "local/local-test",
-          "--headless-policy",
-          policy,
-        ],
-        { cwd: project, home },
+          "version = 1",
+          "[allow]",
+          'tools = ["exec"]',
+          "[[allow.commands]]",
+          `argv = ${JSON.stringify(argv)}`,
+          `executable_sha256 = ${JSON.stringify(digestValue)}`,
+          `cwd = ${JSON.stringify(project)}`,
+          "",
+        ].join("\n"),
       );
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /finished/u);
-      const records = await readEvidence(home);
-      const exec = records.find(
-        (record) => record.tool === "exec" && record.decision === "allow",
-      );
-      assert.ok(exec, JSON.stringify(records));
-      assert.deepEqual(exec.command_argv, argv);
-      assert.equal(exec.executor, "srt");
-      assert.equal(exec.coverage, "enforced");
-      assert.match(exec.output_preview, /headless-exec/u);
-    } finally {
-      await new Promise((resolve) => modelServer.server.close(resolve));
-    }
-  });
-});
-
-test("an argv change is denied without a new approval", async () => {
-  await withTempDirectory("codepunk-headless-exec-deny-", async (root) => {
-    const approved = ["/bin/echo", "approved"];
-    const requested = ["/bin/echo", "changed"];
-    const digestValue = digest(await fs.readFile("/bin/echo"));
-    const { project, home, modelServer } = await setup(root, requested);
-    const policy = path.join(root, "headless.toml");
-    await fs.writeFile(
-      policy,
-      [
-        "version = 1",
-        "[allow]",
-        'tools = ["exec"]',
-        "[[allow.commands]]",
-        `argv = ${JSON.stringify(approved)}`,
-        `executable_sha256 = ${JSON.stringify(digestValue)}`,
-        `cwd = ${JSON.stringify(project)}`,
-        "",
-      ].join("\n"),
-    );
-    try {
-      const result = await runCli(
-        [
-          "-p",
-          "run the changed command",
-          "--model",
-          "local/local-test",
-          "--headless-policy",
-          policy,
-        ],
-        { cwd: project, home },
-      );
-      assert.equal(result.code, 0, result.stderr);
-      const records = await readEvidence(home);
-      const exec = records.find((record) => record.tool === "exec");
-      assert.ok(exec);
-      assert.equal(exec.decision, "deny");
-      assert.deepEqual(exec.command_argv, requested);
-    } finally {
-      await new Promise((resolve) => modelServer.server.close(resolve));
-    }
-  });
-});
-
-test("a symlinked shell is denied despite an approved digest", async () => {
-  await withTempDirectory("codepunk-headless-symlink-", async (root) => {
-    const shell = path.join(root, "custom-shell");
-    await fs.symlink("/bin/sh", shell);
-    const argv = [shell, "-c", "printf shell-bypass"];
-    const digestValue = digest(await fs.readFile(shell));
-    const { project, home, modelServer } = await setup(root, argv);
-    const policy = path.join(root, "headless.toml");
-    await fs.writeFile(
-      policy,
-      [
-        "version = 1",
-        "[allow]",
-        'tools = ["exec"]',
-        "[[allow.commands]]",
-        `argv = ${JSON.stringify(argv)}`,
-        `executable_sha256 = ${JSON.stringify(digestValue)}`,
-        `cwd = ${JSON.stringify(project)}`,
-        "",
-      ].join("\n"),
-    );
-    try {
-      const result = await runCli(
-        [
-          "-p",
-          "run the symlinked shell",
-          "--model",
-          "local/local-test",
-          "--headless-policy",
-          policy,
-        ],
-        { cwd: project, home },
-      );
-      assert.equal(result.code, 0, result.stderr);
-      const records = await readEvidence(home);
-      const exec = records.find((record) => record.tool === "exec");
-      assert.ok(exec);
-      assert.equal(exec.decision, "deny");
-      assert.match(exec.output_preview, /launchers are not allowed/u);
-    } finally {
-      await new Promise((resolve) => modelServer.server.close(resolve));
-    }
-  });
-});
-
-test("a shebang script is denied as non-native", async () => {
-  await withTempDirectory("codepunk-headless-script-", async (root) => {
-    const script = path.join(root, "approved-script");
-    await fs.writeFile(script, "#!/bin/sh\nprintf script-bypass\n", {
-      mode: 0o755,
+      try {
+        const result = await runCli(
+          [
+            "-p",
+            "run the approved command",
+            "--model",
+            "local/local-test",
+            "--headless-policy",
+            policy,
+          ],
+          { cwd: project, home },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /finished/u);
+        const records = await readEvidence(home);
+        const exec = records.find(
+          (record) => record.tool === "exec" && record.decision === "allow",
+        );
+        assert.ok(exec, JSON.stringify(records));
+        assert.deepEqual(exec.command_argv, argv);
+        assert.equal(exec.executor, "srt");
+        assert.equal(exec.coverage, "enforced");
+        assert.match(exec.output_preview, /headless-exec/u);
+      } finally {
+        await new Promise((resolve) => modelServer.server.close(resolve));
+      }
     });
-    const argv = [script];
-    const digestValue = digest(await fs.readFile(script));
-    const { project, home, modelServer } = await setup(root, argv);
-    const policy = path.join(root, "headless.toml");
-    await fs.writeFile(
-      policy,
-      [
-        "version = 1",
-        "[allow]",
-        'tools = ["exec"]',
-        "[[allow.commands]]",
-        `argv = ${JSON.stringify(argv)}`,
-        `executable_sha256 = ${JSON.stringify(digestValue)}`,
-        `cwd = ${JSON.stringify(project)}`,
-        "",
-      ].join("\n"),
-    );
-    try {
-      const result = await runCli(
+  },
+);
+
+test(
+  "an argv change is denied without a new approval",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-exec-deny-", async (root) => {
+      const approved = ["/bin/echo", "approved"];
+      const requested = ["/bin/echo", "changed"];
+      const digestValue = digest(await fs.readFile("/bin/echo"));
+      const { project, home, modelServer } = await setup(root, requested);
+      const policy = path.join(root, "headless.toml");
+      await fs.writeFile(
+        policy,
         [
-          "-p",
-          "run the script",
-          "--model",
-          "local/local-test",
-          "--headless-policy",
-          policy,
-        ],
-        { cwd: project, home },
+          "version = 1",
+          "[allow]",
+          'tools = ["exec"]',
+          "[[allow.commands]]",
+          `argv = ${JSON.stringify(approved)}`,
+          `executable_sha256 = ${JSON.stringify(digestValue)}`,
+          `cwd = ${JSON.stringify(project)}`,
+          "",
+        ].join("\n"),
       );
-      assert.equal(result.code, 0, result.stderr);
-      const records = await readEvidence(home);
-      const exec = records.find((record) => record.tool === "exec");
-      assert.ok(exec);
-      assert.equal(exec.decision, "deny");
-      assert.match(exec.output_preview, /native executables only/u);
-    } finally {
-      await new Promise((resolve) => modelServer.server.close(resolve));
-    }
-  });
-});
+      try {
+        const result = await runCli(
+          [
+            "-p",
+            "run the changed command",
+            "--model",
+            "local/local-test",
+            "--headless-policy",
+            policy,
+          ],
+          { cwd: project, home },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const records = await readEvidence(home);
+        const exec = records.find((record) => record.tool === "exec");
+        assert.ok(exec);
+        assert.equal(exec.decision, "deny");
+        assert.deepEqual(exec.command_argv, requested);
+      } finally {
+        await new Promise((resolve) => modelServer.server.close(resolve));
+      }
+    });
+  },
+);
+
+test(
+  "a symlinked shell is denied despite an approved digest",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-symlink-", async (root) => {
+      const shell = path.join(root, "custom-shell");
+      await fs.symlink("/bin/sh", shell);
+      const argv = [shell, "-c", "printf shell-bypass"];
+      const digestValue = digest(await fs.readFile(shell));
+      const { project, home, modelServer } = await setup(root, argv);
+      const policy = path.join(root, "headless.toml");
+      await fs.writeFile(
+        policy,
+        [
+          "version = 1",
+          "[allow]",
+          'tools = ["exec"]',
+          "[[allow.commands]]",
+          `argv = ${JSON.stringify(argv)}`,
+          `executable_sha256 = ${JSON.stringify(digestValue)}`,
+          `cwd = ${JSON.stringify(project)}`,
+          "",
+        ].join("\n"),
+      );
+      try {
+        const result = await runCli(
+          [
+            "-p",
+            "run the symlinked shell",
+            "--model",
+            "local/local-test",
+            "--headless-policy",
+            policy,
+          ],
+          { cwd: project, home },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const records = await readEvidence(home);
+        const exec = records.find((record) => record.tool === "exec");
+        assert.ok(exec);
+        assert.equal(exec.decision, "deny");
+        assert.match(exec.output_preview, /launchers are not allowed/u);
+      } finally {
+        await new Promise((resolve) => modelServer.server.close(resolve));
+      }
+    });
+  },
+);
+
+test(
+  "a shebang script is denied as non-native",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-script-", async (root) => {
+      const script = path.join(root, "approved-script");
+      await fs.writeFile(script, "#!/bin/sh\nprintf script-bypass\n", {
+        mode: 0o755,
+      });
+      const argv = [script];
+      const digestValue = digest(await fs.readFile(script));
+      const { project, home, modelServer } = await setup(root, argv);
+      const policy = path.join(root, "headless.toml");
+      await fs.writeFile(
+        policy,
+        [
+          "version = 1",
+          "[allow]",
+          'tools = ["exec"]',
+          "[[allow.commands]]",
+          `argv = ${JSON.stringify(argv)}`,
+          `executable_sha256 = ${JSON.stringify(digestValue)}`,
+          `cwd = ${JSON.stringify(project)}`,
+          "",
+        ].join("\n"),
+      );
+      try {
+        const result = await runCli(
+          [
+            "-p",
+            "run the script",
+            "--model",
+            "local/local-test",
+            "--headless-policy",
+            policy,
+          ],
+          { cwd: project, home },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const records = await readEvidence(home);
+        const exec = records.find((record) => record.tool === "exec");
+        assert.ok(exec);
+        assert.equal(exec.decision, "deny");
+        assert.match(exec.output_preview, /native executables only/u);
+      } finally {
+        await new Promise((resolve) => modelServer.server.close(resolve));
+      }
+    });
+  },
+);
 
 async function runInterpreterCase({ root, withScriptDigest, scriptBytes }) {
   const script = path.join(root, "approved.mjs");
@@ -419,42 +448,60 @@ async function runInterpreterCase({ root, withScriptDigest, scriptBytes }) {
   }
 }
 
-test("an interpreter is allowed once its script digest is approved", async () => {
-  await withTempDirectory("codepunk-headless-interp-", async (root) => {
-    const bytes = Buffer.from('process.stdout.write("SCRIPT_OK\\n");\n');
-    const exec = await runInterpreterCase({
-      root,
-      withScriptDigest: true,
-      scriptBytes: bytes,
+test(
+  "an interpreter is allowed once its script digest is approved",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-interp-", async (root) => {
+      const bytes = Buffer.from('process.stdout.write("SCRIPT_OK\\n");\n');
+      const exec = await runInterpreterCase({
+        root,
+        withScriptDigest: true,
+        scriptBytes: bytes,
+      });
+      assert.equal(exec.decision, "allow");
+      assert.match(exec.output_preview, /SCRIPT_OK/u);
     });
-    assert.equal(exec.decision, "allow");
-    assert.match(exec.output_preview, /SCRIPT_OK/u);
-  });
-});
+  },
+);
 
-test("an interpreter without a pinned script digest stays denied", async () => {
-  await withTempDirectory("codepunk-headless-interp-", async (root) => {
-    const exec = await runInterpreterCase({
-      root,
-      withScriptDigest: false,
-      scriptBytes: Buffer.from(""),
+test(
+  "an interpreter without a pinned script digest stays denied",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-interp-", async (root) => {
+      const exec = await runInterpreterCase({
+        root,
+        withScriptDigest: false,
+        scriptBytes: Buffer.from(""),
+      });
+      assert.equal(exec.decision, "deny");
+      assert.match(exec.output_preview, /launchers are not allowed/u);
     });
-    assert.equal(exec.decision, "deny");
-    assert.match(exec.output_preview, /launchers are not allowed/u);
-  });
-});
+  },
+);
 
-test("an interpreter whose script digest changed is denied", async () => {
-  await withTempDirectory("codepunk-headless-interp-", async (root) => {
-    const exec = await runInterpreterCase({
-      root,
-      withScriptDigest: true,
-      scriptBytes: Buffer.from("not the approved script\n"),
+test(
+  "an interpreter whose script digest changed is denied",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    await withTempDirectory("codepunk-headless-interp-", async (root) => {
+      const exec = await runInterpreterCase({
+        root,
+        withScriptDigest: true,
+        scriptBytes: Buffer.from("not the approved script\n"),
+      });
+      assert.equal(exec.decision, "deny");
+      assert.match(exec.output_preview, /approved script digest changed/u);
     });
-    assert.equal(exec.decision, "deny");
-    assert.match(exec.output_preview, /approved script digest changed/u);
-  });
-});
+  },
+);
 
 test("a headless policy inside the repository is refused", async () => {
   await withTempDirectory("codepunk-headless-inside-", async (root) => {

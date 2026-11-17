@@ -5,8 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
+import { escapeRegExp } from "./support/helpers.mjs";
 
 const core = await importCore();
+const SRT_SKIP =
+  process.platform === "win32"
+    ? "the srt sandbox is not provisioned on this Windows host"
+    : false;
 
 function hashFile(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -484,9 +489,18 @@ test("evidence previews redact tokens and the local home", async () => {
     (entry) => entry.tool_call_id === "call-redacted-output",
   );
   assert.ok(record);
-  assert.doesNotMatch(record.output_preview, new RegExp(paths.home, "u"));
-  assert.doesNotMatch(record.output_preview, new RegExp(previewToken, "u"));
-  assert.doesNotMatch(record.output_preview, new RegExp(previewValue, "u"));
+  assert.doesNotMatch(
+    record.output_preview,
+    new RegExp(escapeRegExp(paths.home), "u"),
+  );
+  assert.doesNotMatch(
+    record.output_preview,
+    new RegExp(escapeRegExp(previewToken), "u"),
+  );
+  assert.doesNotMatch(
+    record.output_preview,
+    new RegExp(escapeRegExp(previewValue), "u"),
+  );
   assert.match(record.output_preview, /Bearer \[REDACTED_TOKEN\]/u);
   assert.match(record.output_preview, /api_key=\[REDACTED_SECRET\]/u);
 });
@@ -588,142 +602,155 @@ test("large tool output becomes a hash-bound artifact", async () => {
   assert.equal(small.output_ref, null);
 });
 
-test("the wrapped bash tool uses srt and records the executor", async () => {
-  const paths = await setup();
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.workspace,
-    workspaceRoot: paths.workspace,
-    deliveryRoot: paths.workspace,
-    codepunkHome: paths.home,
-    writeSet: [paths.workspace],
-  });
-  const ledger = await core.EvidenceLedger.open(paths.evidence);
-  try {
-    const definitions = await core.createCodepunkToolDefinitions(
-      paths.workspace,
-      sandbox,
-    );
-    const bash = definitions.find((definition) => definition.name === "bash");
-    assert.ok(bash);
-    const wrapped = await core.wrapToolDefinition(
-      bash,
-      wrapOptions(paths, { ledger, sandbox }),
-    );
-    const result = await wrapped.execute(
-      "call-shell",
-      { command: "printf ok" },
-      undefined,
-      undefined,
-      {},
-    );
-    assert.notEqual(result.isError, true);
-    const record = (await core.readEvidenceFile(paths.evidence)).records[0];
-    assert.equal(record.tool, "bash");
-    assert.equal(record.decision, "allow");
-    assert.equal(record.exit_code, 0);
-    assert.equal(record.executor, "srt");
-    assert.equal(record.sandbox.backend, "srt");
-    assert.equal(record.coverage, "enforced");
-    assert.equal(core.validateEvidenceForClass(record).ok, true);
-
-    const dateResult = await wrapped.execute(
-      "call-date",
-      { command: "date +%A" },
-      undefined,
-      undefined,
-      {},
-    );
-    assert.notEqual(dateResult.isError, true);
-    const dateRecord = (
-      await core.readEvidenceFile(paths.evidence)
-    ).records.find((candidate) => candidate.tool_call_id === "call-date");
-    assert.ok(dateRecord);
-    assert.equal(dateRecord.decision, "allow");
-    assert.equal(dateRecord.rule, "shell.read.date");
-  } finally {
-    await sandbox.close();
-  }
-});
-
-test("headless auto mode runs routine shell without an approval channel", async () => {
-  const paths = await setup();
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.workspace,
-    workspaceRoot: paths.workspace,
-    deliveryRoot: paths.workspace,
-    codepunkHome: paths.home,
-    writeSet: [paths.workspace],
-  });
-  const ledger = await core.EvidenceLedger.open(paths.evidence);
-  try {
-    const definitions = await core.createCodepunkToolDefinitions(
-      paths.workspace,
-      sandbox,
-    );
-    const bash = definitions.find((definition) => definition.name === "bash");
-    assert.ok(bash);
-    const wrapped = await core.wrapToolDefinition(
-      bash,
-      wrapOptions(paths, {
-        ledger,
+test(
+  "the wrapped bash tool uses srt and records the executor",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    const paths = await setup();
+    const sandbox = await core.SrtSandbox.create({
+      cwd: paths.workspace,
+      workspaceRoot: paths.workspace,
+      deliveryRoot: paths.workspace,
+      codepunkHome: paths.home,
+      writeSet: [paths.workspace],
+    });
+    const ledger = await core.EvidenceLedger.open(paths.evidence);
+    try {
+      const definitions = await core.createCodepunkToolDefinitions(
+        paths.workspace,
         sandbox,
-        mode: "headless",
-        approvalMode: "auto",
-      }),
-    );
+      );
+      const bash = definitions.find((definition) => definition.name === "bash");
+      assert.ok(bash);
+      const wrapped = await core.wrapToolDefinition(
+        bash,
+        wrapOptions(paths, { ledger, sandbox }),
+      );
+      const result = await wrapped.execute(
+        "call-shell",
+        { command: "printf ok" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.notEqual(result.isError, true);
+      const record = (await core.readEvidenceFile(paths.evidence)).records[0];
+      assert.equal(record.tool, "bash");
+      assert.equal(record.decision, "allow");
+      assert.equal(record.exit_code, 0);
+      assert.equal(record.executor, "srt");
+      assert.equal(record.sandbox.backend, "srt");
+      assert.equal(record.coverage, "enforced");
+      assert.equal(core.validateEvidenceForClass(record).ok, true);
 
-    const allowed = await wrapped.execute(
-      "call-auto",
-      { command: "mkdir auto-dir" },
-      undefined,
-      undefined,
-      {},
-    );
-    assert.notEqual(allowed.isError, true, JSON.stringify(allowed));
-    assert.equal(
-      (await fs.stat(path.join(paths.workspace, "auto-dir"))).isDirectory(),
-      true,
-    );
+      const dateResult = await wrapped.execute(
+        "call-date",
+        { command: "date +%A" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.notEqual(dateResult.isError, true);
+      const dateRecord = (
+        await core.readEvidenceFile(paths.evidence)
+      ).records.find((candidate) => candidate.tool_call_id === "call-date");
+      assert.ok(dateRecord);
+      assert.equal(dateRecord.decision, "allow");
+      assert.equal(dateRecord.rule, "shell.read.date");
+    } finally {
+      await sandbox.close();
+    }
+  },
+);
 
-    const denied = await wrapped.execute(
-      "call-denied",
-      { command: "rm -rf auto-dir" },
-      undefined,
-      undefined,
-      {},
-    );
-    assert.equal(denied.isError, true);
-    assert.equal(
-      (await fs.stat(path.join(paths.workspace, "auto-dir"))).isDirectory(),
-      true,
-    );
+test(
+  "headless auto mode runs routine shell without an approval channel",
+  {
+    skip: SRT_SKIP,
+  },
+  async () => {
+    const paths = await setup();
+    const sandbox = await core.SrtSandbox.create({
+      cwd: paths.workspace,
+      workspaceRoot: paths.workspace,
+      deliveryRoot: paths.workspace,
+      codepunkHome: paths.home,
+      writeSet: [paths.workspace],
+    });
+    const ledger = await core.EvidenceLedger.open(paths.evidence);
+    try {
+      const definitions = await core.createCodepunkToolDefinitions(
+        paths.workspace,
+        sandbox,
+      );
+      const bash = definitions.find((definition) => definition.name === "bash");
+      assert.ok(bash);
+      const wrapped = await core.wrapToolDefinition(
+        bash,
+        wrapOptions(paths, {
+          ledger,
+          sandbox,
+          mode: "headless",
+          approvalMode: "auto",
+        }),
+      );
 
-    const network = await wrapped.execute(
-      "call-network",
-      { command: "curl https://example.com" },
-      undefined,
-      undefined,
-      {},
-    );
-    assert.equal(network.isError, true);
-    const records = (await core.readEvidenceFile(paths.evidence)).records;
-    assert.equal(
-      records.find((record) => record.tool_call_id === "call-auto")?.decision,
-      "allow",
-    );
-    assert.equal(
-      records.find((record) => record.tool_call_id === "call-denied")?.decision,
-      "deny",
-    );
-    assert.equal(
-      records.find((record) => record.tool_call_id === "call-network")
-        ?.decision,
-      "deny",
-    );
-  } finally {
-    await sandbox.close();
-  }
-});
+      const allowed = await wrapped.execute(
+        "call-auto",
+        { command: "mkdir auto-dir" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.notEqual(allowed.isError, true, JSON.stringify(allowed));
+      assert.equal(
+        (await fs.stat(path.join(paths.workspace, "auto-dir"))).isDirectory(),
+        true,
+      );
+
+      const denied = await wrapped.execute(
+        "call-denied",
+        { command: "rm -rf auto-dir" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.equal(denied.isError, true);
+      assert.equal(
+        (await fs.stat(path.join(paths.workspace, "auto-dir"))).isDirectory(),
+        true,
+      );
+
+      const network = await wrapped.execute(
+        "call-network",
+        { command: "curl https://example.com" },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.equal(network.isError, true);
+      const records = (await core.readEvidenceFile(paths.evidence)).records;
+      assert.equal(
+        records.find((record) => record.tool_call_id === "call-auto")?.decision,
+        "allow",
+      );
+      assert.equal(
+        records.find((record) => record.tool_call_id === "call-denied")
+          ?.decision,
+        "deny",
+      );
+      assert.equal(
+        records.find((record) => record.tool_call_id === "call-network")
+          ?.decision,
+        "deny",
+      );
+    } finally {
+      await sandbox.close();
+    }
+  },
+);
 
 test("tool evidence distinguishes failures and cancellation from allow", async () => {
   const paths = await setup();
