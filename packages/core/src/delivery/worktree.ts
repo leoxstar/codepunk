@@ -1,7 +1,7 @@
 import os from "node:os";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { ensurePrivateDir } from "../platform/fs.ts";
+import { ensurePrivateDir, posixMetadataIsReliable } from "../platform/fs.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 import {
   gitSucceeds,
@@ -56,7 +56,11 @@ async function privateDirectory(directory: string): Promise<void> {
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error(`worktree directory is not a real directory: ${directory}`);
   }
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+  if (
+    (await posixMetadataIsReliable(directory)) &&
+    typeof process.getuid === "function" &&
+    stat.uid !== process.getuid()
+  ) {
     throw new Error(
       `worktree directory is owned by another user: ${directory}`,
     );
