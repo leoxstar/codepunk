@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { importCore } from "./support/core.mjs";
+import { importCore, REPO_ROOT } from "./support/core.mjs";
 import {
   assertPrivateFile,
   canCreateFileSymlink,
@@ -527,6 +528,104 @@ test("CLI overrides environment, project, and user layers", async () => {
       { memory: false },
     );
     assert.equal(overridden.config.memory.enabled, false);
+  });
+});
+
+test("a home workspace does not read its codepunk home as a project layer", async () => {
+  await withTempDirectory("codepunk-config-home-", async (root) => {
+    const home = path.join(root, "home");
+    const codepunkHome = path.join(home, ".codepunk");
+    await fs.mkdir(codepunkHome, { recursive: true });
+    const paths = core.projectPaths(
+      {
+        cwd: home,
+        deliveryRoot: home,
+        projectId: "0123456789abcdef",
+      },
+      codepunkHome,
+    );
+    await writeFile(
+      path.join(paths.home, "config.toml"),
+      [
+        "[model]",
+        'provider = "magpie"',
+        'id = "group/work-main"',
+        'thinking = "high"',
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      path.join(paths.projectConfigDir, "local.toml"),
+      ["[model]", 'thinking = "low"', ""].join("\n"),
+    );
+
+    const loaded = await core.loadConfig(paths, {});
+    assert.equal(loaded.config.model.provider, "magpie");
+    assert.equal(loaded.config.model.id, "group/work-main");
+    assert.equal(loaded.config.model.thinking, "high");
+  });
+});
+
+test("v9fs mounts do not make project config modes block startup", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("v9fs is a Linux mount type");
+    return;
+  }
+  const filesystem = await fs.statfs(REPO_ROOT);
+  if (filesystem.type !== 0x01021997) {
+    t.skip("checkout is not on a v9fs mount");
+    return;
+  }
+
+  const root = await fs.mkdtemp(
+    path.join(path.dirname(REPO_ROOT), ".codepunk-v9fs-"),
+  );
+  try {
+    const projectRoot = path.join(root, "project");
+    await fs.mkdir(path.join(projectRoot, ".codepunk"), { recursive: true });
+    const paths = core.projectPaths(
+      {
+        cwd: projectRoot,
+        deliveryRoot: projectRoot,
+        projectId: "0123456789abcdef",
+      },
+      path.join(root, "home"),
+    );
+    await writeFile(
+      path.join(paths.projectConfigDir, "config.toml"),
+      '[model]\nthinking = "high"\n',
+    );
+
+    const loaded = await core.loadConfig(paths, {});
+    assert.equal(loaded.config.model.thinking, "high");
+    assert.doesNotMatch(
+      loaded.warnings.join("\n"),
+      /must not be world-writable/u,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native POSIX modes still reject world-writable project config", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX mode bits do not apply on Windows");
+    return;
+  }
+  const filesystem = await fs.statfs(os.tmpdir());
+  if (filesystem.type === 0x01021997 || filesystem.type === 0x65735546) {
+    t.skip("checkout is on a filesystem without reliable POSIX modes");
+    return;
+  }
+
+  await withTempDirectory("codepunk-config-modes-", async (root) => {
+    const { paths } = await makeProject(root);
+    await fs.chmod(paths.projectConfigDir, 0o777);
+    const loaded = await core.loadConfig(paths, {});
+    assert.match(
+      loaded.warnings.join("\n"),
+      /project \.codepunk must not be world-writable/u,
+    );
   });
 });
 

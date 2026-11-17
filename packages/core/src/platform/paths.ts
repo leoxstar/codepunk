@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { ensurePrivateDir, writeJsonAtomic } from "./fs.ts";
+import {
+  ensurePrivateDir,
+  posixMetadataIsReliable,
+  writeJsonAtomic,
+} from "./fs.ts";
 import { isInsidePath, normalizeAbsolute, resolveRealPath } from "./path.ts";
 
 export const PROJECT_GITIGNORE = "local.toml\n*.local.toml\n";
@@ -260,14 +264,15 @@ export async function assertProjectConfigSafe(
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     return "project .codepunk must be a real directory";
   }
+  const posixMetadata = await posixMetadataIsReliable(paths.projectConfigDir);
   if (
-    process.platform !== "win32" &&
+    posixMetadata &&
     typeof process.getuid === "function" &&
     stat.uid !== process.getuid()
   ) {
     return "project .codepunk must be owned by the invoking user";
   }
-  if (process.platform !== "win32" && (stat.mode & 0o002) !== 0) {
+  if (posixMetadata && (stat.mode & 0o002) !== 0) {
     return "project .codepunk must not be world-writable";
   }
   const real = normalizeAbsolute(await fs.realpath(paths.projectConfigDir));
@@ -292,14 +297,15 @@ export async function assertProjectConfigFileSafe(
   if (stat.isSymbolicLink() || !stat.isFile()) {
     return "project config file must be a real file";
   }
+  const posixMetadata = await posixMetadataIsReliable(filePath);
   if (
-    process.platform !== "win32" &&
+    posixMetadata &&
     typeof process.getuid === "function" &&
     stat.uid !== process.getuid()
   ) {
     return "project config file must be owned by the invoking user";
   }
-  if (process.platform !== "win32" && (stat.mode & 0o002) !== 0) {
+  if (posixMetadata && (stat.mode & 0o002) !== 0) {
     return "project config file must not be world-writable";
   }
   const real = normalizeAbsolute(await fs.realpath(filePath));

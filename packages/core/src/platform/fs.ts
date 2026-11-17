@@ -11,6 +11,37 @@ export async function ensurePrivateDir(directory: string): Promise<void> {
   }
 }
 
+const V9FS_SUPER_MAGIC = 0x01021997;
+const FUSE_SUPER_MAGIC = 0x65735546;
+
+/**
+ * Windows and WSL's synthetic mounts report owner and mode bits that do not
+ * describe the real access policy. Only enforce POSIX owner/mode checks when
+ * the filesystem can supply those bits.
+ */
+export async function posixMetadataIsReliable(
+  target: string,
+): Promise<boolean> {
+  if (process.platform === "win32") {
+    return false;
+  }
+  try {
+    const stats = await fs.statfs(target);
+    if (stats.type === V9FS_SUPER_MAGIC) {
+      return false;
+    }
+    if (
+      stats.type === FUSE_SUPER_MAGIC &&
+      process.env["WSL_DISTRO_NAME"] !== undefined
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 async function removeTemp(filePath: string): Promise<void> {
   try {
     await fs.unlink(filePath);

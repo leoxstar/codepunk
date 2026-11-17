@@ -1181,14 +1181,19 @@ export async function loadConfig(
     local: localPath,
   } = configFilePaths(paths);
   const warnings: string[] = [];
+  // A workspace rooted at the user's home resolves its project config to the
+  // same file as the user config. Reading it twice rejects user-only keys.
+  const projectSharesUserConfig =
+    path.resolve(projectPath) === path.resolve(userPath);
 
   const userContent = await readOptional(userPath);
   if (userContent !== null) {
     applyLayer(config, parseLayer(userContent, "user"));
   }
   const userFloor = structuredClone(config);
-  const projectSafety =
-    options.projectTrusted === false
+  const projectSafety = projectSharesUserConfig
+    ? null
+    : options.projectTrusted === false
       ? "project config resource is not trusted"
       : await assertProjectConfigSafe(paths);
   if (projectSafety !== null) {
@@ -1196,7 +1201,7 @@ export async function loadConfig(
   }
   let projectContent: string | null = null;
   let localContent: string | null = null;
-  if (projectSafety === null) {
+  if (!projectSharesUserConfig && projectSafety === null) {
     const projectFileSafety = await assertProjectConfigFileSafe(projectPath);
     if (projectFileSafety !== null) {
       warnings.push(`project config ignored: ${projectFileSafety}`);
