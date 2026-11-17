@@ -2405,7 +2405,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX date and rm commands"
         : false,
   },
   async () => {
@@ -2584,7 +2584,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX touch and shell syntax"
         : false,
   },
   async () => {
@@ -2859,7 +2859,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX shell syntax"
         : false,
   },
   async () => {
@@ -2948,7 +2948,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX shell syntax"
         : false,
   },
   async () => {

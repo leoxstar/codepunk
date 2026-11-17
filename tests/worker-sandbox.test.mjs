@@ -118,7 +118,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
+        ? "the fixture uses POSIX shell commands, paths, and executable scripts"
         : false,
   },
   async () => {

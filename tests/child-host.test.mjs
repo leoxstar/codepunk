@@ -948,7 +948,7 @@ test(
   {
     skip:
       process.platform === "win32"
-        ? "the child exec surface requires the srt sandbox, which is not provisioned here"
+        ? "the fixture uses POSIX shell commands"
         : false,
   },
   async () => {
