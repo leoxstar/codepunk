@@ -65,12 +65,70 @@ test("checkpoints restore the exact before image and redo the after image", asyn
 
     await store.undo();
     assert.equal(await fs.readFile(file, "utf8"), "export const value = 1;\n");
-    assert.equal((await fs.stat(file)).mode & 0o777, 0o755);
+    if (process.platform !== "win32") {
+      assert.equal((await fs.stat(file)).mode & 0o777, 0o755);
+    }
     assert.equal((await store.preview("redo")).entries.length, 1);
 
     await store.redo();
     assert.equal(await fs.readFile(file, "utf8"), "export const value = 2;\n");
     assert.equal((await store.preview("undo")).entries.length, 1);
+  });
+});
+
+test("checkpoints accept provider tool call ids with separators", async () => {
+  await withTempDirectory("codepunk-checkpoints-tool-id-", async (root) => {
+    const project = path.join(root, "project");
+    const file = path.join(project, "file.txt");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(file, "before\n");
+    const store = makeStore(root);
+    const before = await snapshot(file);
+    await fs.writeFile(file, "after\n");
+    const after = await snapshot(file);
+
+    const toolCallId = "call_00_abc123|01282db4-1565-3334-941f-e0fe2da3bebe";
+    const entry = await store.record({
+      tool: "write",
+      toolCallId,
+      target: file,
+      before,
+      after,
+    });
+    assert.ok(entry);
+    assert.equal(entry.tool_call_id, toolCallId);
+
+    const reloaded = makeStore(root);
+    assert.equal((await reloaded.preview("undo")).entries.length, 1);
+    await reloaded.undo();
+    assert.equal(await fs.readFile(file, "utf8"), "before\n");
+    await reloaded.redo();
+    assert.equal(await fs.readFile(file, "utf8"), "after\n");
+  });
+});
+
+test("checkpoints skip tool call ids with control characters", async () => {
+  await withTempDirectory("codepunk-checkpoints-tool-id-bad-", async (root) => {
+    const project = path.join(root, "project");
+    const file = path.join(project, "file.txt");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(file, "before\n");
+    const store = makeStore(root);
+    const before = await snapshot(file);
+    await fs.writeFile(file, "after\n");
+    const after = await snapshot(file);
+
+    assert.equal(
+      await store.record({
+        tool: "write",
+        toolCallId: "call\ninjected",
+        target: file,
+        before,
+        after,
+      }),
+      null,
+    );
+    assert.equal((await store.preview("undo")).entries.length, 0);
   });
 });
 

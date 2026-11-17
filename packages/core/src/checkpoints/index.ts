@@ -114,6 +114,15 @@ function validId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(value);
 }
 
+function validToolCallId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
 function validBlob(value: unknown): value is string | null {
   return (
     value === null ||
@@ -149,7 +158,7 @@ function validEntry(value: unknown): value is CheckpointEntry {
   }
   return (
     validId(value["id"]) &&
-    validId(value["tool_call_id"]) &&
+    validToolCallId(value["tool_call_id"]) &&
     (value["tool"] === "write" || value["tool"] === "edit") &&
     typeof value["target"] === "string" &&
     path.isAbsolute(value["target"]) &&
@@ -352,7 +361,7 @@ export class CheckpointStore {
     before: CheckpointSnapshot;
     after: CheckpointSnapshot;
   }): Promise<CheckpointEntry | null> {
-    if (input.toolCallId.length === 0) {
+    if (!validToolCallId(input.toolCallId)) {
       return null;
     }
     if (
