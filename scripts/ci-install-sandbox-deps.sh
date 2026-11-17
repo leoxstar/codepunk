@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# Provision the sandbox runtime the test suite exercises on Linux.
+# Provision the dependencies the test suite exercises: the sandbox runtime on
+# Linux and ripgrep on every runner.
 #
 # Ubuntu runners ship without ripgrep and socat, which `srt` requires before it
 # will build a profile, so every sandbox-dependent test fails on a dependency
 # check instead of testing the sandbox. macOS sandboxes through the built-in
-# sandbox-exec and needs nothing here.
+# sandbox-exec and needs no sandbox packages, but the search tool resolves rg
+# from PATH and the runner image does not ship it.
 set -euo pipefail
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  if ! command -v rg >/dev/null 2>&1; then
+    HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+  fi
+  rg --version | head -n 1
+  exit 0
+fi
 
 if [ "$(uname -s)" != "Linux" ]; then
   exit 0
