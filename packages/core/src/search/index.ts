@@ -35,6 +35,23 @@ export interface SearchToolOptions {
   limit?: number;
 }
 
+function environmentValue(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined {
+  const direct = environment[name];
+  if (direct !== undefined || process.platform !== "win32") {
+    return direct;
+  }
+  const folded = name.toUpperCase();
+  for (const [key, value] of Object.entries(environment)) {
+    if (key.toUpperCase() === folded) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 async function executable(candidate: string): Promise<boolean> {
   try {
     await fs.access(candidate, fsConstants.X_OK);
@@ -57,10 +74,12 @@ export async function resolveSearchBinary(
   name: "rg" | "fd",
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<SearchBinary | null> {
-  const pathValue = environment["PATH"] ?? "";
+  const pathValue = environmentValue(environment, "PATH") ?? "";
   const extensions =
     process.platform === "win32"
-      ? (environment["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean)
+      ? (environmentValue(environment, "PATHEXT") ?? ".EXE;.CMD;.BAT")
+          .split(";")
+          .filter(Boolean)
       : [""];
   for (const directory of pathValue.split(path.delimiter)) {
     // A relative PATH entry would resolve against the agent cwd, letting a

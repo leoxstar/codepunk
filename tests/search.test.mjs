@@ -3,15 +3,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { createDirectoryLink, withTempDirectory } from "./support/helpers.mjs";
+import {
+  fakeExecuted,
+  readFakeArgs,
+  writeFakeExecutable,
+} from "./support/fake-executable.mjs";
 
 const core = await importCore();
-
-async function fakeBinary(directory, name, body) {
-  const target = path.join(directory, name);
-  await fs.writeFile(target, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-  return target;
-}
 
 test("a missing binary fails with a doctor hint and never downloads", async () => {
   await withTempDirectory("codepunk-search-", async (root) => {
@@ -33,11 +32,9 @@ test("a relative PATH entry cannot supply the search binary", async () => {
   await withTempDirectory("codepunk-search-relative-", async (root) => {
     const workspace = path.join(root, "workspace");
     await fs.mkdir(path.join(workspace, "bin"), { recursive: true });
-    await fakeBinary(
-      path.join(workspace, "bin"),
-      "rg",
-      "printf 'a.txt:1:needle\\n'",
-    );
+    await writeFakeExecutable(path.join(workspace, "bin"), "rg", {
+      stdout: "a.txt:1:needle\n",
+    });
     const tool = core.createSearchTool({
       cwd: workspace,
       workspaceRoot: workspace,
@@ -52,6 +49,23 @@ test("a relative PATH entry cannot supply the search binary", async () => {
   });
 });
 
+test(
+  "Windows resolves a spread environment's Path casing",
+  { skip: process.platform !== "win32" },
+  async () => {
+    await withTempDirectory("codepunk-search-win-path-", async (root) => {
+      await fs.writeFile(path.join(root, "rg.EXE"), "stub");
+      const binary = await core.resolveSearchBinary("rg", {
+        Path: root,
+        PATHEXT: ".EXE",
+      });
+      assert.ok(binary);
+      assert.equal(binary.path, path.join(root, "rg.EXE"));
+      assert.match(binary.sha256, /^sha256:[0-9a-f]{64}$/u);
+    });
+  },
+);
+
 test("the search binary is pinned for the life of the tool", async () => {
   await withTempDirectory("codepunk-search-pinned-", async (root) => {
     const binA = path.join(root, "bin-a");
@@ -60,13 +74,8 @@ test("the search binary is pinned for the life of the tool", async () => {
     await fs.mkdir(binA);
     await fs.mkdir(binB);
     await fs.mkdir(workspace);
-    const marker = path.join(root, "swapped.txt");
-    await fakeBinary(binA, "rg", "printf 'a.txt:1:original\\n'");
-    await fakeBinary(
-      binB,
-      "rg",
-      `printf swapped > '${marker}'\nprintf 'a.txt:1:swapped\\n'`,
-    );
+    await writeFakeExecutable(binA, "rg", { stdout: "a.txt:1:original\n" });
+    await writeFakeExecutable(binB, "rg", { stdout: "a.txt:1:swapped\n" });
     const environment = { PATH: binA };
     const tool = core.createSearchTool({
       cwd: workspace,
@@ -87,7 +96,7 @@ test("the search binary is pinned for the life of the tool", async () => {
     });
     assert.match(second.content[0].text, /original/u);
     assert.doesNotMatch(second.content[0].text, /swapped/u);
-    await assert.rejects(fs.stat(marker), { code: "ENOENT" });
+    assert.equal(await fakeExecuted(binB, "rg"), false);
   });
 });
 
@@ -95,12 +104,9 @@ test("local rg output is bounded and paths stay inside the workspace", async () 
   await withTempDirectory("codepunk-search-", async (root) => {
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    const argsFile = path.join(root, "args.txt");
-    await fakeBinary(
-      bin,
-      "rg",
-      `printf '%s\\n' "$@" > '${argsFile}'\nprintf 'a.txt:1:needle\\n.env:1:SECRET\\n'`,
-    );
+    await writeFakeExecutable(bin, "rg", {
+      stdout: "a.txt:1:needle\n.env:1:SECRET\n",
+    });
     const workspace = path.join(root, "workspace");
     await fs.mkdir(workspace);
     const tool = core.createSearchTool({
@@ -116,7 +122,7 @@ test("local rg output is bounded and paths stay inside the workspace", async () 
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /a\.txt:1:needle/u);
     assert.doesNotMatch(result.content[0].text, /SECRET/u);
-    const args = (await fs.readFile(argsFile, "utf8")).trim().split("\n");
+    const args = await readFakeArgs(bin, "rg");
     assert.equal(args.includes("--no-config"), true);
     const maxCountIndex = args.indexOf("--max-count");
     assert.equal(args[maxCountIndex + 1], "500");
@@ -139,12 +145,12 @@ test("grep forwards Pi-compatible flags and preserves context lines", async () =
   await withTempDirectory("codepunk-search-flags-", async (root) => {
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    const argsFile = path.join(root, "flags-args.txt");
-    await fakeBinary(
-      bin,
-      "rg",
-      `printf '%s\\n' "$@" > '${argsFile}'\nprintf 'a.txt\\0371\\037needle\\nb.txt\\0362\\036context\\n.env\\0363\\036SECRET\\n'`,
-    );
+    await writeFakeExecutable(bin, "rg", {
+      stdout:
+        "a.txt\u001f1\u001fneedle\n" +
+        "b.txt\u001e2\u001econtext\n" +
+        ".env\u001e3\u001eSECRET\n",
+    });
     const workspace = path.join(root, "workspace");
     await fs.mkdir(workspace);
     const tool = core.createSearchTool({
@@ -165,7 +171,7 @@ test("grep forwards Pi-compatible flags and preserves context lines", async () =
     assert.match(result.content[0].text, /a\.txt:1:needle/u);
     assert.match(result.content[0].text, /b\.txt-2-context/u);
     assert.doesNotMatch(result.content[0].text, /SECRET/u);
-    const args = (await fs.readFile(argsFile, "utf8")).trim().split("\n");
+    const args = await readFakeArgs(bin, "rg");
     assert.equal(args.includes("--fixed-strings"), true);
     assert.equal(args.includes("--ignore-case"), true);
     assert.equal(args[args.indexOf("--glob") + 1], "src/**/*.ts");
@@ -179,12 +185,7 @@ test("regex mode overrides the literal default", async () => {
   await withTempDirectory("codepunk-search-regex-", async (root) => {
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    const argsFile = path.join(root, "regex-args.txt");
-    await fakeBinary(
-      bin,
-      "rg",
-      `printf '%s\\n' "$@" > '${argsFile}'\nprintf 'a.txt:1:needle\\n'`,
-    );
+    await writeFakeExecutable(bin, "rg", { stdout: "a.txt:1:needle\n" });
     const tool = core.createSearchTool({
       cwd: root,
       workspaceRoot: root,
@@ -195,7 +196,7 @@ test("regex mode overrides the literal default", async () => {
       query: "n.+dle",
       regex: true,
     });
-    const args = (await fs.readFile(argsFile, "utf8")).trim().split("\n");
+    const args = await readFakeArgs(bin, "rg");
     assert.equal(args.includes("--fixed-strings"), false);
   });
 });
@@ -205,11 +206,12 @@ test("long lines are shortened and large output is not reported as an error", as
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
     const long = "x".repeat(600);
-    await fakeBinary(
-      bin,
-      "rg",
-      `awk 'BEGIN{for(i=0;i<400;i++) printf "a.txt:%d:${long}\\n", i}'`,
-    );
+    await writeFakeExecutable(bin, "rg", {
+      stdout: Array.from(
+        { length: 400 },
+        (_value, index) => `a.txt:${index}:${long}`,
+      ).join("\n"),
+    });
     const tool = core.createSearchTool({
       cwd: root,
       workspaceRoot: root,
@@ -236,7 +238,7 @@ test("search refuses a symlink that escapes the workspace", async () => {
     const outside = path.join(root, "outside");
     await fs.mkdir(workspace);
     await fs.mkdir(outside);
-    await fs.symlink(outside, path.join(workspace, "escape"), "dir");
+    await createDirectoryLink(outside, path.join(workspace, "escape"));
     const tool = core.createSearchTool({
       cwd: workspace,
       workspaceRoot: workspace,
@@ -256,12 +258,7 @@ test("local fd find mode is bounded and excludes Git metadata", async () => {
   await withTempDirectory("codepunk-search-fd-", async (root) => {
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    const argsFile = path.join(root, "fd-args.txt");
-    await fakeBinary(
-      bin,
-      "fd",
-      `printf '%s\\n' "$@" > '${argsFile}'\nprintf 'a.txt\\n'`,
-    );
+    await writeFakeExecutable(bin, "fd", { stdout: "a.txt\n" });
     const workspace = path.join(root, "workspace");
     await fs.mkdir(workspace);
     const tool = core.createSearchTool({
@@ -277,7 +274,7 @@ test("local fd find mode is bounded and excludes Git metadata", async () => {
     assert.equal(result.isError, undefined);
     assert.equal(result.details.binary, "fd");
     assert.equal(result.content[0].text, "a.txt");
-    const args = (await fs.readFile(argsFile, "utf8")).trim().split("\n");
+    const args = await readFakeArgs(bin, "fd");
     assert.equal(args.includes("--exclude"), true);
     assert.equal(args[args.indexOf("--exclude") + 1], ".git");
     assert.equal(args[args.indexOf("--max-results") + 1], "7");
@@ -288,11 +285,10 @@ test("grep caps total matches across files, not per file", async () => {
   await withTempDirectory("codepunk-search-limit-", async (root) => {
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    await fakeBinary(
-      bin,
-      "rg",
-      "printf 'a.txt:1:needle\\na.txt:2:needle\\nb.txt:1:needle\\nb.txt:2:needle\\n'",
-    );
+    await writeFakeExecutable(bin, "rg", {
+      stdout:
+        "a.txt:1:needle\na.txt:2:needle\nb.txt:1:needle\nb.txt:2:needle\n",
+    });
     const tool = core.createSearchTool({
       cwd: root,
       workspaceRoot: root,
