@@ -825,6 +825,7 @@ async function createRuntimeInner(
   };
   const autonomy = new AutonomyController(autonomyRegistration);
   let sandbox: ShellProvider | null = null;
+  let sandboxUnavailableReason: string | null = null;
   if (config.sandbox.mode === "required") {
     try {
       sandbox = await SrtSandbox.create({
@@ -838,7 +839,9 @@ async function createRuntimeInner(
         networkDeny: config.sandbox.network_deny,
         readOnly: config.autonomy.profile === "read-only",
       });
-    } catch {
+    } catch (error) {
+      sandboxUnavailableReason =
+        error instanceof Error ? error.message : String(error);
       sandbox = null;
     }
     sandboxRef.current = sandbox;
@@ -855,7 +858,11 @@ async function createRuntimeInner(
     loadedConfig.warnings.push(
       config.sandbox.mode === "uncovered"
         ? "sandbox mode is uncovered; shell tools are disabled unless this interactive process was started with --allow-unsandboxed-shell"
-        : "sandbox required but srt is unavailable; shell tools are disabled; run codepunk doctor",
+        : `sandbox required but srt is unavailable; shell tools are disabled${
+            sandboxUnavailableReason === null
+              ? ""
+              : `: ${sandboxUnavailableReason}`
+          }; run codepunk doctor`,
     );
   }
   const modelRuntime = await openModelRuntime(paths);
