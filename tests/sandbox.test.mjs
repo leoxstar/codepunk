@@ -222,6 +222,38 @@ test("windows refuses a volume root as a persistent write root", async () => {
   );
 });
 
+test("windows refuses the user profile as a read-only sandbox root", async () => {
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  await assert.rejects(
+    core.SrtSandbox.create(
+      {
+        cwd: "C:\\Users\\probe",
+        workspaceRoot: "C:\\Users\\probe",
+        deliveryRoot: "C:\\Users\\probe",
+        codepunkHome: "C:\\codepunk-home",
+        writeSet: [],
+        readOnly: true,
+      },
+      {
+        manager,
+        platform: "win32",
+        userHome: "C:\\Users\\probe",
+        windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      },
+    ),
+    /read-only.*user profile/u,
+  );
+  assert.equal(initialized, false);
+});
+
 test("windows still accepts a project beneath the user profile", async () => {
   let initialized = false;
   const manager = {
@@ -281,6 +313,75 @@ test("the user-profile write-root guard does not apply on POSIX", async () => {
   );
   try {
     assert.equal(initialized, true);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("the user-profile read-only root guard does not apply on POSIX", async () => {
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "/home/probe",
+      workspaceRoot: "/home/probe",
+      deliveryRoot: "/home/probe",
+      codepunkHome: "/srv/codepunk-home",
+      writeSet: ["."],
+      readOnly: true,
+    },
+    {
+      manager,
+      platform: "linux",
+      userHome: "/home/probe",
+    },
+  );
+  try {
+    assert.equal(initialized, true);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("windows still accepts a project beneath the user profile in read-only mode", async () => {
+  let initialized = false;
+  let captured = null;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async (config) => {
+      initialized = true;
+      captured = config;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\Users\\probe\\projects\\demo",
+      workspaceRoot: "C:\\Users\\probe\\projects\\demo",
+      deliveryRoot: "C:\\Users\\probe\\projects\\demo",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+      readOnly: true,
+    },
+    {
+      manager,
+      platform: "win32",
+      userHome: "C:\\Users\\probe",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+      protectWindowsCodepunkHome: WINDOWS_HOME_PROTECTION_NOOP,
+    },
+  );
+  try {
+    assert.equal(initialized, true);
+    assert.deepEqual(captured.filesystem.allowWrite, []);
   } finally {
     await sandbox.close();
   }

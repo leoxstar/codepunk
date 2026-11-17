@@ -262,32 +262,45 @@ function writeRoots(input: SrtProfileInput): string[] {
 
 /**
  * A persistent Windows write root walks its whole subtree on first use.
- * Granting the user profile or a volume root turns a normal startup into
- * an unbounded ACL walk that can look like a hang and can leave a partial
- * grant behind when the process is interrupted. Refuse those roots before
- * srt initializes; a project beneath the profile is still allowed.
+ * A read-only session turns the workspace roots into deny-write stamps,
+ * which walk the same tree. Granting or stamping the user profile or a
+ * volume root turns a normal startup into an unbounded ACL walk that can
+ * look like a hang and can leave partial access entries behind when the
+ * process is interrupted. Refuse those roots before srt initializes; a
+ * project beneath the profile is still allowed.
  */
-function assertWindowsWriteRootsAreScoped(
+function assertWindowsSandboxRootsAreScoped(
   input: SrtProfileInput,
   userHome: string,
 ): void {
-  const allowedRoots = [
-    path.win32.resolve(input.workspaceRoot),
-    ...(input.additionalRoots ?? []).map((entry) => path.win32.resolve(entry)),
-  ];
   const roots = new Set<string>();
-  for (const entry of input.writeSet ?? []) {
-    const candidate = path.win32.resolve(input.cwd, entry);
-    if (
-      allowedRoots.some((root) => {
-        const relative = path.win32.relative(root, candidate);
-        return (
-          relative === "" ||
-          (!relative.startsWith("..") && !path.win32.isAbsolute(relative))
-        );
-      })
-    ) {
-      roots.add(candidate);
+  if (input.readOnly === true) {
+    for (const entry of [
+      input.workspaceRoot,
+      ...(input.additionalRoots ?? []),
+    ]) {
+      roots.add(path.win32.resolve(entry));
+    }
+  } else {
+    const allowedRoots = [
+      path.win32.resolve(input.workspaceRoot),
+      ...(input.additionalRoots ?? []).map((entry) =>
+        path.win32.resolve(entry),
+      ),
+    ];
+    for (const entry of input.writeSet ?? []) {
+      const candidate = path.win32.resolve(input.cwd, entry);
+      if (
+        allowedRoots.some((root) => {
+          const relative = path.win32.relative(root, candidate);
+          return (
+            relative === "" ||
+            (!relative.startsWith("..") && !path.win32.isAbsolute(relative))
+          );
+        })
+      ) {
+        roots.add(candidate);
+      }
     }
   }
   const home = path.win32.resolve(userHome);
@@ -299,6 +312,11 @@ function assertWindowsWriteRootsAreScoped(
       (!relativeToRoot.startsWith("..") &&
         !path.win32.isAbsolute(relativeToRoot));
     if (root === volumeRoot || containsHome) {
+      if (input.readOnly === true) {
+        throw new SandboxUnavailableError(
+          `Windows read-only sandbox refuses to stamp the user profile or a volume root (${root}); start codepunk from a project directory, or pass --sandbox uncovered to start without shell sandboxing`,
+        );
+      }
       throw new SandboxUnavailableError(
         `Windows sandbox refuses to grant persistent access to the user profile or a volume root (${root}); start codepunk from a project directory, or pass --sandbox uncovered to start without shell sandboxing`,
       );
@@ -776,8 +794,11 @@ export class SrtSandbox implements ShellProvider {
         "srt does not support this platform; shell execution is disabled",
       );
     }
-    if (platform === "win32" && input.readOnly !== true) {
-      assertWindowsWriteRootsAreScoped(input, options.userHome ?? os.homedir());
+    if (platform === "win32") {
+      assertWindowsSandboxRootsAreScoped(
+        input,
+        options.userHome ?? os.homedir(),
+      );
     }
     let config = srtProfile(input);
     let runtimeConfig = runtimeConfigFor(
