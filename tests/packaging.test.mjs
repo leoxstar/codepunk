@@ -8,6 +8,7 @@ import { importCore } from "./support/core.mjs";
 import {
   ensureBuilt,
   escapeRegExp,
+  execFilePortable,
   PRODUCT_VERSION,
   REPO_ROOT,
   withTempDirectory,
@@ -97,7 +98,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
       "@codepunk/core",
       "@codepunk/cli",
     ]) {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFilePortable(
         "pnpm",
         ["--filter", workspace, "pack", "--json", "--pack-destination", root],
         { cwd: REPO_ROOT, timeout: 120_000 },
@@ -105,7 +106,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
       packed.push(JSON.parse(stdout).filename);
     }
     const prefix = path.join(root, "prefix");
-    await execFileAsync(
+    await execFilePortable(
       "npm",
       [
         "install",
@@ -119,9 +120,12 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
       ],
       { timeout: 180_000 },
     );
-    const bin = path.join(prefix, "bin", "codepunk");
+    const bin =
+      process.platform === "win32"
+        ? path.join(prefix, "codepunk.cmd")
+        : path.join(prefix, "bin", "codepunk");
     await fs.access(bin);
-    const version = await execFileAsync(bin, ["--version"]);
+    const version = await execFilePortable(bin, ["--version"]);
     assert.match(
       version.stdout,
       new RegExp(
@@ -136,12 +140,21 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
     await fs.mkdir(home);
     let doctor;
     try {
-      doctor = await execFileAsync(bin, ["doctor"], {
+      doctor = await execFilePortable(bin, ["doctor"], {
         cwd: project,
         env: {
           ...process.env,
           CODEPUNK_HOME: home,
-          PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`,
+          PATH:
+            process.platform === "win32"
+              ? [
+                  path.dirname(process.execPath),
+                  path.join(
+                    process.env["SystemRoot"] ?? "C:\\Windows",
+                    "System32",
+                  ),
+                ].join(path.delimiter)
+              : `${path.dirname(process.execPath)}:/usr/bin:/bin`,
           NO_COLOR: "1",
           PI_OFFLINE: "1",
         },
@@ -152,7 +165,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
     const output = `${doctor.stdout ?? ""}${doctor.stderr ?? ""}`;
     assert.match(output, /doctor:/u);
 
-    await execFileAsync(
+    await execFilePortable(
       "npm",
       [
         "uninstall",

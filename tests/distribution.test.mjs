@@ -9,6 +9,7 @@ import {
   describeInstallFailure,
   ensureBuilt,
   escapeRegExp,
+  execFilePortable,
   PRODUCT_VERSION,
   REPO_ROOT,
   resolveBuildTimeoutMs,
@@ -27,7 +28,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
       "@codepunk/core",
       "@codepunk/cli",
     ]) {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFilePortable(
         "pnpm",
         ["--filter", workspace, "pack", "--json", "--pack-destination", root],
         { cwd: REPO_ROOT },
@@ -58,7 +59,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
     );
     const installTimeoutMs = resolveInstallTimeoutMs();
     try {
-      await execFileAsync(
+      await execFilePortable(
         "npm",
         [
           "install",
