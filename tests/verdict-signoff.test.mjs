@@ -14,6 +14,20 @@ import {
 
 const core = await importCore();
 const execFileAsync = promisify(execFile);
+const PTY_RUNNER =
+  process.platform === "win32"
+    ? [
+        process.execPath,
+        path.join(REPO_ROOT, "tests", "support", "pty-run.mjs"),
+      ]
+    : ["python3", path.join(REPO_ROOT, "tests", "support", "pty-run.py")];
+
+function stripTerminalControls(value) {
+  return value
+    .replaceAll(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, "")
+    .replaceAll(/\x1b\[[0-9;?]*[ -/]*[@-~]/gu, "")
+    .replaceAll(/\x1b[@-_]/gu, "");
+}
 
 test("the product sign path writes a sign-off event and artifact", async () => {
   await withTempDirectory("codepunk-verdict-", async (root) => {
@@ -129,9 +143,9 @@ test("the CLI sign command prints the verdict value under a TTY", async () => {
 
     const cli = await ensureBuilt();
     const child = spawn(
-      "python3",
+      PTY_RUNNER[0],
       [
-        path.join(REPO_ROOT, "tests", "support", "pty-run.py"),
+        ...PTY_RUNNER.slice(1),
         process.execPath,
         cli,
         "sign",
@@ -145,6 +159,7 @@ test("the CLI sign command prints the verdict value under a TTY", async () => {
           ...process.env,
           CODEPUNK_HOME: paths.home,
           NO_COLOR: "1",
+          PTY_RUN_COLS: "240",
           PTY_RUN_TIMEOUT: "10",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -166,8 +181,9 @@ test("the CLI sign command prints the verdict value under a TTY", async () => {
       ),
     ]);
     assert.deepEqual(result, { code: 0, signal: null });
-    assert.match(output, /^complete .+\.json$/mu);
-    assert.doesNotMatch(output, /\[object Object\]/u);
+    const cleaned = stripTerminalControls(output);
+    assert.match(cleaned, /^complete .+\.json$/mu);
+    assert.doesNotMatch(cleaned, /\[object Object\]/u);
   });
 });
 
