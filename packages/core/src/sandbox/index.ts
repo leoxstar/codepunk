@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   checkWindowsDependenciesAsync,
@@ -226,6 +227,11 @@ export interface CreateSrtSandboxOptions {
   windowsDependencyCheck?: (
     config: SandboxRuntimeConfig,
   ) => Promise<SandboxDependencyCheck>;
+  /**
+   * Test seam for the profile root refused as a persistent Windows
+   * write root. Production uses the current user's home directory.
+   */
+  userHome?: string;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -243,6 +249,52 @@ function writeRoots(input: SrtProfileInput): string[] {
     }
   }
   return [...roots].sort();
+}
+
+/**
+ * A persistent Windows write root walks its whole subtree on first use.
+ * Granting the user profile or a volume root turns a normal startup into
+ * an unbounded ACL walk that can look like a hang and can leave a partial
+ * grant behind when the process is interrupted. Refuse those roots before
+ * srt initializes; a project beneath the profile is still allowed.
+ */
+function assertWindowsWriteRootsAreScoped(
+  input: SrtProfileInput,
+  userHome: string,
+): void {
+  const allowedRoots = [
+    path.win32.resolve(input.workspaceRoot),
+    ...(input.additionalRoots ?? []).map((entry) => path.win32.resolve(entry)),
+  ];
+  const roots = new Set<string>();
+  for (const entry of input.writeSet ?? []) {
+    const candidate = path.win32.resolve(input.cwd, entry);
+    if (
+      allowedRoots.some((root) => {
+        const relative = path.win32.relative(root, candidate);
+        return (
+          relative === "" ||
+          (!relative.startsWith("..") && !path.win32.isAbsolute(relative))
+        );
+      })
+    ) {
+      roots.add(candidate);
+    }
+  }
+  const home = path.win32.resolve(userHome);
+  for (const root of roots) {
+    const volumeRoot = path.win32.parse(root).root;
+    const relativeToRoot = path.win32.relative(root, home);
+    const containsHome =
+      relativeToRoot === "" ||
+      (!relativeToRoot.startsWith("..") &&
+        !path.win32.isAbsolute(relativeToRoot));
+    if (root === volumeRoot || containsHome) {
+      throw new SandboxUnavailableError(
+        `Windows sandbox refuses to grant persistent access to the user profile or a volume root (${root}); start codepunk from a project directory, or pass --sandbox uncovered to start without shell sandboxing`,
+      );
+    }
+  }
 }
 
 export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
@@ -524,6 +576,9 @@ export class SrtSandbox implements ShellProvider {
       throw new SandboxUnavailableError(
         "srt does not support this platform; shell execution is disabled",
       );
+    }
+    if (platform === "win32" && input.readOnly !== true) {
+      assertWindowsWriteRootsAreScoped(input, options.userHome ?? os.homedir());
     }
     const config = srtProfile(input);
     const runtimeConfig = runtimeConfigFor(

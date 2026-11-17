@@ -154,6 +154,135 @@ test("windows dependency failures happen before initialization", async () => {
   assert.equal(initialized, false);
 });
 
+test("windows refuses the user profile as a persistent write root", async () => {
+  let checked = false;
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  await assert.rejects(
+    core.SrtSandbox.create(
+      {
+        cwd: "C:\\Users\\probe",
+        workspaceRoot: "C:\\Users\\probe",
+        deliveryRoot: "C:\\Users\\probe",
+        codepunkHome: "C:\\codepunk-home",
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        userHome: "C:\\Users\\probe",
+        windowsDependencyCheck: async () => {
+          checked = true;
+          return { errors: [], warnings: [] };
+        },
+      },
+    ),
+    /refuses to grant persistent access to the user profile or a volume root/u,
+  );
+  assert.equal(checked, false);
+  assert.equal(initialized, false);
+});
+
+test("windows refuses a volume root as a persistent write root", async () => {
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {},
+    cleanupAfterCommand: () => {},
+  };
+  await assert.rejects(
+    core.SrtSandbox.create(
+      {
+        cwd: "C:\\",
+        workspaceRoot: "C:\\",
+        deliveryRoot: "C:\\",
+        codepunkHome: "C:\\codepunk-home",
+        writeSet: ["."],
+      },
+      {
+        manager,
+        platform: "win32",
+        userHome: "C:\\Users\\probe",
+        windowsDependencyCheck: async () => ({
+          errors: [],
+          warnings: [],
+        }),
+      },
+    ),
+    /refuses to grant persistent access to the user profile or a volume root/u,
+  );
+});
+
+test("windows still accepts a project beneath the user profile", async () => {
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "C:\\Users\\probe\\projects\\demo",
+      workspaceRoot: "C:\\Users\\probe\\projects\\demo",
+      deliveryRoot: "C:\\Users\\probe\\projects\\demo",
+      codepunkHome: "C:\\codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "win32",
+      userHome: "C:\\Users\\probe",
+      windowsDependencyCheck: async () => ({ errors: [], warnings: [] }),
+    },
+  );
+  try {
+    assert.equal(initialized, true);
+  } finally {
+    await sandbox.close();
+  }
+});
+
+test("the user-profile write-root guard does not apply on POSIX", async () => {
+  let initialized = false;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async () => {
+      initialized = true;
+    },
+    cleanupAfterCommand: () => {},
+  };
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "/home/probe",
+      workspaceRoot: "/home/probe",
+      deliveryRoot: "/home/probe",
+      codepunkHome: "/srv/codepunk-home",
+      writeSet: ["."],
+    },
+    {
+      manager,
+      platform: "linux",
+      userHome: "/home/probe",
+    },
+  );
+  try {
+    assert.equal(initialized, true);
+  } finally {
+    await sandbox.close();
+  }
+});
+
 test("windows initialization retries a transient proxy port collision", async () => {
   let attempts = 0;
   const manager = {
