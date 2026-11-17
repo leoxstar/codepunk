@@ -129,9 +129,6 @@ export async function resolveAdditionalWorkspaceRoots(input: {
         `--add-dir is already inside the workspace; no extra root is needed: ${real}`,
       );
     }
-    if (isInsidePath(real, primaryRoot)) {
-      throw new Error(`--add-dir cannot contain the workspace root: ${real}`);
-    }
     if (
       isInsidePath(codepunkHome, real) ||
       isInsidePath(real, codepunkHome) ||
@@ -140,6 +137,11 @@ export async function resolveAdditionalWorkspaceRoots(input: {
       throw new Error(
         `--add-dir cannot contain the user home or Codepunk home: ${real}`,
       );
+    }
+    // A Windows temp directory can contain both the workspace and the user
+    // home. The home boundary is the stronger refusal, so check it first.
+    if (isInsidePath(real, primaryRoot)) {
+      throw new Error(`--add-dir cannot contain the workspace root: ${real}`);
     }
     roots.add(real);
   }

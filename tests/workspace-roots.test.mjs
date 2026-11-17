@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { createDirectoryLink, withTempDirectory } from "./support/helpers.mjs";
+import { writeFakeExecutable } from "./support/fake-executable.mjs";
 
 const core = await importCore();
 
@@ -59,12 +60,18 @@ test("extra file roots are canonical and cannot redefine the workspace", async (
       }),
       /inside the workspace/u,
     );
+    // Keep the codepunk home out of this directory, otherwise the stronger
+    // home refusal is the correct answer and this case would not exercise the
+    // workspace-root branch.
+    const broad = path.join(root, "broad");
+    const nested = path.join(broad, "nested-project");
+    await fs.mkdir(nested, { recursive: true });
     await assert.rejects(
       core.resolveAdditionalWorkspaceRoots({
-        cwd: project,
-        primaryRoot: project,
+        cwd: nested,
+        primaryRoot: nested,
         codepunkHome: home,
-        directories: [root],
+        directories: [broad],
       }),
       /cannot contain the workspace root/u,
     );
@@ -97,7 +104,7 @@ test("extra file roots are canonical and cannot redefine the workspace", async (
     );
 
     const linkedProject = path.join(root, "linked-project");
-    await fs.symlink(project, linkedProject, "dir");
+    await createDirectoryLink(project, linkedProject);
     await assert.rejects(
       core.resolveAdditionalWorkspaceRoots({
         cwd: linkedProject,
@@ -111,7 +118,7 @@ test("extra file roots are canonical and cannot redefine the workspace", async (
     const realHome = path.join(root, "real-home");
     const linkedHome = path.join(root, "linked-home");
     await fs.mkdir(realHome);
-    await fs.symlink(realHome, linkedHome, "dir");
+    await createDirectoryLink(realHome, linkedHome);
     await assert.rejects(
       core.resolveAdditionalWorkspaceRoots({
         cwd: project,
@@ -129,7 +136,7 @@ test("extra roots extend path policy without exposing their .codepunk or .git", 
     const { project, extra, home } = await fixture(root);
     const outside = path.join(root, "outside");
     await fs.mkdir(outside);
-    await fs.symlink(outside, path.join(extra, "escape"), "dir");
+    await createDirectoryLink(outside, path.join(extra, "escape"));
 
     const base = {
       cwd: project,
@@ -205,11 +212,9 @@ test("extra roots work for search and project config is not loaded from them", a
     const { project, extra, home } = await fixture(root);
     const bin = path.join(root, "bin");
     await fs.mkdir(bin);
-    await fs.writeFile(
-      path.join(bin, "rg"),
-      `#!/bin/sh\nprintf '${extra}/a.txt:1:needle\\n${extra}/.codepunk/config.toml:1:SECRET\\n'\n`,
-      { mode: 0o755 },
-    );
+    await writeFakeExecutable(bin, "rg", {
+      stdout: "a.txt:1:needle\n.codepunk/config.toml:1:SECRET\n",
+    });
 
     const withoutRoot = core.createSearchTool({
       cwd: project,
