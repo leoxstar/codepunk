@@ -418,7 +418,7 @@ export async function withTempDirectory(prefix, callback) {
   try {
     return await callback(directory);
   } finally {
-    await fs.rm(directory, { recursive: true, force: true });
+    await removeTempDirectory(directory);
   }
 }
 
@@ -452,8 +452,26 @@ async function withTempDirectoryIn(base, prefix, callback) {
   try {
     return await callback(directory);
   } finally {
-    await fs.rm(directory, { recursive: true, force: true });
+    await removeTempDirectory(directory);
   }
+}
+
+/**
+ * Remove a test root after the process that used it has exited.
+ *
+ * Windows can briefly keep a directory busy after a ConPTY child and its
+ * sandbox helper exit. A single `rm` turns that timing into a test failure
+ * even though no product state is wrong, so retry the recursive removal on
+ * the platform where the race exists.
+ */
+async function removeTempDirectory(directory) {
+  await fs.rm(directory, {
+    recursive: true,
+    force: true,
+    ...(process.platform === "win32"
+      ? { maxRetries: 10, retryDelay: 100 }
+      : {}),
+  });
 }
 
 /**
