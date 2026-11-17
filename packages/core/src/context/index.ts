@@ -372,11 +372,12 @@ function sameFileSystemPath(left: string, right: string): boolean {
   if (left === right) {
     return true;
   }
-  // macOS is case-insensitive by default, and realpath may return the
-  // on-disk case even when the candidate used a different case. Comparing
-  // strings exactly would report a regular file as a symlink.
+  // macOS and Windows are case-insensitive by default, and realpath may
+  // return the on-disk case even when the candidate used a different case.
+  // Comparing strings exactly would report a regular file as a symlink.
   return (
-    process.platform === "darwin" && left.toLowerCase() === right.toLowerCase()
+    (process.platform === "darwin" || process.platform === "win32") &&
+    left.toLowerCase() === right.toLowerCase()
   );
 }
 

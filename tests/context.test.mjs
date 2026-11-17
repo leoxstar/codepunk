@@ -10,6 +10,10 @@ import {
   loadProjectContextFiles,
 } from "@earendil-works/pi-coding-agent";
 import { importCore } from "./support/core.mjs";
+import {
+  canCreateFileSymlink,
+  createDirectoryLink,
+} from "./support/helpers.mjs";
 import { installScriptedStream, TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
@@ -308,7 +312,23 @@ test("symlinks and outside append files are ignored with warnings", async () => 
   const setup = await workspace();
   const outside = path.join(setup.root, "outside.md");
   await fs.writeFile(outside, "outside");
-  await fs.symlink(outside, path.join(setup.repo, "AGENTS.md"));
+  const fileSymlinks = await canCreateFileSymlink();
+  const linkedAppend = path.join(setup.repo, "linked-append.md");
+  if (fileSymlinks) {
+    await fs.symlink(outside, path.join(setup.repo, "AGENTS.md"));
+  } else {
+    // Windows without the symlink privilege cannot link a file. The linked
+    // instruction entry is skipped by discovery, and the linked append file
+    // below exercises the same refusal inside the context reader.
+    await createDirectoryLink(
+      path.join(setup.root, "linked-dir"),
+      path.join(setup.repo, "AGENTS.md"),
+    );
+    await createDirectoryLink(
+      path.join(setup.root, "linked-dir"),
+      linkedAppend,
+    );
+  }
 
   const bundle = await core.loadContext({
     cwd: setup.repo,
@@ -317,6 +337,7 @@ test("symlinks and outside append files are ignored with warnings", async () => 
     appendFiles: [
       { path: outside },
       { path: path.join(setup.repo, ".env"), label: "secret.md" },
+      ...(fileSymlinks ? [] : [{ path: linkedAppend, label: "linked.md" }]),
     ],
   });
 
