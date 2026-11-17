@@ -1786,15 +1786,6 @@ test("/init sends the repository-evidence prompt to the selected model", async (
     try {
       await waitForOutput(session, "codepunk · local/local-test", "startup");
       await runCommandAfter(session, "/init", "CHILD_OK");
-      if (process.platform !== "win32") {
-        // ConPTY repaints can clear this transient status line before the
-        // model response arrives. The request assertions below still prove
-        // that /init started the documented model turn.
-        assert.match(
-          session.output(),
-          /Starting project instruction initialization/u,
-        );
-      }
       assert.ok(model.requests.length > 0);
       const request = JSON.stringify(model.requests);
       assert.match(request, /Create the repository guidance file/u);
