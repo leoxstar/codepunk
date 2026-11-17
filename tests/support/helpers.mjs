@@ -43,6 +43,12 @@ const TRUSTED_WINDOWS_PRINCIPALS = [
   /\\codexsandboxusers$/iu,
 ];
 
+/**
+ * Principals injected by the test harness itself. They are not another
+ * interactive user, even though their names end in "Users".
+ */
+const ENVIRONMENT_WINDOWS_PRINCIPALS = [/\\codexsandboxusers$/iu];
+
 let currentWindowsIdentityCache;
 
 /**
@@ -125,10 +131,16 @@ export async function privateFileStatus(filePath) {
       identity: match[1].trim(),
       rights: match[3].trim(),
       inherited: flags.includes("(I)"),
+      deny: flags.includes("(DENY)"),
     });
   }
-  const otherUsers = entries.filter((entry) =>
-    OTHER_USERS_PRINCIPALS.some((pattern) => pattern.test(entry.identity)),
+  const otherUsers = entries.filter(
+    (entry) =>
+      !entry.deny &&
+      !ENVIRONMENT_WINDOWS_PRINCIPALS.some((pattern) =>
+        pattern.test(entry.identity),
+      ) &&
+      OTHER_USERS_PRINCIPALS.some((pattern) => pattern.test(entry.identity)),
   );
   const identity = await currentWindowsIdentity();
   const owner = identity.name.split("\\").at(-1)?.toLowerCase() ?? "";
@@ -137,6 +149,7 @@ export async function privateFileStatus(filePath) {
   }
   const explicitForeign = entries.filter(
     (entry) =>
+      !entry.deny &&
       !entry.inherited &&
       // An unresolved SID is a service or sandbox principal on this host.
       // The named-principal and well-known group checks still catch a file
@@ -407,6 +420,60 @@ export async function withTempDirectory(prefix, callback) {
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * On Windows the system temp directory can be a per-user drive mapping that
+ * the srt sandbox account cannot see. srt refuses such a working directory
+ * with `mapped_drive_cwd`. Keep srt-backed test roots on the same local drive
+ * as the checkout unless the caller names one explicitly.
+ */
+export function sandboxTempBase(environment = process.env) {
+  const configured = environment["CODEPUNK_TEST_TMPDIR"];
+  if (configured !== undefined && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
+  if (process.platform !== "win32") {
+    return os.tmpdir();
+  }
+  return path.join(path.dirname(REPO_ROOT), ".verify", "tmp");
+}
+
+export async function withSandboxTempDirectory(prefix, callback) {
+  const base = sandboxTempBase();
+  await fs.mkdir(base, { recursive: true });
+  return withTempDirectoryIn(base, prefix, callback);
+}
+
+async function withTempDirectoryIn(base, prefix, callback) {
+  const directory = await fs.realpath(
+    await fs.mkdtemp(path.join(base, prefix)),
+  );
+  try {
+    return await callback(directory);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Return a skip reason when the Windows srt runtime cannot run. The probe is
+ * stateless: it must not initialize a session or stamp ACLs just to decide
+ * whether a test should run.
+ */
+export async function windowsSrtSkipReason(core) {
+  if (process.platform !== "win32") {
+    return "Windows-only srt integration path";
+  }
+  const base = sandboxTempBase();
+  const issue = await core.probeSrtSandbox({
+    cwd: base,
+    workspaceRoot: base,
+    deliveryRoot: base,
+    codepunkHome: path.join(base, "home"),
+    writeSet: [],
+  });
+  return issue === null ? false : `srt is unavailable: ${issue}`;
 }
 
 export async function makeProject(root, name = "project") {

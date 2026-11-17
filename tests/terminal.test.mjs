@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
+import { sandboxTempBase, windowsSrtSkipReason } from "./support/helpers.mjs";
 
 const core = await importCore();
 const TESTS_DIR = import.meta.dirname;
 const REPO_ROOT = path.resolve(TESTS_DIR, "..");
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 const PTY_RUNNER =
   process.platform === "win32"
     ? [process.execPath, path.join(TESTS_DIR, "support", "pty-run.mjs")]
@@ -70,15 +71,18 @@ async function readSessionEvents(sessionPath) {
 test(
   "real pty gates !, records /compact, and exits without a Pi banner",
   {
-    skip:
-      process.platform === "win32"
-        ? "the srt sandbox is not provisioned on this Windows host"
-        : false,
+    skip: process.platform === "win32" ? WINDOWS_SRT_SKIP : false,
   },
   async () => {
+    const tempBase = sandboxTempBase();
+    await fs.mkdir(tempBase, { recursive: true });
     const root = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), "codepunk-pty-")),
+      await fs.mkdtemp(path.join(tempBase, "codepunk-pty-")),
     );
+    const allowedCommand =
+      process.platform === "win32"
+        ? "echo codepunk-allowed"
+        : "printf 'code''punk-allowed'";
     const evidencePath = path.join(root, "evidence.jsonl");
     const detectorPath = path.join(root, "detector.json");
     const readyPath = path.join(root, "ready.json");
@@ -130,7 +134,7 @@ test(
       await delay(300);
 
       const allowedMark = output.join("").length;
-      child.stdin.write("!printf 'code''punk-allowed'\r");
+      child.stdin.write(`!${allowedCommand}\r`);
       await waitForOutput(
         output,
         allowedMark,
@@ -143,7 +147,7 @@ test(
           (await readEvidence(evidencePath)).find(
             (record) =>
               record.source === "user_bash" &&
-              record.command === "printf 'code''punk-allowed'" &&
+              record.command === allowedCommand &&
               record.decision === "allow",
           ) ?? null,
         "allowed user_bash evidence",

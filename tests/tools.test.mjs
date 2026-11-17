@@ -5,13 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
-import { escapeRegExp } from "./support/helpers.mjs";
+import {
+  escapeRegExp,
+  windowsSrtSkipReason,
+  withSandboxTempDirectory,
+} from "./support/helpers.mjs";
 
 const core = await importCore();
-const SRT_SKIP =
+const POSIX_SRT_SKIP =
   process.platform === "win32"
-    ? "the srt sandbox is not provisioned on this Windows host"
+    ? "the fixture uses POSIX shell commands"
     : false;
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 
 function hashFile(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -605,7 +610,7 @@ test("large tool output becomes a hash-bound artifact", async () => {
 test(
   "the wrapped bash tool uses srt and records the executor",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
@@ -668,7 +673,7 @@ test(
 test(
   "headless auto mode runs routine shell without an approval channel",
   {
-    skip: SRT_SKIP,
+    skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
@@ -902,3 +907,63 @@ test("artifact truncation preserves non-text tool content", async () => {
   assert.ok(text);
   assert.ok(text.text.length < 20_000);
 });
+
+test(
+  "windows bash tool uses srt and records enforcement",
+  {
+    skip: WINDOWS_SRT_SKIP,
+  },
+  async () => {
+    await withSandboxTempDirectory("codepunk-tools-win-", async (root) => {
+      const workspace = path.join(root, "workspace");
+      const home = path.join(root, "home");
+      const evidence = path.join(root, "evidence.jsonl");
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.mkdir(home, { recursive: true });
+      const paths = { root, workspace, home, evidence };
+      const sandbox = await core.SrtSandbox.create({
+        cwd: workspace,
+        workspaceRoot: workspace,
+        deliveryRoot: workspace,
+        codepunkHome: home,
+        writeSet: [workspace],
+      });
+      const ledger = await core.EvidenceLedger.open(evidence);
+      try {
+        const definitions = await core.createCodepunkToolDefinitions(
+          workspace,
+          sandbox,
+        );
+        const bash = definitions.find(
+          (definition) => definition.name === "bash",
+        );
+        assert.ok(bash);
+        const wrapped = await core.wrapToolDefinition(
+          bash,
+          wrapOptions(paths, { ledger, sandbox }),
+        );
+        const result = await wrapped.execute(
+          "call-shell",
+          { command: "echo shell-ok" },
+          undefined,
+          undefined,
+          {},
+        );
+        assert.notEqual(result.isError, true, JSON.stringify(result));
+        const record = (await core.readEvidenceFile(evidence)).records.find(
+          (candidate) => candidate.tool_call_id === "call-shell",
+        );
+        assert.ok(record);
+        assert.equal(record.tool, "bash");
+        assert.equal(record.decision, "allow");
+        assert.equal(record.exit_code, 0);
+        assert.equal(record.executor, "srt");
+        assert.equal(record.coverage, "enforced");
+        assert.equal(core.validateEvidenceForClass(record).ok, true);
+        assert.match(record.output_preview ?? "", /shell-ok/u);
+      } finally {
+        await sandbox.close();
+      }
+    });
+  },
+);
