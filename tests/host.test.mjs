@@ -292,110 +292,119 @@ test("a replaced or extra registered tool aborts before the next request", async
   }
 });
 
-test("user_bash allow reaches srt and deny spawns no process", async () => {
-  const paths = await setup();
-  const fakeBin = path.join(paths.project, ".test-bin");
-  const marker = path.join(paths.project, "spawned-by-denied-command");
-  await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "rm"),
-    `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`,
-    { mode: 0o755 },
-  );
-  const previousPath = process.env["PATH"];
-  process.env["PATH"] = `${fakeBin}:${previousPath ?? ""}`;
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.project,
-    workspaceRoot: paths.project,
-    deliveryRoot: paths.project,
-    codepunkHome: paths.home,
-    writeSet: [paths.project],
-  });
-  const { host, store, ledger } = await createHost(paths, { sandbox });
-  try {
-    const detector = await sandbox.execCommand(
-      "rm -rf detector",
-      paths.project,
+test(
+  "user_bash allow reaches srt and deny spawns no process",
+  {
+    skip:
+      process.platform === "win32"
+        ? "the srt sandbox is not provisioned on this Windows host"
+        : false,
+  },
+  async () => {
+    const paths = await setup();
+    const fakeBin = path.join(paths.project, ".test-bin");
+    const marker = path.join(paths.project, "spawned-by-denied-command");
+    await fs.mkdir(fakeBin, { recursive: true });
+    await fs.writeFile(
+      path.join(fakeBin, "rm"),
+      `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`,
+      { mode: 0o755 },
     );
-    assert.equal(detector.exitCode, 0, detector.output);
-    await fs.access(marker);
-    await fs.rm(marker);
-
-    const allowedHook = await host.session.extensionRunner.emitUserBash({
-      type: "user_bash",
-      command: "printf ok",
-      excludeFromContext: false,
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = `${fakeBin}:${previousPath ?? ""}`;
+    const sandbox = await core.SrtSandbox.create({
       cwd: paths.project,
+      workspaceRoot: paths.project,
+      deliveryRoot: paths.project,
+      codepunkHome: paths.home,
+      writeSet: [paths.project],
     });
-    assert.ok(allowedHook);
-    assert.ok(allowedHook.operations);
-    assert.equal(allowedHook.result, undefined);
-    const result = await host.session.executeBash("printf ok", undefined, {
-      operations: allowedHook.operations,
-    });
-    assert.equal(result.output.trim(), "ok");
-    assert.equal(result.exitCode, 0);
-    const allowedEnds = store.allEvents.filter(
-      (event) =>
-        event.kind === "run/end" &&
-        event.data.run_id === host.currentRunId &&
-        event.data.state === "settled",
-    );
-    assert.equal(allowedEnds.length, 1);
+    const { host, store, ledger } = await createHost(paths, { sandbox });
+    try {
+      const detector = await sandbox.execCommand(
+        "rm -rf detector",
+        paths.project,
+      );
+      assert.equal(detector.exitCode, 0, detector.output);
+      await fs.access(marker);
+      await fs.rm(marker);
 
-    const deniedCommand = "rm -rf /";
-    const runBeforeDenied = host.currentRunId;
-    const deniedHook = await host.session.extensionRunner.emitUserBash({
-      type: "user_bash",
-      command: deniedCommand,
-      excludeFromContext: false,
-      cwd: paths.project,
-    });
-    assert.ok(deniedHook);
-    assert.equal(deniedHook.operations, undefined);
-    assert.ok(deniedHook.result);
-    assert.equal(deniedHook.result.exitCode, 1);
-    assert.notEqual(host.currentRunId, runBeforeDenied);
-    const deniedEnds = store.allEvents.filter(
-      (event) =>
-        event.kind === "run/end" && event.data.run_id === host.currentRunId,
-    );
-    assert.equal(deniedEnds.length, 1);
-    assert.equal(deniedEnds[0].data.state, "failed");
-    assert.equal(await fs.readFile(marker, "utf8").catch(() => null), null);
+      const allowedHook = await host.session.extensionRunner.emitUserBash({
+        type: "user_bash",
+        command: "printf ok",
+        excludeFromContext: false,
+        cwd: paths.project,
+      });
+      assert.ok(allowedHook);
+      assert.ok(allowedHook.operations);
+      assert.equal(allowedHook.result, undefined);
+      const result = await host.session.executeBash("printf ok", undefined, {
+        operations: allowedHook.operations,
+      });
+      assert.equal(result.output.trim(), "ok");
+      assert.equal(result.exitCode, 0);
+      const allowedEnds = store.allEvents.filter(
+        (event) =>
+          event.kind === "run/end" &&
+          event.data.run_id === host.currentRunId &&
+          event.data.state === "settled",
+      );
+      assert.equal(allowedEnds.length, 1);
 
-    const records = await core.readEvidenceFile(
-      path.join(paths.root, "evidence.jsonl"),
-    );
-    const allowed = records.records.find(
-      (record) => record.command === "printf ok",
-    );
-    assert.ok(allowed);
-    assert.equal(allowed.source, "user_bash");
-    assert.equal(allowed.decision, "allow");
-    assert.equal(allowed.executor, "srt");
-    assert.equal(allowed.exit_code, 0);
-    assert.equal(allowed.sandbox.backend, "srt");
-    const denied = records.records.find(
-      (record) => record.command === deniedCommand,
-    );
-    assert.ok(denied);
-    assert.equal(denied.decision, "deny");
-    assert.equal(denied.rule, "shell.dangerous");
-    assert.equal(denied.executor, null);
-    assert.equal(denied.exit_code, null);
-    assert.match(ledger.head ?? "", /^sha256:/u);
-  } finally {
-    await host.dispose();
-    await sandbox.close();
-    if (previousPath === undefined) {
-      delete process.env["PATH"];
-    } else {
-      process.env["PATH"] = previousPath;
+      const deniedCommand = "rm -rf /";
+      const runBeforeDenied = host.currentRunId;
+      const deniedHook = await host.session.extensionRunner.emitUserBash({
+        type: "user_bash",
+        command: deniedCommand,
+        excludeFromContext: false,
+        cwd: paths.project,
+      });
+      assert.ok(deniedHook);
+      assert.equal(deniedHook.operations, undefined);
+      assert.ok(deniedHook.result);
+      assert.equal(deniedHook.result.exitCode, 1);
+      assert.notEqual(host.currentRunId, runBeforeDenied);
+      const deniedEnds = store.allEvents.filter(
+        (event) =>
+          event.kind === "run/end" && event.data.run_id === host.currentRunId,
+      );
+      assert.equal(deniedEnds.length, 1);
+      assert.equal(deniedEnds[0].data.state, "failed");
+      assert.equal(await fs.readFile(marker, "utf8").catch(() => null), null);
+
+      const records = await core.readEvidenceFile(
+        path.join(paths.root, "evidence.jsonl"),
+      );
+      const allowed = records.records.find(
+        (record) => record.command === "printf ok",
+      );
+      assert.ok(allowed);
+      assert.equal(allowed.source, "user_bash");
+      assert.equal(allowed.decision, "allow");
+      assert.equal(allowed.executor, "srt");
+      assert.equal(allowed.exit_code, 0);
+      assert.equal(allowed.sandbox.backend, "srt");
+      const denied = records.records.find(
+        (record) => record.command === deniedCommand,
+      );
+      assert.ok(denied);
+      assert.equal(denied.decision, "deny");
+      assert.equal(denied.rule, "shell.dangerous");
+      assert.equal(denied.executor, null);
+      assert.equal(denied.exit_code, null);
+      assert.match(ledger.head ?? "", /^sha256:/u);
+    } finally {
+      await host.dispose();
+      await sandbox.close();
+      if (previousPath === undefined) {
+        delete process.env["PATH"];
+      } else {
+        process.env["PATH"] = previousPath;
+      }
+      await fs.rm(paths.root, { recursive: true, force: true });
     }
-    await fs.rm(paths.root, { recursive: true, force: true });
-  }
-});
+  },
+);
 
 test("a discovered skill file is readable without opening Codepunk home", async () => {
   const paths = await setup();
@@ -456,68 +465,77 @@ test("a discovered skill file is readable without opening Codepunk home", async 
   }
 });
 
-test("a model-issued timezone date runs without an approval request", async () => {
-  const paths = await setup();
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.project,
-    workspaceRoot: paths.project,
-    deliveryRoot: paths.project,
-    codepunkHome: paths.home,
-    writeSet: [paths.project],
-  });
-  const approval = new core.ApprovalBroker();
-  let approvalRequests = 0;
-  approval.registerChannel({
-    id: "approval-spy",
-    kind: "cli",
-    isTTY: true,
-    async ask() {
-      approvalRequests += 1;
-      return null;
-    },
-  });
-  const command = "TZ=Asia/Shanghai date +%A";
-  const { host } = await createHost(paths, {
-    sandbox,
-    approval,
-    model: TEST_MODEL,
-  });
-  try {
-    await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
-    installScriptedStream(host.session, (index) => {
-      if (index === 0) {
-        return {
-          type: "toolCall",
-          id: "call-date-weekday",
-          name: "bash",
-          args: { command },
-        };
-      }
-      return { type: "text", text: "date completed" };
+test(
+  "a model-issued timezone date runs without an approval request",
+  {
+    skip:
+      process.platform === "win32"
+        ? "the srt sandbox is not provisioned on this Windows host"
+        : false,
+  },
+  async () => {
+    const paths = await setup();
+    const sandbox = await core.SrtSandbox.create({
+      cwd: paths.project,
+      workspaceRoot: paths.project,
+      deliveryRoot: paths.project,
+      codepunkHome: paths.home,
+      writeSet: [paths.project],
     });
+    const approval = new core.ApprovalBroker();
+    let approvalRequests = 0;
+    approval.registerChannel({
+      id: "approval-spy",
+      kind: "cli",
+      isTTY: true,
+      async ask() {
+        approvalRequests += 1;
+        return null;
+      },
+    });
+    const command = "TZ=Asia/Shanghai date +%A";
+    const { host } = await createHost(paths, {
+      sandbox,
+      approval,
+      model: TEST_MODEL,
+    });
+    try {
+      await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+      installScriptedStream(host.session, (index) => {
+        if (index === 0) {
+          return {
+            type: "toolCall",
+            id: "call-date-weekday",
+            name: "bash",
+            args: { command },
+          };
+        }
+        return { type: "text", text: "date completed" };
+      });
 
-    await host.session.prompt("what weekday is it?");
+      await host.session.prompt("what weekday is it?");
 
-    assert.equal(approvalRequests, 0);
-    const records = await core.readEvidenceFile(
-      path.join(paths.root, "evidence.jsonl"),
-    );
-    const record = records.records.find(
-      (item) => item.tool_call_id === "call-date-weekday",
-    );
-    assert.ok(record);
-    assert.equal(record.tool, "bash");
-    assert.equal(record.command, command);
-    assert.equal(record.decision, "allow");
-    assert.equal(record.rule, "shell.read.date");
-    assert.equal(record.executor, "srt");
-    assert.equal(record.exit_code, 0);
-  } finally {
-    await host.dispose();
-    await sandbox.close();
-    await fs.rm(paths.root, { recursive: true, force: true });
-  }
-});
+      assert.equal(approvalRequests, 0);
+      const records = await core.readEvidenceFile(
+        path.join(paths.root, "evidence.jsonl"),
+      );
+      const record = records.records.find(
+        (item) => item.tool_call_id === "call-date-weekday",
+      );
+      assert.ok(record);
+      assert.equal(record.tool, "bash");
+      assert.equal(record.command, command);
+      assert.equal(record.decision, "allow");
+      assert.equal(record.rule, "shell.read.date");
+      assert.equal(record.executor, "srt");
+      assert.equal(record.exit_code, 0);
+    } finally {
+      await host.dispose();
+      await sandbox.close();
+      await fs.rm(paths.root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("plan and todo tool calls persist and are injected on the next turn", async () => {
   const paths = await setup();
