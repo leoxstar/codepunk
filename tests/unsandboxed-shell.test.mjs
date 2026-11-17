@@ -16,9 +16,12 @@ const execFileAsync = promisify(execFile);
 test("explicit unsandboxed shell records direct execution and uncovered coverage", async () => {
   await withTempDirectory("codepunk-unsandboxed-", async (root) => {
     const shell = new core.UnsandboxedShell();
-    const command = await shell.execCommand("printf direct", root);
+    const command = await shell.execCommand(
+      process.platform === "win32" ? "echo direct" : "printf direct",
+      root,
+    );
     assert.equal(command.exitCode, 0);
-    assert.equal(command.output, "direct");
+    assert.equal(command.output.replace(/\r?\n$/u, ""), "direct");
     assert.equal(command.executor, "direct");
     assert.deepEqual(command.descriptor, {
       backend: "none",

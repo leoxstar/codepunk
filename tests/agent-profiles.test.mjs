@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
-import { withTempDirectory, writeFile } from "./support/helpers.mjs";
+import {
+  createLinkedEntry,
+  withTempDirectory,
+  writeFile,
+} from "./support/helpers.mjs";
 
 const core = await importCore();
 
@@ -151,9 +155,10 @@ test("invalid or linked profile files are ignored with warnings", async () => {
       ].join("\n"),
     );
     await writeFile(path.join(root, "outside.md"), profile("linked"));
-    await fs.symlink(
+    await createLinkedEntry(
       path.join(root, "outside.md"),
       path.join(userAgents, "linked.md"),
+      path.join(root, "linked-target"),
     );
 
     const bundle = await core.loadAgentProfiles(fixture.paths, {

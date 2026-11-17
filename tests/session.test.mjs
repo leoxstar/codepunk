@@ -669,7 +669,7 @@ test("fork clones a settled session with an evidence-bound parent link", async (
     assert.equal(resume.state.header.id, result.sessionId);
     assert.equal(resume.state.header.parentSession, undefined);
     assert.equal(child.header.parent_session_id, parent.sessionId);
-    assert.equal(resume.state.header.cwd, "/workspace");
+    assert.equal(resume.state.header.cwd, path.resolve("/workspace"));
     assert.equal(resume.state.session_id, result.sessionId);
     assert.deepEqual(resume.state.branch, [
       {

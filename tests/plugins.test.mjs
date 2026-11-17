@@ -6,6 +6,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { importCore } from "./support/core.mjs";
 import {
+  createLinkedEntry,
   makeProject,
   trustWorkspace,
   withTempDirectory,
@@ -222,7 +223,11 @@ test("plugin installation validates files and replacement", async () => {
     );
 
     const linkedSource = path.join(root, "source", "linked.js");
-    await fs.symlink(source, linkedSource);
+    await createLinkedEntry(
+      source,
+      linkedSource,
+      path.join(root, "linked-target"),
+    );
     await assert.rejects(
       () => core.installUserPlugin({ extensionDir, source: linkedSource }),
       /regular \.mjs/u,

@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { importCore, importProtocol } from "./support/core.mjs";
 
 const core = await importCore();
 const protocol = await importProtocol();
+const SAFE_EXECUTABLE =
+  process.platform === "win32"
+    ? path.join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "Robocopy.exe",
+      )
+    : "/bin/echo";
+const SAFE_COMMAND = process.platform === "win32" ? "robocopy" : "/bin/echo";
 const BASE = "b".repeat(40);
 const task = core.createTaskSpec({
   taskId: "subtask-1",
@@ -591,10 +601,10 @@ test("a spawn approval does not become a child approval", async () => {
 
 test("a child does not inherit the parent's scoped autonomy", async () => {
   const cwd = process.cwd();
-  const digest = await core.executableDigest("/bin/echo");
+  const digest = await core.executableDigest(SAFE_EXECUTABLE);
   const baseRule = {
     id: "parent-echo",
-    argv: ["/bin/echo", "ok"],
+    argv: [SAFE_COMMAND, "ok"],
     cwd,
     executable_sha256: digest,
   };
@@ -632,6 +642,8 @@ test("a child does not inherit the parent's scoped autonomy", async () => {
 });
 
 test("worktree and shared isolation require explicit run boundaries", async () => {
+  const childShared = path.resolve("/tmp/child-shared");
+  const parentShared = path.resolve("/tmp/parent-shared");
   const base = {
     parent_session_id: "parent",
     child_session_id: "child-boundary",
@@ -675,27 +687,27 @@ test("worktree and shared isolation require explicit run boundaries", async () =
 
   assert.equal(
     core.assertSubagentWriteTarget(
-      "/tmp/child-shared",
+      childShared,
       ["src/"],
-      "/tmp/child-shared/src/a.ts",
+      path.join(childShared, "src", "a.ts"),
     ),
-    "/tmp/child-shared/src/a.ts",
+    path.join(childShared, "src", "a.ts"),
   );
   assert.throws(
     () =>
       core.assertSubagentWriteTarget(
-        "/tmp/child-shared",
+        childShared,
         ["src/"],
-        "/tmp/child-shared/tests/a.ts",
+        path.join(childShared, "tests", "a.ts"),
       ),
     /write set/u,
   );
   assert.throws(
     () =>
       core.assertSubagentWriteTarget(
-        "/tmp/child-shared",
+        childShared,
         ["src/"],
-        "/tmp/parent-shared/src/a.ts",
+        path.join(parentShared, "src", "a.ts"),
       ),
     /outside its run worktree/u,
   );

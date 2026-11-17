@@ -12,7 +12,11 @@ import {
   TEST_MODEL,
   textStream,
 } from "./support/pi-model.mjs";
-import { makeProject, withTempDirectory } from "./support/helpers.mjs";
+import {
+  assertPrivateFile,
+  makeProject,
+  withTempDirectory,
+} from "./support/helpers.mjs";
 
 const core = await importCore();
 
@@ -1631,8 +1635,7 @@ test("provider import discovers models and resolves auth without a key", async (
         max: "max",
       });
       const modelsPath = path.join(paths.home, "models.json");
-      const stat = await fs.stat(modelsPath);
-      assert.equal(stat.mode & 0o777, 0o600);
+      await assertPrivateFile(modelsPath);
       const saved = JSON.parse(await fs.readFile(modelsPath, "utf8"));
       assert.equal(
         saved.providers.local.apiKey,

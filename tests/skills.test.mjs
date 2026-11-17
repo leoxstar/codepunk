@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  canCreateFileSymlink,
+  createDirectoryLink,
   makeProject,
   trustWorkspace,
   withTempDirectory,
@@ -84,12 +86,23 @@ test("unsafe or malformed skills are refused", async () => {
       path.join(linked, "SKILL.md"),
       skill("linked", "linked body"),
     );
-    await fs.symlink(linked, path.join(skills, "linked"));
-    await fs.mkdir(path.join(skills, "escape"), { recursive: true });
-    await fs.symlink(
-      path.join(home, "outside.md"),
-      path.join(skills, "escape", "SKILL.md"),
-    );
+    await createDirectoryLink(linked, path.join(skills, "linked"));
+    if (await canCreateFileSymlink()) {
+      await fs.mkdir(path.join(skills, "escape"), { recursive: true });
+      await fs.symlink(
+        path.join(home, "outside.md"),
+        path.join(skills, "escape", "SKILL.md"),
+      );
+    } else {
+      // Windows without the symlink privilege cannot link a file. The linked
+      // skill directory is refused by the same symlink check.
+      const outsideSkill = path.join(root, "outside-skill");
+      await writeFile(
+        path.join(outsideSkill, "SKILL.md"),
+        skill("escape", "outside body"),
+      );
+      await createDirectoryLink(outsideSkill, path.join(skills, "escape"));
+    }
     await writeFile(path.join(home, "outside.md"), "outside");
     await writeFile(
       path.join(skills, "huge", "SKILL.md"),
@@ -431,7 +444,7 @@ test("skill installation refuses symlinks and never creates a root on removal", 
       skill("linked-source", "body"),
     );
     const linked = path.join(root, "linked-source");
-    await fs.symlink(real, linked);
+    await createDirectoryLink(real, linked);
     await assert.rejects(
       () => core.installSkill({ paths, source: linked, scope: "user" }),
       /must not be a symlink/u,
@@ -442,7 +455,7 @@ test("skill installation refuses symlinks and never creates a root on removal", 
       path.join(source, "SKILL.md"),
       skill("nested-link", "body"),
     );
-    await fs.symlink(real, path.join(source, "escape"));
+    await createDirectoryLink(real, path.join(source, "escape"));
     await assert.rejects(
       () => core.installSkill({ paths, source, scope: "user" }),
       /contains a symlink/u,

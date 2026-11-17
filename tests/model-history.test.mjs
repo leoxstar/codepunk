@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { assertPrivateFile, withTempDirectory } from "./support/helpers.mjs";
 import { importSource } from "./support/core.mjs";
 
 const historyModule = await importSource("packages/cli/src/model-history.ts");
@@ -60,8 +60,7 @@ test("model history stays private and reports unreadable state", async () => {
   await withTempDirectory("codepunk-model-history-", async (root) => {
     await historyModule.recordRecentModel(root, "local/chat");
     const file = historyModule.modelHistoryPath(root);
-    const stat = await fs.stat(file);
-    assert.equal(stat.mode & 0o777, 0o600);
+    await assertPrivateFile(file);
 
     await fs.writeFile(file, "{not json\n");
     const corrupt = await historyModule.readModelHistory(root);
