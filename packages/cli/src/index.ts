@@ -2110,18 +2110,30 @@ async function commandPin(options: CliOptions): Promise<number> {
   // Prefer the daemon so a running server stays the only writer for this
   // project; fall back to the direct store write when no daemon is listening,
   // which is the normal case for a one-shot CLI call.
-  const client = new DaemonClient({
-    socketPath: daemonSocketPath(paths, options.socket),
-  });
-  try {
-    await client.pinSession(sessionId, pinned);
-  } catch (error) {
-    if (
-      !(error instanceof DaemonClientError) ||
-      error.code !== "daemon.unavailable"
-    ) {
-      throw error;
+  // Windows cannot host the Unix-socket daemon at all, so it always takes the
+  // direct store path. Asking for the socket path there would throw before
+  // the fallback could run.
+  let client: DaemonClient | null = null;
+  if (process.platform === "darwin" || process.platform === "linux") {
+    client = new DaemonClient({
+      socketPath: daemonSocketPath(paths, options.socket),
+    });
+  }
+  let handled = false;
+  if (client !== null) {
+    try {
+      await client.pinSession(sessionId, pinned);
+      handled = true;
+    } catch (error) {
+      if (
+        !(error instanceof DaemonClientError) ||
+        error.code !== "daemon.unavailable"
+      ) {
+        throw error;
+      }
     }
+  }
+  if (!handled) {
     await pinSession(
       {
         rootDir: paths.home,

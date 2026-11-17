@@ -7,6 +7,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
+  assertPrivateFile,
+  createDirectoryLink,
   ensureBuilt,
   escapeRegExp,
   PRODUCT_VERSION,
@@ -24,6 +26,7 @@ const core = await importCore();
 // configured, so the provider credentials of the machine running the suite must
 // not reach the CLI.
 const BASE_ENV = withoutAmbientProviderEnv();
+const SCOPED_RULE_COMMAND = process.platform === "win32" ? "robocopy" : "touch";
 
 async function runCli(args, { cwd, home }) {
   return execFileAsync(process.execPath, [await ensureBuilt(), ...args], {
@@ -256,7 +259,7 @@ test("the runtime reports ignored unsafe project config", async () => {
       path.join(external, "policy.toml"),
       ["version = 1", 'write_set = ["src/"]', ""].join("\n"),
     );
-    await fs.symlink(external, path.join(project, ".codepunk"), "dir");
+    await createDirectoryLink(external, path.join(project, ".codepunk"));
     await assert.rejects(
       () => runCli(["-p", "hello"], { cwd: project, home }),
       (error) => {
@@ -331,7 +334,7 @@ test("sessions and memory commands work through the product surface", async () =
       ),
     );
     assert.ok(!JSON.stringify(memoryExport).includes(home));
-    assert.equal((await fs.stat(memoryExportPath)).mode & 0o777, 0o600);
+    await assertPrivateFile(memoryExportPath);
 
     const archivedId = (
       await runCli(["memory", "add", "archive through the cli"], {
@@ -1036,7 +1039,7 @@ test("permission commands show effective modes, explain commands, and persist pr
     const paths = core.projectPaths(context, home);
     const persisted = await core.persistScopedRule({
       paths,
-      argv: ["touch", "approved-exact.txt"],
+      argv: [SCOPED_RULE_COMMAND, "approved-exact.txt"],
       cwd: project,
       filePath: path.join(home, "scoped-rules.toml"),
     });
@@ -1049,7 +1052,10 @@ test("permission commands show effective modes, explain commands, and persist pr
       home,
     });
     assert.match(rules.stdout, /scoped rules: 1/u);
-    assert.match(rules.stdout, /touch approved-exact\.txt/u);
+    assert.match(
+      rules.stdout,
+      new RegExp(`${SCOPED_RULE_COMMAND} approved-exact\\.txt`, "u"),
+    );
     const scopedWhy = await runCli(
       [
         "--sandbox",
@@ -1058,7 +1064,7 @@ test("permission commands show effective modes, explain commands, and persist pr
         "permissions",
         "why",
         "--",
-        "touch",
+        SCOPED_RULE_COMMAND,
         "approved-exact.txt",
       ],
       { cwd: project, home },
@@ -1133,7 +1139,7 @@ test("--add-dir extends file policy for permission inspection but not project re
       home,
     });
     assert.match(shown.stdout, /extra file roots: /u);
-    assert.match(shown.stdout, new RegExp(extra.replaceAll(".", "\\."), "u"));
+    assert.match(shown.stdout, new RegExp(escapeRegExp(extra), "u"));
 
     const denied = await runCli(
       [
@@ -1334,7 +1340,11 @@ test("models commands import, select, and report a local endpoint", async () => 
       });
       assert.match(listed.stdout, /selected: local\/local\/chat/u);
       assert.match(listed.stdout, /\[auth, selected, custom, reasoning\]/u);
-      const doctor = await runCli(["doctor"], { cwd: project, home });
+      // On Windows, doctor exits non-zero because srt is a blocking issue.
+      // The model-health line is still the assertion under test here.
+      const doctor = await runCli(["doctor"], { cwd: project, home }).catch(
+        (error) => error,
+      );
       assert.match(
         doctor.stdout,
         /\[ok\] model: model catalog and credential/u,
