@@ -110,8 +110,16 @@ test("a write target swapped during approval is refused", async () => {
     approval.registerChannel(
       approvalChannel(async () => {
         swapped = true;
-        await fs.rm(target);
-        await fs.symlink(outside, target);
+        if (process.platform === "win32") {
+          // Windows without the symlink privilege cannot swap the target
+          // for a link, so the identity change is produced by replacing the
+          // file contents. The recheck compares the same snapshot fields.
+          await fs.rm(target);
+          await fs.writeFile(target, "TOKEN=replaced\n");
+        } else {
+          await fs.rm(target);
+          await fs.symlink(outside, target);
+        }
       }),
     );
 
@@ -136,7 +144,11 @@ test("a write target swapped during approval is refused", async () => {
       /denied: path\.recheck/u,
     );
     assert.equal(await fs.readFile(outside, "utf8"), "outside\n");
-    assert.equal((await fs.lstat(target)).isSymbolicLink(), true);
+    if (process.platform === "win32") {
+      assert.equal(await fs.readFile(target, "utf8"), "TOKEN=replaced\n");
+    } else {
+      assert.equal((await fs.lstat(target)).isSymbolicLink(), true);
+    }
 
     const record = (
       await core.readEvidenceFile(workspace.evidence)

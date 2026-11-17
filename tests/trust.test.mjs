@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  assertPrivateFile,
+  canCreateFileSymlink,
+  createDirectoryLink,
+  createLinkedEntry,
   ensureBuilt,
   trustWorkspace,
   withTempDirectory,
@@ -129,7 +133,17 @@ test("trust preview identifies resources without following symlinks", async () =
       "---\nname: team\ndescription: team\n---\nbody\n",
     );
     await writeFile(outside, "OUTSIDE_SECRET\n");
-    await fs.symlink(outside, path.join(project, ".codepunk", "local.toml"));
+    if (await canCreateFileSymlink()) {
+      await fs.symlink(outside, path.join(project, ".codepunk", "local.toml"));
+    } else {
+      const junctionTarget = path.join(root, "outside-dir");
+      await fs.mkdir(junctionTarget);
+      await createLinkedEntry(
+        outside,
+        path.join(project, ".codepunk", "local.toml"),
+        junctionTarget,
+      );
+    }
 
     const previews = await core.previewWorkspaceTrustResources(project);
     const config = previews.find(
@@ -234,48 +248,62 @@ test("every protected resource maps to an explicit skipped class", async () => {
   );
 });
 
-test("trust preview reports an unreadable resource instead of failing startup", async () => {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    return;
-  }
-  await withTempDirectory("codepunk-trust-unreadable-", async (root) => {
-    const project = path.join(root, "project");
-    const locked = path.join(project, ".codepunk", "skills", "locked");
-    await writeFile(
-      path.join(locked, "SKILL.md"),
-      "---\nname: locked\ndescription: locked\n---\nbody\n",
-    );
-    await fs.chmod(locked, 0o000);
-    try {
-      const resources = await core.findTrustRequiringProjectResources(project);
-      assert.deepEqual(resources, [".codepunk/skills"]);
-
-      const previews = await core.previewWorkspaceTrustResources(project);
-      const skills = previews.find(
-        (preview) => preview.path === ".codepunk/skills",
-      );
-      assert.equal(skills?.type, "directory");
-      assert.equal(skills?.bytes, null);
-      assert.equal(skills?.sha256, null);
-      assert.equal(skills?.reason, "unreadable");
-      assert.match(
-        core.formatWorkspaceTrust(
-          trustFixture({
-            cwd: project,
-            root: project,
-            resources,
-            storePath: path.join(root, "home", "trust.json"),
-            resourceStorePath: path.join(root, "home", "workspace-trust.json"),
-          }),
-          previews,
-        ),
-        /\[skills\] \.codepunk\/skills \(directory\)\n    unreadable/u,
-      );
-    } finally {
-      await fs.chmod(locked, 0o700);
+test(
+  "trust preview reports an unreadable resource instead of failing startup",
+  {
+    skip:
+      process.platform === "win32"
+        ? "POSIX permission bits do not make a directory unreadable on Windows"
+        : false,
+  },
+  async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      return;
     }
-  });
-});
+    await withTempDirectory("codepunk-trust-unreadable-", async (root) => {
+      const project = path.join(root, "project");
+      const locked = path.join(project, ".codepunk", "skills", "locked");
+      await writeFile(
+        path.join(locked, "SKILL.md"),
+        "---\nname: locked\ndescription: locked\n---\nbody\n",
+      );
+      await fs.chmod(locked, 0o000);
+      try {
+        const resources =
+          await core.findTrustRequiringProjectResources(project);
+        assert.deepEqual(resources, [".codepunk/skills"]);
+
+        const previews = await core.previewWorkspaceTrustResources(project);
+        const skills = previews.find(
+          (preview) => preview.path === ".codepunk/skills",
+        );
+        assert.equal(skills?.type, "directory");
+        assert.equal(skills?.bytes, null);
+        assert.equal(skills?.sha256, null);
+        assert.equal(skills?.reason, "unreadable");
+        assert.match(
+          core.formatWorkspaceTrust(
+            trustFixture({
+              cwd: project,
+              root: project,
+              resources,
+              storePath: path.join(root, "home", "trust.json"),
+              resourceStorePath: path.join(
+                root,
+                "home",
+                "workspace-trust.json",
+              ),
+            }),
+            previews,
+          ),
+          /\[skills\] \.codepunk\/skills \(directory\)\n    unreadable/u,
+        );
+      } finally {
+        await fs.chmod(locked, 0o700);
+      }
+    });
+  },
+);
 
 test("trust preview does not read through a symlinked resource directory", async () => {
   await withTempDirectory("codepunk-trust-linked-dir-", async (root) => {
@@ -290,7 +318,7 @@ test("trust preview does not read through a symlinked resource directory", async
       "---\nname: team\ndescription: team\n---\nbody\n",
     );
     await fs.mkdir(project, { recursive: true });
-    await fs.symlink(outside, path.join(project, ".codepunk"));
+    await createDirectoryLink(outside, path.join(project, ".codepunk"));
 
     const previews = await core.previewWorkspaceTrustResources(project);
     assert.ok(previews.length > 0);
@@ -721,7 +749,7 @@ test("trust decisions use the canonical target behind a symlink", async () => {
       path.join(project, ".codepunk", "config.toml"),
       "[memory]\nmax_tokens = 400\n",
     );
-    await fs.symlink(project, link, "dir");
+    await createDirectoryLink(project, link);
     const saved = await core.saveWorkspaceTrust(home, link, true);
     assert.equal(saved, path.join(home, "trust.json"));
     const resolved = await core.resolveWorkspaceTrust({
@@ -963,12 +991,7 @@ test("per-resource trust loads only the granted project layers", async () => {
       skills: false,
       instructions: true,
     });
-    if (process.platform !== "win32") {
-      assert.equal(
-        (await fs.stat(path.join(home, "workspace-trust.json"))).mode & 0o777,
-        0o600,
-      );
-    }
+    await assertPrivateFile(path.join(home, "workspace-trust.json"));
     const trust = await core.resolveWorkspaceTrust({
       cwd: project,
       root: project,

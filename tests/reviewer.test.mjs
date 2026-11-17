@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
+import { assertPrivateFile } from "./support/helpers.mjs";
 
 const core = await importCore();
 
@@ -851,10 +852,7 @@ test("reviewer config is user-only and writes preserve unrelated config", async 
     assert.match(content, /reviewer = "model"/u);
     assert.match(content, /reviewer_model = "gateway\/reviewer"/u);
     assert.match(content, /reviewer_timeout_ms = 15000/u);
-    assert.equal(
-      (await fs.stat(path.join(home, "config.toml"))).mode & 0o777,
-      0o600,
-    );
+    await assertPrivateFile(path.join(home, "config.toml"));
     const loaded = await core.loadConfig(
       paths,
       {},

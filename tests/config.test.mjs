@@ -4,6 +4,9 @@ import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  assertPrivateFile,
+  canCreateFileSymlink,
+  createDirectoryLink,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -254,33 +257,42 @@ test("config reload turns loaded plugins off without restarting", async () => {
   });
 });
 
-test("read-only autonomy removes the runtime sandbox write grant", async () => {
-  await withTempDirectory("codepunk-config-readonly-", async (root) => {
-    const { projectRoot, paths } = await makeProject(root);
-    await writeFile(
-      path.join(paths.home, "config.toml"),
-      ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
-    );
-    const runtime = await core.createRuntime({
-      cwd: projectRoot,
-      environment: { CODEPUNK_HOME: paths.home },
-      approvalChannel: null,
-      allowMissingModel: true,
-    });
-    try {
-      assert.ok(runtime.sandbox);
-      const target = path.join(projectRoot, "read-only-probe.txt");
-      const write = await runtime.sandbox.execCommand(
-        `printf blocked > ${JSON.stringify(target)}`,
-        projectRoot,
+test(
+  "read-only autonomy removes the runtime sandbox write grant",
+  {
+    skip:
+      process.platform === "win32"
+        ? "the srt sandbox is not provisioned on this Windows host"
+        : false,
+  },
+  async () => {
+    await withTempDirectory("codepunk-config-readonly-", async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      await writeFile(
+        path.join(paths.home, "config.toml"),
+        ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
       );
-      assert.notEqual(write.exitCode, 0, write.output);
-      await assert.rejects(fs.stat(target), { code: "ENOENT" });
-    } finally {
-      await runtime.dispose();
-    }
-  });
-});
+      const runtime = await core.createRuntime({
+        cwd: projectRoot,
+        environment: { CODEPUNK_HOME: paths.home },
+        approvalChannel: null,
+        allowMissingModel: true,
+      });
+      try {
+        assert.ok(runtime.sandbox);
+        const target = path.join(projectRoot, "read-only-probe.txt");
+        const write = await runtime.sandbox.execCommand(
+          `printf blocked > ${JSON.stringify(target)}`,
+          projectRoot,
+        );
+        assert.notEqual(write.exitCode, 0, write.output);
+        await assert.rejects(fs.stat(target), { code: "ENOENT" });
+      } finally {
+        await runtime.dispose();
+      }
+    });
+  },
+);
 
 test("read-only autonomy skips plugins enabled by persisted config", async () => {
   await withTempDirectory("codepunk-config-readonly-plugins-", async (root) => {
@@ -624,7 +636,7 @@ test("permission changes preserve unrelated user config and stay owner-only", as
       /\[model\]\nprovider = "gateway"\nid = "primary-model"/u,
     );
     assert.match(content, /\[memory\]\nmax_tokens = 900/u);
-    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+    await assertPrivateFile(configPath);
     const loaded = await core.loadConfig(paths);
     assert.equal(loaded.config.approval.mode, "deny");
     assert.equal(loaded.config.autonomy.profile, "read-only");
@@ -670,7 +682,7 @@ test("thinking changes preserve the selected model and unrelated config", async 
       /\[model\]\nprovider = "gateway"\nid = "primary-model"\nthinking = "max"/u,
     );
     assert.match(content, /\[memory\]\nmax_tokens = 900/u);
-    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+    await assertPrivateFile(configPath);
     assert.equal((await core.loadConfig(paths)).config.model.thinking, "max");
 
     const before = await fs.readFile(configPath, "utf8");
@@ -891,6 +903,8 @@ test("telemetry stays off because it is not implemented", async () => {
 test("unsafe project config files are ignored", async () => {
   await withTempDirectory("codepunk-config-files-", async (root) => {
     const { paths } = await makeProject(root);
+    const external = path.join(root, "external");
+    await fs.mkdir(external);
     const externalConfig = path.join(root, "external-config.toml");
     const externalPolicy = path.join(root, "external-policy.toml");
     await writeFile(
@@ -901,16 +915,31 @@ test("unsafe project config files are ignored", async () => {
       externalPolicy,
       ["version = 1", 'write_set = ["src/"]', ""].join("\n"),
     );
-    await fs.symlink(
-      externalConfig,
-      path.join(paths.projectConfigDir, "config.toml"),
-      "file",
-    );
-    await fs.symlink(
-      externalPolicy,
-      path.join(paths.projectConfigDir, "policy.toml"),
-      "file",
-    );
+    const fileSymlinks = await canCreateFileSymlink();
+    if (fileSymlinks) {
+      await fs.symlink(
+        externalConfig,
+        path.join(paths.projectConfigDir, "config.toml"),
+        "file",
+      );
+      await fs.symlink(
+        externalPolicy,
+        path.join(paths.projectConfigDir, "policy.toml"),
+        "file",
+      );
+    } else {
+      // Windows without the symlink privilege cannot link a file. A
+      // junction under the same name is refused by the same symlink check
+      // in the project config reader.
+      await createDirectoryLink(
+        external,
+        path.join(paths.projectConfigDir, "config.toml"),
+      );
+      await createDirectoryLink(
+        external,
+        path.join(paths.projectConfigDir, "policy.toml"),
+      );
+    }
 
     const loaded = await core.loadConfig(paths, {});
     assert.equal(loaded.config.memory.max_tokens, 800);
@@ -935,7 +964,7 @@ test("an unsafe project config directory is ignored", async () => {
       ["version = 1", 'write_set = ["src/"]', ""].join("\n"),
     );
     await fs.rm(paths.projectConfigDir, { recursive: true, force: true });
-    await fs.symlink(external, paths.projectConfigDir, "dir");
+    await createDirectoryLink(external, paths.projectConfigDir);
 
     const loaded = await core.loadConfig(paths, {});
     assert.equal(loaded.config.memory.max_tokens, 800);
@@ -1123,7 +1152,7 @@ test("plugin enablement preserves unrelated user config", async () => {
     const content = await fs.readFile(configPath, "utf8");
     assert.match(content, /# user settings/u);
     assert.match(content, /\[plugins\]\nenabled = true/u);
-    assert.equal((await fs.stat(configPath)).mode & 0o077, 0);
+    await assertPrivateFile(configPath);
 
     await core.writeUserPluginsEnabled(paths, false);
     assert.equal(

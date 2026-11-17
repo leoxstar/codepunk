@@ -13,6 +13,7 @@ import {
   SESSION_ID,
 } from "./support/fixtures.mjs";
 import {
+  assertPrivateFile,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -605,7 +606,7 @@ test("TaskGraph rejects invalid transitions and worktrees preserve commits", asy
       baseCommit,
       tempRoot: path.join(root, "worktrees"),
     });
-    assert.equal((await fs.stat(worktree.path)).mode & 0o777, 0o700);
+    await assertPrivateFile(worktree.path, 0o700);
     const linkedContext = await core.findDeliveryRoot(worktree.path);
     assert.equal(linkedContext.deliveryRoot, await fs.realpath(worktree.path));
     assert.equal(linkedContext.isGitRepository, true);

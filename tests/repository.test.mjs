@@ -17,6 +17,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { checkRepository } from "../scripts/check-repo.mjs";
+import {
+  canCreateFileSymlink,
+  FILE_SYMLINK_SKIP_REASON,
+} from "./support/helpers.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -870,7 +874,11 @@ test("built-entry check fails when output is older than source", async () => {
   }
 });
 
-test("symlinked checker invocation is not a silent no-op", async () => {
+test("symlinked checker invocation is not a silent no-op", async (t) => {
+  if (!(await canCreateFileSymlink())) {
+    t.skip(FILE_SYMLINK_SKIP_REASON);
+    return;
+  }
   const fixture = await copyRepositoryToTemporaryDirectory();
   try {
     const linkedScript = path.join(fixture.temporaryRoot, "check-link.mjs");

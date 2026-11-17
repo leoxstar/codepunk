@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  assertPrivateFile,
   ensureBuilt,
   trustWorkspace,
   withTempDirectory,
@@ -1065,10 +1066,7 @@ test("OAuth MCP login persists tokens, refreshes them, and fails closed when rev
       assert.equal(status.signed_in, true);
       assert.equal(status.scope, "mcp.read");
       assert.match(status.expires_at, /^\d{4}-\d{2}-\d{2}T/u);
-      if (process.platform !== "win32") {
-        const authFile = await fs.stat(store.path);
-        assert.equal(authFile.mode & 0o777, 0o600);
-      }
+      await assertPrivateFile(store.path);
 
       const connected = await core.loadMcpTools({ paths });
       try {
@@ -1857,7 +1855,7 @@ test("MCP management preserves unrelated config and checks a real connection", a
     assert.match(config, /\[servers\.keep\]/u);
     assert.match(config, /\[servers\.echo\]/u);
     assert.match(config, /MCP_FIXTURE_TEXT = "\$\{MCP_FIXTURE_TEXT\}"/u);
-    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+    await assertPrivateFile(configPath);
 
     const duplicate = await runCli(
       ["mcp", "add", "echo", "--", "node", FIXTURE],
