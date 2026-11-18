@@ -75,12 +75,32 @@ test("doctor passes with an injected healthy environment", async () => {
     const report = await core.runDoctor({
       paths,
       config: core.defaultConfig(),
+      platform: "darwin",
       environment: { PATH: "" },
       sandboxProbe: async () => null,
       modelProbe: async () => null,
     });
     assert.equal(report.ok, true);
     assert.match(core.formatDoctor(report), /doctor: ready/u);
+  });
+});
+
+test("doctor does not report ready on an unsupported platform", async () => {
+  await withTempDirectory("codepunk-operations-platform-", async (root) => {
+    const { paths } = await makeProject(root);
+    const report = await core.runDoctor({
+      paths,
+      config: core.defaultConfig(),
+      platform: "win32",
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+    });
+    assert.equal(report.ok, false);
+    const platform = report.checks.find((check) => check.id === "platform");
+    assert.equal(platform?.status, "error");
+    assert.match(platform?.message ?? "", /win32/u);
+    assert.match(core.formatDoctor(report), /doctor: blocking issues remain/u);
   });
 });
 

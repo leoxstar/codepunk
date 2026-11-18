@@ -54,13 +54,26 @@ const SENSITIVE_BASENAMES = new Set([
   "auth.json",
 ]);
 
+function isInsideSensitiveRoot(parent: string, child: string): boolean {
+  // Sensitive-path matching is deliberately conservative: a case variant on a
+  // case-insensitive filesystem, or a case-only sibling on a case-sensitive
+  // one, must not turn a protected path into a routine one.
+  const resolvedParent = normalizeAbsolute(parent).toLowerCase();
+  const resolvedChild = normalizeAbsolute(child).toLowerCase();
+  const relative = path.relative(resolvedParent, resolvedChild);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
 export function isSensitivePath(
   candidate: string,
   codepunkHome?: string,
   projectRoot?: string | readonly string[],
 ): boolean {
   const normalized = normalizeAbsolute(candidate);
-  if (codepunkHome && isInsidePath(codepunkHome, normalized)) {
+  if (codepunkHome && isInsideSensitiveRoot(codepunkHome, normalized)) {
     return true;
   }
   const projectRoots =
@@ -71,12 +84,15 @@ export function isSensitivePath(
         : projectRoot;
   if (
     projectRoots.some((root) =>
-      isInsidePath(path.join(normalizeAbsolute(root), ".codepunk"), normalized),
+      isInsideSensitiveRoot(
+        path.join(normalizeAbsolute(root), ".codepunk"),
+        normalized,
+      ),
     )
   ) {
     return true;
   }
-  const base = path.basename(normalized);
+  const base = path.basename(normalized).toLowerCase();
   if (base === ".env.example") {
     return false;
   }
@@ -88,7 +104,7 @@ export function isSensitivePath(
   }
   return normalized
     .split(path.sep)
-    .some((segment) => SENSITIVE_BASENAMES.has(segment));
+    .some((segment) => SENSITIVE_BASENAMES.has(segment.toLowerCase()));
 }
 
 /**

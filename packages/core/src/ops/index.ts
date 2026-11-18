@@ -32,6 +32,11 @@ export interface DoctorReport {
 export interface DoctorOptions {
   paths: ProjectPaths;
   config: CodepunkConfig;
+  /**
+   * Test seam for platform-specific doctor behavior. Production uses the
+   * running platform.
+   */
+  platform?: NodeJS.Platform;
   projectTrusted?: boolean;
   environment?: NodeJS.ProcessEnv;
   /**
@@ -51,11 +56,12 @@ export interface DoctorOptions {
 
 async function defaultSandboxProbe(
   paths: ProjectPaths,
+  platform: NodeJS.Platform,
 ): Promise<string | null> {
   // Windows initialize() stamps persistent ACLs over the workspace. A
   // doctor probe must answer "can this shell run?" without changing the
   // filesystem, so it uses the stateless dependency check there.
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     return probeSrtSandbox({
       cwd: paths.cwd,
       workspaceRoot: paths.deliveryRoot,
@@ -87,6 +93,7 @@ async function defaultModelProbe(
 }
 
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
+  const platform = options.platform ?? process.platform;
   const environment =
     options.environment ??
     (options.paths.home
@@ -105,20 +112,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   });
   checks.push({
     id: "platform",
-    status:
-      process.platform === "darwin" || process.platform === "linux"
-        ? "ok"
-        : "warn",
-    message: `${process.platform} ${process.arch}`,
+    status: platform === "darwin" || platform === "linux" ? "ok" : "error",
+    message: `${platform} ${process.arch}`,
     hint:
-      process.platform === "darwin" || process.platform === "linux"
+      platform === "darwin" || platform === "linux"
         ? null
-        : "Windows is not currently supported",
+        : `${platform} is not currently supported; doctor must not report ready until the platform has real install, sandbox, TUI, and ACL evidence`,
   });
   const sandboxIssue =
     typeof options.sandboxProbe === "function"
       ? await options.sandboxProbe()
-      : await defaultSandboxProbe(options.paths);
+      : await defaultSandboxProbe(options.paths, platform);
   checks.push({
     id: "srt",
     status: sandboxIssue === null ? "ok" : "error",
@@ -257,7 +261,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   });
   return {
     ok: checks.every((check) => check.status !== "error"),
-    platform: process.platform,
+    platform,
     codepunkHome: options.paths.home,
     checks,
   };
