@@ -57,6 +57,7 @@ import {
   shellUnavailableReason as defaultShellUnavailableReason,
 } from "../permissions/index.ts";
 import { agentShellEnvironment, type ShellProvider } from "../sandbox/index.ts";
+import { toolExecutionPolicy } from "../tools/index.ts";
 
 const NONE_SANDBOX: SandboxDescriptor = {
   backend: "none",
@@ -126,10 +127,68 @@ export interface ToolWrapOptions {
     timedOut: boolean;
   }) => Promise<void> | void;
   onUserBashFailure?: (message: string) => Promise<void> | void;
+  budget?: {
+    maxToolCalls?: number;
+    maxWallMs?: number;
+  };
+  onExecutionEvent?: (
+    kind:
+      | "loop_guard"
+      | "budget/exceeded"
+      | "network/request"
+      | "network/redirect"
+      | "network/rejected",
+    data: unknown,
+  ) => Promise<void> | void;
+  onBudgetAbort?: () => Promise<void> | void;
+  verifyToolResult?: (input: {
+    tool: string;
+    params: Record<string, unknown>;
+    target: string | null;
+    before: FileSnapshot;
+    after: FileSnapshot;
+    result: AnyToolResult;
+  }) =>
+    | Promise<{ result: "pass" | "fail"; reason: string | null }>
+    | { result: "pass" | "fail"; reason: string | null };
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 type AnyToolResult = AgentToolResult<any>;
+
+export interface ToolExecutionState {
+  runId: string | null;
+  usedToolCalls: number;
+  wallStartedAt: number;
+  lastLoopFingerprint: string | null;
+  repeatCount: number;
+  idempotentResults: Map<string, string>;
+}
+
+const executionStates = new WeakMap<object, ToolExecutionState>();
+
+function executionStateFor(options: ToolWrapOptions): ToolExecutionState {
+  let state = executionStates.get(options);
+  if (state === undefined) {
+    state = {
+      runId: null,
+      usedToolCalls: 0,
+      wallStartedAt: performance.now(),
+      lastLoopFingerprint: null,
+      repeatCount: 0,
+      idempotentResults: new Map(),
+    };
+    executionStates.set(options, state);
+  }
+  if (state.runId !== options.runId) {
+    state.runId = options.runId;
+    state.usedToolCalls = 0;
+    state.wallStartedAt = performance.now();
+    state.lastLoopFingerprint = null;
+    state.repeatCount = 0;
+  }
+  return state;
+}
 
 interface FileSnapshot {
   exists: boolean;
@@ -150,6 +209,139 @@ function emptySnapshot(): FileSnapshot {
 
 function isShellTool(name: string): boolean {
   return name === "bash" || name === "exec" || name === "user_bash";
+}
+
+function canonicalShellArgv(
+  tool: string,
+  params: Record<string, unknown>,
+  rawCommand?: string,
+): string[] | null {
+  if (tool === "exec") {
+    return argvParam(params);
+  }
+  if (tool !== "bash" && tool !== "user_bash") {
+    return null;
+  }
+  const command =
+    rawCommand ??
+    (typeof params["command"] === "string" ? params["command"] : null);
+  if (command === null || command.length === 0) {
+    return null;
+  }
+  return simpleShellArgv(command) ?? ["<raw-shell>", command];
+}
+
+function loopFingerprint(
+  tool: string,
+  argv: readonly string[],
+  cwd: string,
+): string {
+  return sha256Text(
+    canonicalJson({
+      tool,
+      canonical_argv: [...argv],
+      cwd: normalizeAbsolute(cwd),
+    }),
+  );
+}
+
+function mutationIdempotencyKey(
+  tool: string,
+  target: string | null,
+  params: Record<string, unknown>,
+): string | null {
+  if (target === null || (tool !== "write" && tool !== "edit")) {
+    return null;
+  }
+  if (tool === "write" && typeof params["content"] === "string") {
+    return sha256Text(
+      canonicalJson({
+        tool,
+        path: target,
+        content_sha256: sha256Text(params["content"]),
+      }),
+    );
+  }
+  if (tool === "edit" && Array.isArray(params["edits"])) {
+    return sha256Text(
+      canonicalJson({
+        tool,
+        path: target,
+        edits: params["edits"],
+      }),
+    );
+  }
+  return null;
+}
+
+function expectedMutationBytes(
+  tool: string,
+  params: Record<string, unknown>,
+  before: FileSnapshot,
+): Buffer | null {
+  if (tool === "write" && typeof params["content"] === "string") {
+    return Buffer.from(params["content"], "utf8");
+  }
+  if (tool !== "edit" || !before.exists || !Array.isArray(params["edits"])) {
+    return null;
+  }
+  let candidate = before.bytes.toString("utf8");
+  if (candidate.includes("\0")) {
+    return null;
+  }
+  for (const edit of params["edits"]) {
+    const record =
+      edit !== null && typeof edit === "object"
+        ? (edit as Record<string, unknown>)
+        : null;
+    if (
+      record === null ||
+      typeof record["oldText"] !== "string" ||
+      typeof record["newText"] !== "string"
+    ) {
+      return null;
+    }
+    const oldText = record["oldText"];
+    const newText = record["newText"];
+    const first = candidate.indexOf(oldText);
+    if (first < 0 || candidate.indexOf(oldText, first + 1) >= 0) {
+      return null;
+    }
+    candidate =
+      candidate.slice(0, first) +
+      newText +
+      candidate.slice(first + oldText.length);
+  }
+  return Buffer.from(candidate, "utf8");
+}
+
+async function verifyMutationResult(input: {
+  tool: string;
+  params: Record<string, unknown>;
+  target: string | null;
+  before: FileSnapshot;
+  after: FileSnapshot;
+  result: AnyToolResult;
+}): Promise<{ result: "pass" | "fail"; reason: string | null }> {
+  if (input.target === null) {
+    return { result: "pass", reason: null };
+  }
+  const expected = expectedMutationBytes(
+    input.tool,
+    input.params,
+    input.before,
+  );
+  if (expected === null) {
+    return { result: "pass", reason: null };
+  }
+  const actual = await fs.readFile(input.target);
+  if (actual.equals(expected)) {
+    return { result: "pass", reason: null };
+  }
+  return {
+    result: "fail",
+    reason: "the file content does not match the requested mutation",
+  };
 }
 
 function argvParam(params: Record<string, unknown>): string[] | null {
@@ -414,6 +606,23 @@ function textResult(text: string): AnyToolResult {
   };
 }
 
+function alreadyAppliedResult(
+  tool: string,
+  target: string,
+  idempotencyKey: string,
+): AnyToolResult {
+  const message = `already_applied: ${tool} ${target} (${idempotencyKey})`;
+  return {
+    content: [{ type: "text", text: message }],
+    details: {},
+    structuredContent: {
+      already_applied: true,
+      idempotency_key: idempotencyKey,
+      path: target,
+    },
+  };
+}
+
 function resultText(result: AnyToolResult): string {
   return result.content
     .map((part) =>
@@ -571,6 +780,11 @@ function baseRecord(
     executor: string | null;
     memory?: EvidenceRecord["memory"];
     autonomy?: AutonomyEvidence | null;
+    budgetExceeded?: EvidenceRecord["budget_exceeded"];
+    idempotencyKey?: EvidenceRecord["idempotency_key"];
+    reused?: EvidenceRecord["reused"];
+    retry?: EvidenceRecord["retry"];
+    verify?: EvidenceRecord["verify"];
   },
 ): Omit<
   EvidenceRecord,
@@ -623,6 +837,15 @@ function baseRecord(
       truncated: false,
     },
     ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
+    ...(input.budgetExceeded !== undefined
+      ? { budget_exceeded: input.budgetExceeded }
+      : {}),
+    ...(input.idempotencyKey !== undefined
+      ? { idempotency_key: input.idempotencyKey }
+      : {}),
+    ...(input.reused !== undefined ? { reused: input.reused } : {}),
+    ...(input.retry !== undefined ? { retry: input.retry } : {}),
+    ...(input.verify !== undefined ? { verify: input.verify } : {}),
   };
 }
 
@@ -806,6 +1029,14 @@ export async function wrapToolDefinition(
         definition.name === "bash" && typeof params["command"] === "string"
           ? params["command"]
           : null;
+      const executionState = executionStateFor(options);
+      const executionPolicy = toolExecutionPolicy(definition.name);
+      const loopArgv = canonicalShellArgv(definition.name, params);
+      const idempotencyKey = mutationIdempotencyKey(
+        definition.name,
+        target,
+        params,
+      );
       const approvalMode = resolveApprovalMode(options);
       const policy = decidePolicy(
         policyRequestForCall({
@@ -867,6 +1098,7 @@ export async function wrapToolDefinition(
         let finalRuleSha256 = gate.rule_sha256;
         let finalReason = gate.reason;
         let scopedRule = gate.scoped_rule;
+        let budgetExceeded: EvidenceRecord["budget_exceeded"];
         const autonomyEvidence = () =>
           autonomy === null ? null : autonomy.evidence(scopedRule);
         if (isShellTool(definition.name) && sandboxProvider === null) {
@@ -880,7 +1112,149 @@ export async function wrapToolDefinition(
                 : (options.shellUnavailableReason ??
                   defaultShellUnavailableReason("required"));
           }
-        } else if (gate.consult_approval) {
+        }
+
+        if (
+          finalDecision !== "deny" &&
+          loopArgv !== null &&
+          isShellTool(definition.name)
+        ) {
+          const fingerprint = loopFingerprint(
+            definition.name,
+            loopArgv,
+            options.cwd,
+          );
+          if (executionState.lastLoopFingerprint === fingerprint) {
+            executionState.repeatCount += 1;
+          } else {
+            executionState.lastLoopFingerprint = fingerprint;
+            executionState.repeatCount = 1;
+          }
+          const threshold = 3;
+          if (executionState.repeatCount > threshold) {
+            finalDecision = "deny";
+            finalRule = "loop_guard";
+            finalRuleSha256 = recordHash({ rule: finalRule });
+            finalReason = `the same command repeated ${executionState.repeatCount} times in a row (threshold ${threshold})`;
+            await options.onExecutionEvent?.("loop_guard", {
+              run_id: options.runId,
+              tool: definition.name,
+              canonical_argv: [...loopArgv],
+              cwd: normalizeAbsolute(options.cwd),
+              repeat_count: executionState.repeatCount,
+              threshold,
+              decision: "deny",
+            });
+          }
+        }
+
+        if (finalDecision !== "deny") {
+          const maxToolCalls = options.budget?.maxToolCalls;
+          if (
+            maxToolCalls !== undefined &&
+            executionState.usedToolCalls >= maxToolCalls
+          ) {
+            budgetExceeded = {
+              run_id: options.runId,
+              limit_kind: "tool_calls",
+              limit: maxToolCalls,
+              used: executionState.usedToolCalls,
+              action: "reject_call",
+            };
+            finalDecision = "deny";
+            finalRule = "budget.tool_calls";
+            finalRuleSha256 = recordHash({ rule: finalRule });
+            finalReason = `tool call budget exhausted (${executionState.usedToolCalls}/${maxToolCalls}); the call was not executed`;
+            await options.onExecutionEvent?.("budget/exceeded", budgetExceeded);
+          } else {
+            const maxWallMs = options.budget?.maxWallMs;
+            const elapsedMs = Math.max(
+              0,
+              Math.round(performance.now() - executionState.wallStartedAt),
+            );
+            if (maxWallMs !== undefined && elapsedMs >= maxWallMs) {
+              budgetExceeded = {
+                run_id: options.runId,
+                limit_kind: "wall_ms",
+                limit: maxWallMs,
+                used: elapsedMs,
+                action: "abort_run",
+              };
+              finalDecision = "deny";
+              finalRule = "budget.wall_ms";
+              finalRuleSha256 = recordHash({ rule: finalRule });
+              finalReason = `wall-clock budget exhausted (${elapsedMs}/${maxWallMs} ms); the call was not executed`;
+              await options.onExecutionEvent?.(
+                "budget/exceeded",
+                budgetExceeded,
+              );
+              await options.onBudgetAbort?.();
+            } else {
+              executionState.usedToolCalls += 1;
+            }
+          }
+        }
+
+        if (
+          finalDecision === "allow" &&
+          idempotencyKey !== null &&
+          target !== null &&
+          before !== null
+        ) {
+          const expectedAfter =
+            executionState.idempotentResults.get(idempotencyKey);
+          if (expectedAfter !== undefined) {
+            const current = await snapshotFile(target);
+            if (current.sha256 === expectedAfter) {
+              const result = alreadyAppliedResult(
+                definition.name,
+                target,
+                idempotencyKey,
+              );
+              const message = resultText(result);
+              await options.ledger.append(
+                baseRecord(options, {
+                  source: evidenceSource(definition.name),
+                  tool: definition.name,
+                  toolCallId,
+                  decision: "allow",
+                  outcome: "completed",
+                  rule: "idempotency.already_applied",
+                  ruleSha256: recordHash({
+                    rule: "idempotency.already_applied",
+                  }),
+                  policyLayers: policy.layers,
+                  approval: null,
+                  command,
+                  commandArgv,
+                  pathTarget: target,
+                  sandbox: NONE_SANDBOX,
+                  coverage: shellCoverage(
+                    definition.name,
+                    true,
+                    sandboxProvider,
+                  ),
+                  coverageBasis: ["policy", "idempotency"],
+                  exitCode: null,
+                  durationMs: 0,
+                  beforeSha256: current.sha256,
+                  afterSha256: current.sha256,
+                  diffSha256: null,
+                  outputRef: null,
+                  outputSha256: outputSha(message),
+                  outputPreview: message,
+                  emptyResult: null,
+                  executor: null,
+                  idempotencyKey,
+                  reused: true,
+                }),
+              );
+              return result;
+            }
+          }
+        }
+
+        if (finalDecision !== "deny" && gate.consult_approval) {
           const approvalArgv = exactApprovalArgv(
             definition.name,
             command,
@@ -1076,6 +1450,7 @@ export async function wrapToolDefinition(
                   ? true
                   : null,
               executor: null,
+              ...(budgetExceeded === undefined ? {} : { budgetExceeded }),
               ...(definition.name === "memory_search"
                 ? {
                     memory: memoryEvidence(
@@ -1141,22 +1516,131 @@ export async function wrapToolDefinition(
           }
         }
 
-        const start = performance.now();
-        let result: AnyToolResult;
-        let executionError: unknown;
-        try {
-          result = await definition.execute(
-            toolCallId,
+        let durationMs = 0;
+        const executeOnce = async (): Promise<{
+          result: AnyToolResult;
+          executionError: unknown;
+        }> => {
+          const start = performance.now();
+          let result: AnyToolResult;
+          let executionError: unknown;
+          try {
+            result = await definition.execute(
+              toolCallId,
+              params,
+              signal,
+              onUpdate,
+              context,
+            );
+          } catch (error) {
+            executionError = error;
+            result = textResult(
+              `tool failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          durationMs += Math.max(0, Math.round(performance.now() - start));
+          return { result, executionError };
+        };
+        let attempt = await executeOnce();
+        let result = attempt.result;
+        let executionError = attempt.executionError;
+        let after =
+          isMutation && target !== null ? await snapshotFile(target) : null;
+        let verifyEvidence: EvidenceRecord["verify"];
+        let retryEvidence: EvidenceRecord["retry"];
+        const maxAttempts =
+          executionPolicy.retry === "safe" &&
+          executionPolicy.idempotent &&
+          executionPolicy.sideEffect === "write"
+            ? 1
+            : 0;
+        const verifyResult = options.verifyToolResult ?? verifyMutationResult;
+        if (
+          isMutation &&
+          target !== null &&
+          before !== null &&
+          after !== null &&
+          result.isError !== true
+        ) {
+          verifyEvidence = await verifyResult({
+            tool: definition.name,
             params,
-            signal,
-            onUpdate,
-            context,
-          );
-        } catch (error) {
-          executionError = error;
-          result = textResult(
-            `tool failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+            target,
+            before,
+            after,
+            result,
+          });
+          if (verifyEvidence.result === "fail" && maxAttempts > 0) {
+            const reason =
+              verifyEvidence.reason ?? "the mutation verifier failed";
+            const failedMessage = `verification failed: ${reason}`;
+            await options.ledger.append(
+              baseRecord(options, {
+                source: evidenceSource(definition.name),
+                tool: definition.name,
+                toolCallId,
+                decision: "allow",
+                outcome: "failed",
+                rule: "verify.failed",
+                ruleSha256: recordHash({ rule: "verify.failed" }),
+                policyLayers: policy.layers,
+                approval: approvalEvidence,
+                reviewer: reviewerEvidence,
+                autonomy: autonomyEvidence(),
+                command,
+                commandArgv,
+                pathTarget: target,
+                sandbox: NONE_SANDBOX,
+                coverage: "app-layer",
+                coverageBasis: ["policy", "verify"],
+                exitCode: null,
+                durationMs: 0,
+                beforeSha256: before.sha256,
+                afterSha256: after.sha256,
+                diffSha256: null,
+                outputRef: null,
+                outputSha256: outputSha(failedMessage),
+                outputPreview: failedMessage,
+                emptyResult: null,
+                executor: null,
+                ...(idempotencyKey === null ? {} : { idempotencyKey }),
+                verify: verifyEvidence,
+                retry: {
+                  attempt: 0,
+                  max_attempts: maxAttempts,
+                  reason,
+                },
+              }),
+            );
+            retryEvidence = {
+              attempt: 1,
+              max_attempts: maxAttempts,
+              reason,
+            };
+            const retryBefore = after;
+            attempt = await executeOnce();
+            result = attempt.result;
+            executionError = attempt.executionError;
+            after = await snapshotFile(target);
+            if (result.isError !== true) {
+              verifyEvidence = await verifyResult({
+                tool: definition.name,
+                params,
+                target,
+                before: retryBefore,
+                after,
+                result,
+              });
+            }
+          }
+          if (verifyEvidence.result === "fail") {
+            result = textResult(
+              `verification failed: ${
+                verifyEvidence.reason ?? "the mutation verifier failed"
+              }`,
+            );
+            executionError = null;
+          }
         }
         const outcome: EvidenceRecord["outcome"] =
           signal?.aborted === true ||
@@ -1168,9 +1652,6 @@ export async function wrapToolDefinition(
             : result.isError === true
               ? "failed"
               : "completed";
-        const durationMs = Math.max(0, Math.round(performance.now() - start));
-        const after =
-          isMutation && target !== null ? await snapshotFile(target) : null;
         const output = resultText(result);
         const shellOutput = structuredString(result, "output");
         const effectiveOutput = shellOutput ?? output;
@@ -1235,6 +1716,13 @@ export async function wrapToolDefinition(
             // must not turn a successful file mutation into a tool failure.
           }
         }
+        if (
+          outcome === "completed" &&
+          idempotencyKey !== null &&
+          after !== null
+        ) {
+          executionState.idempotentResults.set(idempotencyKey, after.sha256);
+        }
         await options.ledger.append(
           baseRecord(options, {
             source: evidenceSource(definition.name),
@@ -1279,6 +1767,9 @@ export async function wrapToolDefinition(
                   ? "srt"
                   : "direct"
                 : null,
+            ...(idempotencyKey === null ? {} : { idempotencyKey }),
+            ...(retryEvidence === undefined ? {} : { retry: retryEvidence }),
+            ...(verifyEvidence === undefined ? {} : { verify: verifyEvidence }),
             ...(definition.name === "memory_search"
               ? {
                   memory: memoryEvidence(
@@ -1420,6 +1911,9 @@ export async function wrapUserBashCommand(
   let finalRuleSha256 = gate.rule_sha256;
   let finalReason = gate.reason;
   let scopedRule = gate.scoped_rule;
+  let budgetExceeded: EvidenceRecord["budget_exceeded"];
+  const executionState = executionStateFor(options);
+  const loopArgv = canonicalShellArgv("user_bash", {}, command);
   const autonomyEvidence = () =>
     autonomy === null ? null : autonomy.evidence(scopedRule);
   if (sandboxProvider === null) {
@@ -1433,7 +1927,79 @@ export async function wrapUserBashCommand(
           : (options.shellUnavailableReason ??
             defaultShellUnavailableReason("required"));
     }
-  } else if (gate.consult_approval) {
+  }
+
+  if (finalDecision !== "deny" && loopArgv !== null) {
+    const fingerprint = loopFingerprint("user_bash", loopArgv, options.cwd);
+    if (executionState.lastLoopFingerprint === fingerprint) {
+      executionState.repeatCount += 1;
+    } else {
+      executionState.lastLoopFingerprint = fingerprint;
+      executionState.repeatCount = 1;
+    }
+    const threshold = 3;
+    if (executionState.repeatCount > threshold) {
+      finalDecision = "deny";
+      finalRule = "loop_guard";
+      finalRuleSha256 = recordHash({ rule: finalRule });
+      finalReason = `the same command repeated ${executionState.repeatCount} times in a row (threshold ${threshold})`;
+      await options.onExecutionEvent?.("loop_guard", {
+        run_id: options.runId,
+        tool: "user_bash",
+        canonical_argv: [...loopArgv],
+        cwd: normalizeAbsolute(options.cwd),
+        repeat_count: executionState.repeatCount,
+        threshold,
+        decision: "deny",
+      });
+    }
+  }
+
+  if (finalDecision !== "deny") {
+    const maxToolCalls = options.budget?.maxToolCalls;
+    if (
+      maxToolCalls !== undefined &&
+      executionState.usedToolCalls >= maxToolCalls
+    ) {
+      budgetExceeded = {
+        run_id: options.runId,
+        limit_kind: "tool_calls",
+        limit: maxToolCalls,
+        used: executionState.usedToolCalls,
+        action: "reject_call",
+      };
+      finalDecision = "deny";
+      finalRule = "budget.tool_calls";
+      finalRuleSha256 = recordHash({ rule: finalRule });
+      finalReason = `tool call budget exhausted (${executionState.usedToolCalls}/${maxToolCalls}); the call was not executed`;
+      await options.onExecutionEvent?.("budget/exceeded", budgetExceeded);
+    } else {
+      const maxWallMs = options.budget?.maxWallMs;
+      const elapsedMs = Math.max(
+        0,
+        Math.round(performance.now() - executionState.wallStartedAt),
+      );
+      if (maxWallMs !== undefined && elapsedMs >= maxWallMs) {
+        budgetExceeded = {
+          run_id: options.runId,
+          limit_kind: "wall_ms",
+          limit: maxWallMs,
+          used: elapsedMs,
+          action: "abort_run",
+        };
+        finalDecision = "deny";
+        finalRule = "budget.wall_ms";
+        finalRuleSha256 = recordHash({ rule: finalRule });
+        finalReason = `wall-clock budget exhausted (${elapsedMs}/${maxWallMs} ms); the call was not executed`;
+        await options.onExecutionEvent?.("budget/exceeded", budgetExceeded);
+        await options.onBudgetAbort?.();
+      } else {
+        executionState.usedToolCalls += 1;
+      }
+    }
+  }
+
+  if (finalDecision !== "deny" && gate.consult_approval) {
     const approvalArgv = exactApprovalArgv("user_bash", command, null);
     const requestReason = approvalReason(
       policy,
@@ -1559,6 +2125,7 @@ export async function wrapUserBashCommand(
         outputPreview: denialMessage,
         emptyResult: null,
         executor: null,
+        ...(budgetExceeded === undefined ? {} : { budgetExceeded }),
       }),
     );
     return { result: deniedUserBashResult(denialMessage) };

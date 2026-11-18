@@ -195,6 +195,7 @@ export {
   SessionCorruptError,
   SessionError,
   SessionLockedError,
+  SessionUnsupportedEventError,
   SessionNotFoundError,
   SessionStore,
   listSessionIndex,

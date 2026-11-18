@@ -121,6 +121,31 @@ export const EffectsSchema = Type.Object(
 
 export type Effects = Static<typeof EffectsSchema>;
 
+export const BudgetLimitKindSchema = Type.Union([
+  Type.Literal("tool_calls"),
+  Type.Literal("wall_ms"),
+  Type.Literal("tokens"),
+  Type.Literal("cost"),
+]);
+
+export type BudgetLimitKind = Static<typeof BudgetLimitKindSchema>;
+
+export const BudgetExceededSchema = Type.Object(
+  {
+    run_id: NonEmptyStringSchema,
+    limit_kind: BudgetLimitKindSchema,
+    limit: Type.Number({ minimum: 0 }),
+    used: Type.Number({ minimum: 0 }),
+    action: Type.Union([
+      Type.Literal("reject_call"),
+      Type.Literal("abort_run"),
+    ]),
+  },
+  { additionalProperties: false },
+);
+
+export type BudgetExceeded = Static<typeof BudgetExceededSchema>;
+
 export const VcsBindingSchema = Type.Object(
   {
     commit: Type.Union([Type.String(), Type.Null()]),

@@ -932,11 +932,10 @@ function budgetSnapshot(runtime: CodepunkRuntime): BudgetSnapshot {
   }
   const totals = runtime.usage();
   return {
-    maxTokens: exceeded?.data.max_tokens ?? runtime.config.budget.max_tokens,
-    maxCostUsd:
-      exceeded?.data.max_cost_usd ?? runtime.config.budget.max_cost_usd,
-    usedTokens: exceeded?.data.used_tokens ?? totals.total_tokens,
-    usedCostUsd: exceeded?.data.used_cost_usd ?? totals.cost_total,
+    maxTokens: runtime.config.budget.max_tokens,
+    maxCostUsd: runtime.config.budget.max_cost_usd,
+    usedTokens: totals.total_tokens,
+    usedCostUsd: totals.cost_total,
     stopped: exceeded !== null,
   };
 }

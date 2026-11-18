@@ -120,6 +120,8 @@ export interface CodepunkConfig {
   budget: {
     max_tokens: number | null;
     max_cost_usd: number | null;
+    max_tool_calls: number;
+    max_wall_ms: number;
   };
   memory: {
     enabled: boolean;
@@ -319,6 +321,8 @@ const KEY_SPECS = new Map<string, KeySpec>([
   ["evidence.retention_count", { type: "integer", minimum: 0, scope: "any" }],
   ["budget.max_tokens", { type: "integer", minimum: 1, scope: "user" }],
   ["budget.max_cost_usd", { type: "number", minimum: 0, scope: "user" }],
+  ["budget.max_tool_calls", { type: "integer", minimum: 1, scope: "user" }],
+  ["budget.max_wall_ms", { type: "integer", minimum: 1, scope: "user" }],
   ["memory.enabled", { type: "boolean", scope: "any" }],
   ["memory.max_tokens", { type: "integer", minimum: 1, scope: "any" }],
   [
@@ -429,6 +433,8 @@ export function defaultConfig(): CodepunkConfig {
     budget: {
       max_tokens: null,
       max_cost_usd: null,
+      max_tool_calls: 200,
+      max_wall_ms: 30 * 60 * 1_000,
     },
     memory: {
       enabled: true,
@@ -973,6 +979,26 @@ function applyEnvironment(
           "budget.max_cost_usd",
           Number(value),
           KEY_SPECS.get("budget.max_cost_usd")!,
+        ),
+    ],
+    [
+      "CODEPUNK_BUDGET_MAX_TOOL_CALLS",
+      "budget.max_tool_calls",
+      (value) =>
+        validateValue(
+          "budget.max_tool_calls",
+          Number(value),
+          KEY_SPECS.get("budget.max_tool_calls")!,
+        ),
+    ],
+    [
+      "CODEPUNK_BUDGET_MAX_WALL_MS",
+      "budget.max_wall_ms",
+      (value) =>
+        validateValue(
+          "budget.max_wall_ms",
+          Number(value),
+          KEY_SPECS.get("budget.max_wall_ms")!,
         ),
     ],
     [
