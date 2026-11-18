@@ -72,16 +72,17 @@ Install the published CLI with npm:
 npm install --global @codepunk/cli@0.1.0
 ```
 
-The workflow defines six CI targets; a complete six-target CI run is not yet
-verified:
+The workflow defines seven CI targets. The six Unix targets passed in run
+`44264867998`; `windows-latest` is hosted-CI evidence only and is not a
+Windows 11 support claim:
 
-CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.
+CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
 WSL2 Ubuntu x64 is manual-smoke only and is not CI-covered. Windows is not
-claimed; native Windows support is handled by 0007 and remains fail-closed
-until real evidence exists. macOS 13-14 and other Linux distributions are not
-CI targets. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact support
-boundary.
+claimed; native Windows support is still fail-closed while 0007 work is
+incomplete and real Windows 11 x64 evidence is missing. macOS 13-14 and other
+Linux distributions are not CI targets. See
+[`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact support boundary.
 
 ## Quick start
 

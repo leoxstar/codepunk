@@ -2,28 +2,33 @@
 
 ## CI targets
 
-These are configured CI targets, not a claim that six-target CI is verified:
+These are configured CI targets. The six Unix targets passed in run
+`44264867998`; `windows-latest` is hosted-CI evidence only and is not a
+Windows 11 support claim:
 
-CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.
+CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
 <!-- ci-targets:start -->
 
-| Platform     | Architecture | CI runner          | Shell           | Sandbox          |
-| ------------ | ------------ | ------------------ | --------------- | ---------------- |
-| Ubuntu 24.04 | x64          | `ubuntu-24.04`     | Bash            | `srt` bubblewrap |
-| Ubuntu 24.04 | arm64        | `ubuntu-24.04-arm` | Bash            | `srt` bubblewrap |
-| Ubuntu 26.04 | x64          | `ubuntu-26.04`     | Bash            | `srt` bubblewrap |
-| macOS 15     | arm64        | `macos-15`         | Bash/Zsh via Pi | `srt` Seatbelt   |
-| macOS 15     | x64          | `macos-15-intel`   | Bash/Zsh via Pi | `srt` Seatbelt   |
-| macOS 26     | arm64        | `macos-26`         | Bash/Zsh via Pi | `srt` Seatbelt   |
+| Platform            | Architecture | CI runner          | Shell                      | Sandbox                |
+| ------------------- | ------------ | ------------------ | -------------------------- | ---------------------- |
+| Ubuntu 24.04        | x64          | `ubuntu-24.04`     | Bash                       | `srt` bubblewrap       |
+| Ubuntu 24.04        | arm64        | `ubuntu-24.04-arm` | Bash                       | `srt` bubblewrap       |
+| Ubuntu 26.04        | x64          | `ubuntu-26.04`     | Bash                       | `srt` bubblewrap       |
+| macOS 15            | arm64        | `macos-15`         | Bash/Zsh via Pi            | `srt` Seatbelt         |
+| macOS 15            | x64          | `macos-15-intel`   | Bash/Zsh via Pi            | `srt` Seatbelt         |
+| macOS 26            | arm64        | `macos-26`         | Bash/Zsh via Pi            | `srt` Seatbelt         |
+| Windows Server 2025 | x64          | `windows-latest`   | cmd/PowerShell via srt-win | `srt-win` (unverified) |
 
 <!-- ci-targets:end -->
 
 The CI matrix is configured to run the full repository gate on each target:
 install, formatting, repository checks, typecheck, tests, build, and
-built-entry checks. Six-job CI evidence on the implementation commit is still
-missing. The release runbook additionally requires a clean global install and
-`codepunk doctor` smoke test on each release target.
+built-entry checks. The six Unix targets passed in run `44264867998`.
+`windows-latest` runs the non-privileged Windows checks; it is Windows Server
+2025, not Windows 11, and does not replace the real-machine acceptance in
+spec 0007. The release runbook additionally requires a clean global install
+and `codepunk doctor` smoke test on each release target.
 
 Node.js `>=22.19.0` is required. Linux needs the dependencies required by the
 pinned `srt` release, including bubblewrap, socat, and ripgrep. Run as a
@@ -58,16 +63,16 @@ WSL2 smoke test.
 
 ## Windows
 
-Windows is not currently supported or claimed as verified. Native Windows
-support is handled by 0007 and remains fail-closed until real evidence exists.
-Support requires a real ConPTY TUI smoke test plus a manual `srt` install,
-shell check, ACL check, and process-tree termination check on Windows hardware;
-hosted CI alone is insufficient.
+Windows 11 x64 support is still not claimed as verified. The 0007 code path
+and the hosted `windows-latest` job are implemented, but support requires a
+real ConPTY TUI smoke test plus a manual `srt` install, shell check, ACL
+check, and process-tree termination check on Windows 11 hardware; hosted CI
+alone is insufficient.
 
 Until those checks pass, Windows behavior is fail-closed:
 
-- `codepunk doctor` reports a blocking platform error and cannot report
-  `doctor: ready`;
+- `codepunk doctor` accepts `win32 x64` only on build 22000 or newer, and
+  still reports a blocking `srt` error until the sandbox is provisioned;
 - the sandbox probe resolves the pinned `srt-win` helper and reports the
   one-time elevated install needed to provision `srt-sandbox`;
 - shell execution stays disabled until that install exists; initialization
