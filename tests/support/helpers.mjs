@@ -41,13 +41,17 @@ const TRUSTED_WINDOWS_PRINCIPALS = [
   // temporary roots the tests run under. It is part of the invoking
   // environment, not another human user.
   /\\codexsandboxusers$/iu,
+  /\\sandbox-runtime-users$/iu,
 ];
 
 /**
  * Principals injected by the test harness itself. They are not another
  * interactive user, even though their names end in "Users".
  */
-const ENVIRONMENT_WINDOWS_PRINCIPALS = [/\\codexsandboxusers$/iu];
+const ENVIRONMENT_WINDOWS_PRINCIPALS = [
+  /\\codexsandboxusers$/iu,
+  /\\sandbox-runtime-users$/iu,
+];
 
 let currentWindowsIdentityCache;
 

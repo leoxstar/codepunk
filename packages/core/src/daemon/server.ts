@@ -22,6 +22,7 @@ import {
   type DaemonSessionReadResult,
 } from "@codepunk/protocol";
 import type { ProjectPaths } from "../platform/paths.ts";
+import { posixMetadataIsReliable } from "../platform/fs.ts";
 import { readSessionSnapshot, SessionNotFoundError } from "../session/index.ts";
 import { listProjectSessions, pinSession } from "../session/ops.ts";
 import { daemonSocketPath } from "./paths.ts";
@@ -199,7 +200,11 @@ async function prepareSocketPath(socketPath: string): Promise<void> {
   if (!stat.isSocket()) {
     throw new Error("daemon socket path exists and is not a socket");
   }
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+  if (
+    (await posixMetadataIsReliable(socketPath)) &&
+    typeof process.getuid === "function" &&
+    stat.uid !== process.getuid()
+  ) {
     throw new Error("daemon socket is owned by another user");
   }
   const state = await probeSocket(socketPath);
@@ -216,7 +221,11 @@ async function prepareSocketDirectory(socketPath: string): Promise<void> {
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error("daemon socket parent must be a real directory");
   }
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+  if (
+    (await posixMetadataIsReliable(directory)) &&
+    typeof process.getuid === "function" &&
+    stat.uid !== process.getuid()
+  ) {
     throw new Error("daemon socket directory is owned by another user");
   }
   await fs.chmod(directory, 0o700);
@@ -293,6 +302,7 @@ export class DaemonServer {
         throw new Error("daemon path did not resolve to a Unix socket");
       }
       if (
+        (await posixMetadataIsReliable(socketPath)) &&
         typeof process.getuid === "function" &&
         stat.uid !== process.getuid()
       ) {

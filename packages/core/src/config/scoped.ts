@@ -10,7 +10,7 @@ import {
   type ScopedRule,
 } from "../autonomy/index.ts";
 import { sha256Text } from "../platform/hash.ts";
-import { atomicWriteFile } from "../platform/fs.ts";
+import { atomicWriteFile, posixMetadataIsReliable } from "../platform/fs.ts";
 import {
   isInsidePath,
   normalizeAbsolute,
@@ -159,17 +159,15 @@ export async function loadScopedRules(
       "autonomy.scoped_rules",
     );
   }
-  // Windows synthesizes mode 0o666 for any writable file, so the bit test
-  // would reject every rules file there. The project-config checks in
-  // platform/paths.ts skip the same bits for the same reason.
-  if (process.platform !== "win32" && (linkStat.mode & 0o022) !== 0) {
+  const posixMetadata = await posixMetadataIsReliable(realPath);
+  if (posixMetadata && (linkStat.mode & 0o022) !== 0) {
     throw new ConfigError(
       "scoped rules file must not be group or world writable",
       "autonomy.scoped_rules",
     );
   }
   const uid = process.getuid?.();
-  if (uid !== undefined && linkStat.uid !== uid) {
+  if (posixMetadata && uid !== undefined && linkStat.uid !== uid) {
     throw new ConfigError(
       "scoped rules file must be owned by the invoking user",
       "autonomy.scoped_rules",
