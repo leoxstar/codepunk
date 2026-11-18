@@ -1672,6 +1672,7 @@ async function runTui(options: CliOptions): Promise<number> {
     warningsShown: false,
     modelSelected: false,
     ready: false,
+    shuttingDown: false,
     hostCommands: new Set(),
     childHostArgv: [process.execPath, fileURLToPath(import.meta.url)],
   };
@@ -1820,41 +1821,71 @@ async function runTui(options: CliOptions): Promise<number> {
     });
     await interactive.init();
     const applyTitle = () => {
-      state.context?.ui.setTitle(
-        `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
-      );
+      if (state.shuttingDown) {
+        return;
+      }
+      try {
+        state.context?.ui.setTitle(
+          `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
+        );
+      } catch {
+        // The delayed title refresh races session teardown; the title is
+        // cosmetic, so a stale extension context must not crash the process.
+      }
     };
     applyTitle();
     buildWatch = setInterval(() => {
       void (async () => {
         const context = state.context;
-        if (context === null) {
+        if (context === null || state.shuttingDown) {
           return;
         }
         const current = await inspectCliBuild();
-        if (!current.rebuiltAfterStart) {
+        if (
+          !current.rebuiltAfterStart ||
+          state.shuttingDown ||
+          state.context !== context
+        ) {
           return;
         }
         if (buildWatch !== undefined) {
           clearInterval(buildWatch);
           buildWatch = undefined;
+          state.buildWatch = undefined;
         }
-        context.ui.notify(
-          `codepunk: dist was rebuilt after this process started (${formatBuildLabel(
-            current,
-          )}). Restart codepunk to load the new UI; this session keeps the old modules in memory.`,
-          "warning",
-        );
+        try {
+          context.ui.notify(
+            `codepunk: dist was rebuilt after this process started (${formatBuildLabel(
+              current,
+            )}). Restart codepunk to load the new UI; this session keeps the old modules in memory.`,
+            "warning",
+          );
+        } catch {
+          // The session can be replaced while the build check is in flight.
+        }
       })().catch(() => undefined);
     }, 30_000);
     buildWatch.unref();
-    setTimeout(applyTitle, 250).unref();
-    setTimeout(applyTitle, 1_000).unref();
+    state.buildWatch = buildWatch;
+    state.titleTimers = [
+      setTimeout(applyTitle, 250),
+      setTimeout(applyTitle, 1_000),
+    ];
+    for (const timer of state.titleTimers) {
+      timer.unref();
+    }
     await interactive.run();
     return 0;
   } finally {
+    state.shuttingDown = true;
+    for (const timer of state.titleTimers ?? []) {
+      clearTimeout(timer);
+    }
+    state.titleTimers = [];
     if (buildWatch !== undefined) {
       clearInterval(buildWatch);
+      buildWatch = undefined;
+      state.buildWatch = undefined;
     }
     const running = [...(state.subagents?.values() ?? [])].filter(
       (record) => record.status === "running",
