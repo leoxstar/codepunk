@@ -14,6 +14,7 @@ import { ProcessTerminal } from "@earendil-works/pi-tui";
 import {
   AutonomyController,
   APPROVAL_MODE_NAMES,
+  ConfigError,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
   DaemonClient,
@@ -2033,6 +2034,11 @@ function formatDaemonSession(result: DaemonSessionReadResult): string {
 }
 
 async function commandDaemon(options: CliOptions): Promise<number> {
+  if (process.platform === "win32") {
+    throw new Error(
+      "codepunk daemon is not supported on Windows: the daemon requires a Unix socket and Windows named pipes are not implemented",
+    );
+  }
   const paths = await resolveDaemonProject();
   const server = await DaemonServer.start({
     paths,
@@ -2072,6 +2078,11 @@ async function commandDaemon(options: CliOptions): Promise<number> {
 }
 
 async function commandView(options: CliOptions): Promise<number> {
+  if (process.platform === "win32") {
+    throw new Error(
+      "codepunk view is not supported on Windows: the daemon requires a Unix socket and Windows named pipes are not implemented",
+    );
+  }
   const paths = await resolveDaemonProject();
   const client = new DaemonClient({
     socketPath: daemonSocketPath(paths, options.socket),
@@ -4118,5 +4129,5 @@ main(process.argv.slice(2))
     process.stderr.write(
       `codepunk: ${error instanceof Error ? error.message : String(error)}\n`,
     );
-    process.exitCode = 1;
+    process.exitCode = error instanceof ConfigError ? 2 : 1;
   });

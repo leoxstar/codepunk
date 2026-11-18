@@ -138,6 +138,75 @@ test("the built CLI reports version and help", async () => {
   );
 });
 
+test("config errors exit two", async () => {
+  await withTempDirectory("codepunk-cli-config-error-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[session]",
+        "heartbeat_seconds = 2",
+        "lease_seconds = 1",
+        "",
+      ].join("\n"),
+    );
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const cli = await ensureBuilt();
+    await assert.rejects(
+      () =>
+        execFileAsync(process.execPath, [cli, "-p", "hello"], {
+          cwd: project,
+          env: {
+            ...BASE_ENV,
+            CODEPUNK_HOME: home,
+            NO_COLOR: "1",
+          },
+        }),
+      (error) => {
+        assert.equal(error.code, 2);
+        assert.match(error.stderr, /^codepunk: /u);
+        assert.match(error.stderr, /session\.lease_seconds/u);
+        return true;
+      },
+    );
+  });
+});
+
+test(
+  "windows daemon and view fail closed",
+  { skip: process.platform !== "win32" ? "Windows-only behavior" : false },
+  async () => {
+    const cli = await ensureBuilt();
+    for (const command of ["daemon", "view"]) {
+      await assert.rejects(
+        () =>
+          execFileAsync(process.execPath, [cli, command], {
+            cwd: os.tmpdir(),
+            env: { ...BASE_ENV, NO_COLOR: "1" },
+          }),
+        (error) => {
+          assert.notEqual(error.code, 0);
+          assert.match(error.stderr, /not supported on Windows/u);
+          assert.doesNotMatch(error.stderr, /\n\s+at /u);
+          return true;
+        },
+      );
+      const help = await execFileAsync(
+        process.execPath,
+        [cli, command, "--help"],
+        { cwd: os.tmpdir(), env: { ...BASE_ENV, NO_COLOR: "1" } },
+      );
+      assert.match(help.stdout, new RegExp(`codepunk ${command}`, "u"));
+    }
+  },
+);
+
 test("completion prints scripts for the supported shells", async () => {
   const cli = await ensureBuilt();
   const bash = await execFileAsync(process.execPath, [
@@ -1017,7 +1086,7 @@ test("permission commands show effective modes, explain commands, and persist pr
           home,
         }),
       (error) => {
-        assert.equal(error.code, 1);
+        assert.equal(error.code, 2);
         assert.match(error.stderr, /too broad/u);
         return true;
       },
