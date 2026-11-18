@@ -1,0 +1,12 @@
+{"id":"write_once","kind":"write","expected":"pass"}
+{"id":"write_repeat","kind":"write","expected":"pass"}
+{"id":"loop_guard","kind":"loop_guard","expected":"pass"}
+{"id":"tool_call_budget","kind":"tool_call_budget","expected":"pass"}
+{"id":"wall_clock_budget","kind":"wall_clock_budget","expected":"pass"}
+{"id":"verify_retry_once","kind":"verify","mode":"recover","expected":"pass"}
+{"id":"verify_retry_twice_fails","kind":"verify","mode":"fail_twice","expected":"pass"}
+{"id":"network_allowlist","kind":"network","mode":"allowlist","expected":"pass"}
+{"id":"network_denied_domain","kind":"network","mode":"denied_domain","expected":"pass"}
+{"id":"network_redirect_denied","kind":"network","mode":"redirect_denied","expected":"pass"}
+{"id":"network_request_budget","kind":"network","mode":"request_budget","expected":"pass"}
+{"id":"schema_compatibility","kind":"schema_compatibility","expected":"pass"}

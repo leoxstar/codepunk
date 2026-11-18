@@ -1437,6 +1437,99 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
   }
 });
 
+test("0006 eval contract rejects removed gates and vacuous baselines", async (t) => {
+  const fixture = await copyRepositoryToTemporaryDirectory();
+  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
+    fixture.root,
+  );
+  const assertRestored = async (label) => {
+    assertClean(await runFixtureCheck(fixture), label);
+  };
+
+  try {
+    await assertRestored("0006 fixture before planting violations");
+
+    const cases = [
+      {
+        name: "eval removed from root entries",
+        rule: "repo.root",
+        expectedPath: "eval",
+        async apply(root) {
+          return replaceFile(root, "scripts/check-repo.mjs", (content) =>
+            content.replace('  "eval",\n', ""),
+          );
+        },
+      },
+      {
+        name: "eval root script removed",
+        rule: "pkg.manifest",
+        expectedPath: "package.json",
+        async apply(root) {
+          return mutateJson(root, "package.json", (manifest) => {
+            delete manifest.scripts.eval;
+          });
+        },
+      },
+      {
+        name: "eval CI step removed",
+        rule: "ci.contract",
+        expectedPath: ".github/workflows/ci.yml",
+        async apply(root) {
+          return mutateWorkflowAndRefreshDigest(root, (content) =>
+            content.replace(
+              "      - name: Run deterministic eval regression\n        run: pnpm run eval\n\n",
+              "",
+            ),
+          );
+        },
+      },
+      {
+        name: "eval baseline threshold made vacuous",
+        rule: "eval.baseline",
+        expectedPath: "eval/baseline.json",
+        async apply(root) {
+          return mutateJson(root, "eval/baseline.json", (baseline) => {
+            baseline.min_passed = 0;
+            baseline.max_failed = 999;
+          });
+        },
+      },
+      {
+        name: "wrong control-corpus digest",
+        rule: "repo.controls",
+        expectedPath: "tests/repository.test.mjs",
+        async apply(root) {
+          return replaceExpectedDigest(
+            root,
+            "EXPECTED_CONTROL_CORPUS_SHA256",
+            "0".repeat(64),
+          );
+        },
+      },
+    ];
+
+    for (const negativeCase of cases) {
+      await t.test(negativeCase.name, async () => {
+        const restore = await negativeCase.apply(fixture.root);
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertRuleFailure(
+            result,
+            negativeCase.rule,
+            negativeCase.expectedPath,
+          );
+        } finally {
+          await restore();
+        }
+        await assertRestored(`restored ${negativeCase.name}`);
+      });
+    }
+  } finally {
+    await restoreControlDigest();
+    await fixture.cleanup();
+  }
+});
+
 test("0004 release-smoke contract rejects drift and extra workflows", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
   const restoreControlDigest = await refreshFixtureControlCorpusDigest(

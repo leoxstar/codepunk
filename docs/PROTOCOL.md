@@ -127,3 +127,111 @@ with one it reads all pages and prints a human-readable or JSON view. It cannot
 approve, sign, or modify a session through this protocol.
 
 The two-client acceptance test is `tests/daemon.test.mjs`.
+
+## Session events
+
+The session log is an append-only JSONL stream. Every event carries
+`type: "codepunk/event"`, `version: 1`, a monotonic `seq`, and an ISO-8601
+`at` timestamp. The schemas are frozen in `packages/protocol/src/session.ts`.
+
+### Execution side effects and budgets
+
+`loop_guard` records a denied repeated shell call:
+
+```json
+{
+  "kind": "loop_guard",
+  "data": {
+    "run_id": "run-1",
+    "tool": "bash",
+    "canonical_argv": ["printf", "ok"],
+    "cwd": "/workspace",
+    "repeat_count": 4,
+    "threshold": 3,
+    "decision": "deny"
+  }
+}
+```
+
+`budget/exceeded` uses the unified `BudgetExceeded` object:
+
+```json
+{
+  "kind": "budget/exceeded",
+  "data": {
+    "run_id": "run-1",
+    "limit_kind": "tool_calls",
+    "limit": 2,
+    "used": 2,
+    "action": "reject_call"
+  }
+}
+```
+
+`limit_kind` is one of `tool_calls`, `wall_ms`, `tokens`, or `cost`.
+`action` is `reject_call` for a pre-call refusal and `abort_run` when the
+wall-clock timer interrupts an in-flight run.
+
+### Network egress
+
+`network/request` records one proxy decision:
+
+```json
+{
+  "kind": "network/request",
+  "data": {
+    "run_id": "run-1",
+    "domain": "allowed.example",
+    "requests": 1,
+    "bytes": 4,
+    "limit": { "max_requests": 10, "max_bytes": 1024 },
+    "decision": "allow"
+  }
+}
+```
+
+`network/redirect` records a redirect hop and its fresh domain decision:
+
+```json
+{
+  "kind": "network/redirect",
+  "data": {
+    "run_id": "run-1",
+    "from": "allowed.example",
+    "to": "denied.example",
+    "status": 302,
+    "decision": "deny"
+  }
+}
+```
+
+`network/rejected` records a refused request:
+
+```json
+{
+  "kind": "network/rejected",
+  "data": {
+    "run_id": "run-1",
+    "domain": "denied.example",
+    "reason": "domain_not_allowed",
+    "limit": { "max_requests": 10, "max_bytes": 1024 }
+  }
+}
+```
+
+The sandbox proxy only calls the hook for requests it parses. Plain HTTP
+goes through the hook; HTTPS that is not TLS-terminated is tunnelled through
+CONNECT and is governed by the runtime allowlist alone.
+
+### Evidence extensions
+
+`EvidenceRecord` gains optional fields for idempotent writes (`idempotency_key`,
+`reused`), verify/retry (`verify`, `retry`), and budget exhaustion
+(`budget_exceeded`). All fields are declared in
+`packages/protocol/src/evidence.ts`; undeclared top-level keys are rejected.
+
+### Unknown events
+
+Readers must not silently drop an unknown event kind. `SessionStore` throws
+`SessionUnsupportedEventError` with the offending kind so an old binary fails
+closed instead of treating a new event as a no-op.

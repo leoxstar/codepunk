@@ -715,6 +715,16 @@ Run the full local verification with:
 pnpm run verify
 ```
 
+Run the deterministic behavior regression with:
+
+```text
+pnpm run eval
+```
+
+The eval baseline in `eval/baseline.json` is human-reviewed and is never
+rewritten by the runner. It proves deterministic regression only; it does not
+replace model benchmarks or cross-platform acceptance.
+
 The repository is a pnpm workspace. Package scripts, dependency pins, CI, and
 testing conventions are documented in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 The CLI's `install`, `upgrade`, and `uninstall` commands use npm as the
