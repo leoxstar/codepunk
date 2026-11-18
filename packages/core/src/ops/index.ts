@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { CodepunkConfig } from "../config/index.ts";
 import { probeConfiguredModel } from "../model/index.ts";
@@ -9,6 +10,7 @@ import {
 import { resolveSearchBinary } from "../search/index.ts";
 import {
   probeSrtSandbox,
+  resolveWindowsShell,
   SrtSandbox as SandboxProvider,
 } from "../sandbox/index.ts";
 import { loadMcpTools, readMcpConfig } from "../mcp/index.ts";
@@ -37,6 +39,16 @@ export interface DoctorOptions {
    * running platform.
    */
   platform?: NodeJS.Platform;
+  /**
+   * Test seam for the platform version. Windows uses the OS build number to
+   * tell Windows 11 from Windows 10; production uses the running kernel.
+   */
+  platformVersion?: string;
+  /**
+   * Test seam for the reported architecture. Production uses the running
+   * process architecture.
+   */
+  arch?: string;
   projectTrusted?: boolean;
   environment?: NodeJS.ProcessEnv;
   /**
@@ -52,6 +64,35 @@ export interface DoctorOptions {
   pluginEnabled?: boolean;
   sandboxProbe?: () => Promise<string | null>;
   modelProbe?: () => Promise<string | null>;
+  /**
+   * Test seam for the configured shell preflight. Production resolves the
+   * shell selected by `tools.shell` on Windows.
+   */
+  shellProbe?: () => Promise<string | null>;
+}
+
+const WINDOWS_11_MINIMUM_BUILD = 22_000;
+
+function windowsBuildNumber(version: string): number {
+  const build = Number.parseInt(version.split(".")[2] ?? "", 10);
+  return Number.isFinite(build) ? build : 0;
+}
+
+function platformIsSupported(
+  platform: NodeJS.Platform,
+  arch: string,
+  platformVersion: string,
+): boolean {
+  if (platform === "darwin" || platform === "linux") {
+    return true;
+  }
+  if (platform !== "win32") {
+    return false;
+  }
+  return (
+    arch === "x64" &&
+    windowsBuildNumber(platformVersion) >= WINDOWS_11_MINIMUM_BUILD
+  );
 }
 
 async function defaultSandboxProbe(
@@ -92,8 +133,28 @@ async function defaultModelProbe(
   return probeConfiguredModel(paths, config);
 }
 
+async function defaultShellProbe(
+  config: CodepunkConfig,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  if (platform !== "win32") {
+    return null;
+  }
+  try {
+    await resolveWindowsShell(config.tools.shell, environment, platform);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const platformVersion =
+    options.platformVersion ??
+    (platform === "win32" ? os.release() : process.versions.node);
   const environment =
     options.environment ??
     (options.paths.home
@@ -112,13 +173,34 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   });
   checks.push({
     id: "platform",
-    status: platform === "darwin" || platform === "linux" ? "ok" : "error",
-    message: `${platform} ${process.arch}`,
-    hint:
-      platform === "darwin" || platform === "linux"
-        ? null
+    status: platformIsSupported(platform, arch, platformVersion)
+      ? "ok"
+      : "error",
+    message: `${platform} ${arch}`,
+    hint: platformIsSupported(platform, arch, platformVersion)
+      ? null
+      : platform === "win32"
+        ? `Windows support requires Windows 11 x64 (build ${WINDOWS_11_MINIMUM_BUILD} or newer); this host reports ${arch} build ${windowsBuildNumber(platformVersion)}`
         : `${platform} is not currently supported; doctor must not report ready until the platform has real install, sandbox, TUI, and ACL evidence`,
   });
+  const shellIssue =
+    typeof options.shellProbe === "function"
+      ? await options.shellProbe()
+      : await defaultShellProbe(options.config, platform, environment);
+  if (platform === "win32") {
+    checks.push({
+      id: "tools.shell",
+      status: shellIssue === null ? "ok" : "error",
+      message:
+        shellIssue === null
+          ? `${options.config.tools.shell} shell is available`
+          : shellIssue,
+      hint:
+        shellIssue === null
+          ? null
+          : "install the selected shell or set tools.shell=auto; codepunk does not fall back to cmd.exe",
+    });
+  }
   const sandboxIssue =
     typeof options.sandboxProbe === "function"
       ? await options.sandboxProbe()
