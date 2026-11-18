@@ -72,9 +72,11 @@ Install the published CLI with npm:
 npm install --global @codepunk/cli@0.1.0
 ```
 
-The CI matrix verifies Linux x64 on `ubuntu-latest` and macOS arm64 on
-`macos-latest`. macOS x64, Linux arm64, and WSL2 are not separately verified.
-Windows is not a verified platform.
+The CI matrix runs the full repository gate on Ubuntu 24.04 x64 and arm64, and
+on macOS 15 Intel x64 and macOS 26 arm64. macOS 13-14, other Linux
+distributions, and WSL2 are not separately verified. Windows is not a
+supported platform. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact
+support boundary.
 
 ## Quick start
 

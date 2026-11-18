@@ -20,6 +20,7 @@ const execFileAsync = promisify(execFile);
 
 const ROOT_ENTRIES = new Set([
   ".github",
+  ".gitattributes",
   ".gitignore",
   "AGENTS.md",
   "CHANGELOG.md",
@@ -160,10 +161,17 @@ const EXPECTED_LOCKFILE_SHA256 =
   "180e75ea6ecdee97126746c6b345fdfe7109a97c2fcc48a6e85f2c245847e196";
 
 const EXPECTED_CI_SHA256 =
-  "06902bbaceeee07ca7dd0ab449d440a3fc1cda21ffc9726fe535919cd5b072d4";
+  "7def7652060d132a200ee8ad608f67aa063f5be00871d7c8a2f7bf221c929a8c";
+
+const EXPECTED_CI_RUNNERS = [
+  "ubuntu-24.04",
+  "ubuntu-24.04-arm",
+  "macos-26",
+  "macos-15-intel",
+];
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "ec4c6da3981975a314a6829d97e4781ecdf8441c78877078ccd4cc638807d90a";
+  "880988f24f018c3be06f5986ff2df71399b57f1fa8864f29e5fd64a0817f151f";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -586,6 +594,29 @@ async function checkRootEntries(root, add) {
   }
 }
 
+async function checkLineEndingPolicy(root, add) {
+  const relativePath = ".gitattributes";
+  try {
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    const hasLfPolicy = content
+      .split(/\r?\n/u)
+      .some((line) => line.trim() === "* text=auto eol=lf");
+    if (!hasLfPolicy) {
+      add(
+        "repo.lineEndings",
+        relativePath,
+        'missing reviewed policy "* text=auto eol=lf"',
+      );
+    }
+  } catch (error) {
+    add(
+      "repo.lineEndings",
+      relativePath,
+      `cannot read line-ending policy: ${error.message}`,
+    );
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -665,6 +696,13 @@ async function scanFileContents(root, files, add) {
       continue;
     }
     const content = buffer.toString("utf8");
+    if (content.includes("\r")) {
+      add(
+        "repo.lineEndings",
+        relativePath,
+        "text file contains a carriage return; repository text must use LF line endings",
+      );
+    }
 
     for (const pattern of ABSOLUTE_USER_PATTERNS) {
       if (pattern.test(content)) {
@@ -739,11 +777,11 @@ async function checkCiContract(root, files, add) {
   const runners = matrixMatch?.[1]
     ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
     : [];
-  if (!sameSet(runners, ["ubuntu-latest", "macos-latest"])) {
+  if (!sameSet(runners, EXPECTED_CI_RUNNERS)) {
     add(
       "ci.contract",
       relativeCi,
-      "CI matrix must require ubuntu-latest and macos-latest",
+      `CI matrix must require ${EXPECTED_CI_RUNNERS.join(", ")}`,
     );
   }
 
@@ -2154,6 +2192,7 @@ export async function checkRepository({
   }
 
   await checkRootEntries(normalizedRoot, add);
+  await checkLineEndingPolicy(normalizedRoot, add);
   checkRequiredDocs(normalizedRoot, add);
 
   const { tracked, trackedDirectories, scanned } =

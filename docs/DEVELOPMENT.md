@@ -127,8 +127,9 @@ false positives.
 ## Continuous integration
 
 `.github/workflows/ci.yml` is configured to run the same install, formatting,
-repository, typecheck, test, build, and built-entry checks on `ubuntu-latest`
-and `macos-latest`. The workflow uses `pnpm/action-setup` and a frozen lockfile.
+repository, typecheck, test, build, and built-entry checks on `ubuntu-24.04`
+(x64), `ubuntu-24.04-arm` (arm64), `macos-26` (arm64), and `macos-15-intel`
+(x64). The workflow uses `pnpm/action-setup` and a frozen lockfile.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without

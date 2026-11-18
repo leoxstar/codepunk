@@ -880,6 +880,39 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     },
   },
   {
+    name: "missing line-ending policy",
+    rule: "repo.lineEndings",
+    path: ".gitattributes",
+    async apply(root) {
+      const absolutePath = path.join(root, ".gitattributes");
+      const original = await readFile(absolutePath);
+      await rm(absolutePath);
+      return async () => {
+        await writeFile(absolutePath, original);
+      };
+    },
+  },
+  {
+    name: "weakened line-ending policy",
+    rule: "repo.lineEndings",
+    path: ".gitattributes",
+    async apply(root) {
+      return replaceFile(root, ".gitattributes", (content) =>
+        content.replace("* text=auto eol=lf", "* text=auto"),
+      );
+    },
+  },
+  {
+    name: "CRLF text checkout",
+    rule: "repo.lineEndings",
+    path: "README.md",
+    async apply(root) {
+      return replaceFile(root, "README.md", (content) =>
+        content.replaceAll("\n", "\r\n"),
+      );
+    },
+  },
+  {
     name: "ignored generated environment file",
     rule: "hygiene.env",
     path: "dist/.env",
@@ -948,6 +981,29 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
         content.replace(
           "      - name: Check out repository\n",
           "      - name: Unreviewed action\n        uses: example/action@main\n\n      - name: Check out repository\n",
+        ),
+      );
+    },
+  },
+  {
+    name: "CI matrix without Linux arm64",
+    rule: "ci.contract",
+    path: ".github/workflows/ci.yml",
+    async apply(root) {
+      return replaceFile(root, ".github/workflows/ci.yml", (content) =>
+        content.replace("          - ubuntu-24.04-arm\n", ""),
+      );
+    },
+  },
+  {
+    name: "CI matrix adds an unsupported Windows runner",
+    rule: "ci.contract",
+    path: ".github/workflows/ci.yml",
+    async apply(root) {
+      return replaceFile(root, ".github/workflows/ci.yml", (content) =>
+        content.replace(
+          "          - macos-15-intel\n",
+          "          - macos-15-intel\n          - windows-latest\n",
         ),
       );
     },
