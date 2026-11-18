@@ -147,7 +147,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
   [
     "packages/core/dist/plugin/host-child.js",
     {
-      argument: /^entryUrl$/u,
+      argument: /^(?:__rewriteRelativeImportExtension\()?entryUrl\)?$/u,
       anchors: [
         /\bverifyLaunch\(\)/u,
         /const entryPath = path\.resolve\(entry\);/u,
