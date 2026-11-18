@@ -980,6 +980,59 @@ test("network budgets install the srt filterRequest guard and emit events", asyn
   ]);
 });
 
+test("network events are recorded without configured budgets", async () => {
+  let captured = null;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async (config) => {
+      captured = config;
+    },
+    wrapWithSandbox: async () => "true",
+    wrapWithSandboxArgv: async () => ({ argv: ["true"], env: {} }),
+    annotateStderrWithSandboxFailures: (_command, stderr) => stderr,
+  };
+  const events = [];
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "/workspace",
+      workspaceRoot: "/workspace",
+      deliveryRoot: "/workspace",
+      codepunkHome: "/srv/codepunk-home",
+      writeSet: ["."],
+      networkAllow: ["allowed.example"],
+      networkMaxRequests: null,
+      networkMaxBytes: null,
+    },
+    {
+      manager,
+      platform: "linux",
+      runId: "run-no-budget",
+      onNetworkEvent: (kind, data) => {
+        events.push({ kind, data });
+      },
+    },
+  );
+  assert.equal(typeof captured.network.filterRequest, "function");
+  assert.ok(sandbox.networkGuard !== null);
+  const decision = await captured.network.filterRequest(
+    new Request("http://allowed.example/path"),
+    { target: { host: "allowed.example", port: 80 }, scheme: "http" },
+  );
+  assert.equal(decision.action, "allow");
+  assert.deepEqual(sandbox.networkGuard.usageFor("allowed.example"), {
+    requests: 1,
+    bytes: 0,
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, "network/request");
+  assert.equal(events[0].data.decision, "allow");
+  assert.deepEqual(events[0].data.limit, {
+    max_requests: null,
+    max_bytes: null,
+  });
+});
+
 test(
   "srt runs allowed commands and confines reads and writes",
   {

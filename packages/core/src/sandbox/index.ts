@@ -1015,6 +1015,7 @@ export class SrtSandbox implements ShellProvider {
       );
     }
     const networkGuard =
+      options.onNetworkEvent !== undefined ||
       (input.networkMaxRequests !== undefined &&
         input.networkMaxRequests !== null) ||
       (input.networkMaxBytes !== undefined && input.networkMaxBytes !== null)
