@@ -57,6 +57,19 @@ export class SessionCorruptError extends SessionError {
   }
 }
 
+export class SessionUnsupportedEventError extends SessionCorruptError {
+  readonly code = "session.unsupported_event";
+  readonly kind: string;
+
+  constructor(kind: string) {
+    super(
+      `session.unsupported_event: event kind "${kind}" is newer than this build; upgrade codepunk before reading this session`,
+    );
+    this.name = "SessionUnsupportedEventError";
+    this.kind = kind;
+  }
+}
+
 export class SessionNotFoundError extends SessionError {
   constructor(message: string) {
     super(message);
@@ -155,6 +168,40 @@ function timestamp(now: () => Date): string {
   return now().toISOString();
 }
 
+function knownSessionEventKinds(): Set<string> {
+  const kinds = new Set<string>();
+  const anyOf = (
+    SessionEventSchema as unknown as {
+      anyOf?: Array<{
+        properties?: { kind?: { const?: unknown } };
+      }>;
+    }
+  ).anyOf;
+  for (const schema of anyOf ?? []) {
+    const kind = schema.properties?.kind?.const;
+    if (typeof kind === "string") {
+      kinds.add(kind);
+    }
+  }
+  return kinds;
+}
+
+const SESSION_EVENT_KINDS = knownSessionEventKinds();
+
+function unsupportedEventKind(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record["type"] !== "codepunk/event") {
+    return null;
+  }
+  const kind = record["kind"];
+  return typeof kind === "string" && !SESSION_EVENT_KINDS.has(kind)
+    ? kind
+    : null;
+}
+
 function parseSessionLog(content: string): {
   header: SessionHeader;
   events: SessionEvent[];
@@ -187,6 +234,10 @@ function parseSessionLog(content: string): {
       const parsed: unknown = JSON.parse(nonEmpty[index]!);
       const validation = validateSchema(SessionEventSchema, parsed);
       if (!validation.ok) {
+        const unknownKind = unsupportedEventKind(parsed);
+        if (unknownKind !== null) {
+          throw new SessionUnsupportedEventError(unknownKind);
+        }
         throw new SessionCorruptError(
           `session event ${index} is invalid: ${validation.issues
             .map((issue) => issue.message)

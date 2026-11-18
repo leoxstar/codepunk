@@ -38,6 +38,83 @@ export const CODEPUNK_TOOL_NAMES = [
 export const HEADLESS_EXEC_TOOL_NAME = "exec" as const;
 export type CodepunkToolName = (typeof CODEPUNK_TOOL_NAMES)[number];
 
+export interface ToolExecutionPolicy {
+  sideEffect: "none" | "read" | "write" | "external";
+  idempotent: boolean;
+  resultBudgetBytes: number;
+  retry: "never" | "safe";
+}
+
+export const TOOL_EXECUTION_POLICIES: Readonly<
+  Record<CodepunkToolName, ToolExecutionPolicy>
+> = {
+  read: {
+    sideEffect: "read",
+    idempotent: true,
+    resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  write: {
+    sideEffect: "write",
+    idempotent: true,
+    resultBudgetBytes: 64 * 1_024,
+    retry: "safe",
+  },
+  edit: {
+    sideEffect: "write",
+    idempotent: true,
+    resultBudgetBytes: 64 * 1_024,
+    retry: "safe",
+  },
+  bash: {
+    sideEffect: "external",
+    idempotent: false,
+    resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  exec: {
+    sideEffect: "external",
+    idempotent: false,
+    resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  search: {
+    sideEffect: "read",
+    idempotent: true,
+    resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  memory_search: {
+    sideEffect: "read",
+    idempotent: true,
+    resultBudgetBytes: 128 * 1_024,
+    retry: "never",
+  },
+  plan: {
+    sideEffect: "write",
+    idempotent: false,
+    resultBudgetBytes: 16 * 1_024,
+    retry: "never",
+  },
+  todo: {
+    sideEffect: "write",
+    idempotent: false,
+    resultBudgetBytes: 16 * 1_024,
+    retry: "never",
+  },
+};
+
+export function toolExecutionPolicy(name: string): ToolExecutionPolicy {
+  return (
+    TOOL_EXECUTION_POLICIES[name as CodepunkToolName] ?? {
+      sideEffect: "external",
+      idempotent: false,
+      resultBudgetBytes: 256 * 1_024,
+      retry: "never",
+    }
+  );
+}
+
 export interface BashObservation {
   command: string;
   cwd: string;

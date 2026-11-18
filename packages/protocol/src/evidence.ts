@@ -1,6 +1,7 @@
 import { Type, type Static } from "typebox";
 import {
   AutonomyEvidenceSchema,
+  BudgetExceededSchema,
   CoverageSchema,
   DecisionSchema,
   EffectsSchema,
@@ -39,6 +40,27 @@ export const PathCheckSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const RetryEvidenceSchema = Type.Object(
+  {
+    attempt: Type.Integer({ minimum: 0 }),
+    max_attempts: Type.Integer({ minimum: 0 }),
+    reason: NonEmptyStringSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type RetryEvidence = Static<typeof RetryEvidenceSchema>;
+
+export const VerifyEvidenceSchema = Type.Object(
+  {
+    result: Type.Union([Type.Literal("pass"), Type.Literal("fail")]),
+    reason: Type.Union([NonEmptyStringSchema, Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+export type VerifyEvidence = Static<typeof VerifyEvidenceSchema>;
 
 export const EvidenceRecordSchema = Type.Object(
   {
@@ -96,6 +118,13 @@ export const EvidenceRecordSchema = Type.Object(
     output_preview: Type.String(),
     empty_result: Type.Union([Type.Boolean(), Type.Null()]),
     executor: Type.Union([Type.String(), Type.Null()]),
+    budget_exceeded: Type.Optional(BudgetExceededSchema),
+    idempotency_key: Type.Optional(NonEmptyStringSchema),
+    reused: Type.Optional(Type.Boolean()),
+    retry: Type.Optional(RetryEvidenceSchema),
+    verify: Type.Optional(VerifyEvidenceSchema),
+    plugin_id: Type.Optional(NonEmptyStringSchema),
+    plugin_manifest_sha256: Type.Optional(Sha256Schema),
     vcs: VcsBindingSchema,
     memory: MemoryEvidenceSchema,
     autonomy: Type.Optional(Type.Union([AutonomyEvidenceSchema, Type.Null()])),

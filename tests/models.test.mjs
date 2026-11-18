@@ -1431,8 +1431,9 @@ test("a hard token budget aborts the run and refuses another prompt", async () =
         (event) => event.kind === "budget/exceeded",
       );
       assert.equal(exceeded.length, 1);
-      assert.equal(exceeded[0].data.max_tokens, 1);
-      assert.equal(exceeded[0].data.used_tokens, 2);
+      assert.equal(exceeded[0].data.limit_kind, "tokens");
+      assert.equal(exceeded[0].data.limit, 1);
+      assert.equal(exceeded[0].data.used, 2);
       assert.equal(exceeded[0].data.action, "abort_run");
       const end = store.allEvents.find(
         (event) =>

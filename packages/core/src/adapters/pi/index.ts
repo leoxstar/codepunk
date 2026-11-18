@@ -126,6 +126,8 @@ export interface CreatePiHostOptions extends ToolWrapOptions {
   budget?: {
     maxTokens?: number;
     maxCostUsd?: number;
+    maxToolCalls?: number;
+    maxWallMs?: number;
   };
 }
 
@@ -788,12 +790,14 @@ export async function createPiHost(
       return;
     }
     budgetExceeded = true;
+    const tokenExceeded = tokenLimit !== undefined && usedTokens >= tokenLimit;
     await appendEvent("budget/exceeded", {
       run_id: runId,
-      max_tokens: tokenLimit ?? null,
-      max_cost_usd: costLimit ?? null,
-      used_tokens: usedTokens,
-      used_cost_usd: Math.round(usedCostUsd * 1_000_000) / 1_000_000,
+      limit_kind: tokenExceeded ? "tokens" : "cost",
+      limit: tokenExceeded ? tokenLimit! : costLimit!,
+      used: tokenExceeded
+        ? usedTokens
+        : Math.round(usedCostUsd * 1_000_000) / 1_000_000,
       action: "abort_run",
     });
     const active = session;
@@ -830,6 +834,8 @@ export async function createPiHost(
   let lastRoutedModel: string | null = null;
   let lastDirectModel: string | null = null;
   let sessionTitleSet = false;
+  let wallTimer: NodeJS.Timeout | undefined;
+  let wallBudgetExceeded = false;
   const extensionFailures: ExtensionError[] = [];
   const assertNoExtensionFailures = (): void => {
     if (extensionFailures.length === 0) {
@@ -860,6 +866,32 @@ export async function createPiHost(
       session_id: options.sessionId,
     });
     runStarted = true;
+    wallBudgetExceeded = false;
+    if (wallTimer !== undefined) {
+      clearTimeout(wallTimer);
+      wallTimer = undefined;
+    }
+    const maxWallMs = options.budget?.maxWallMs;
+    if (maxWallMs !== undefined) {
+      const startedAt = performance.now();
+      wallTimer = setTimeout(() => {
+        if (runEnded || wallBudgetExceeded) {
+          return;
+        }
+        wallBudgetExceeded = true;
+        const used = Math.max(0, Math.round(performance.now() - startedAt));
+        void appendEvent("budget/exceeded", {
+          run_id: currentRunId,
+          limit_kind: "wall_ms",
+          limit: maxWallMs,
+          used,
+          action: "abort_run",
+        }).finally(() => {
+          void session?.abort().catch(() => undefined);
+        });
+      }, maxWallMs);
+      wallTimer.unref();
+    }
   };
   const endRun = async (
     state: "settled" | "failed" | "aborted" | "cancelled" = "settled",
@@ -867,6 +899,10 @@ export async function createPiHost(
   ): Promise<void> => {
     if (!runStarted || runEnded) {
       return;
+    }
+    if (wallTimer !== undefined) {
+      clearTimeout(wallTimer);
+      wallTimer = undefined;
     }
     await appendEvent("run/end", {
       run_id: currentRunId,
@@ -1449,6 +1485,12 @@ export async function createPiHost(
     },
     onMemorySearch: async (retrieval) => {
       await appendEvent("memory/retrieve", retrieval);
+    },
+    onExecutionEvent: async (kind, data) => {
+      await appendEvent(kind, data);
+    },
+    onBudgetAbort: async () => {
+      await session?.abort().catch(() => undefined);
     },
   };
 

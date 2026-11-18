@@ -3,6 +3,8 @@ import { ApprovalAnswerSchema } from "./approval.ts";
 import {
   AutonomyProfileSchema,
   AutonomyRuleSchema,
+  BudgetExceededSchema,
+  DecisionSchema,
   NonEmptyStringSchema,
   Sha256Schema,
   TimestampSchema,
@@ -518,14 +520,88 @@ export const BudgetExceededEventSchema = Type.Object(
   {
     ...EventBase,
     kind: Type.Literal("budget/exceeded"),
+    data: BudgetExceededSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const LoopGuardEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("loop_guard"),
     data: Type.Object(
       {
         run_id: NonEmptyStringSchema,
-        max_tokens: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
-        max_cost_usd: Type.Union([Type.Number({ minimum: 0 }), Type.Null()]),
-        used_tokens: Type.Integer({ minimum: 0 }),
-        used_cost_usd: Type.Number({ minimum: 0 }),
-        action: Type.Literal("abort_run"),
+        tool: NonEmptyStringSchema,
+        canonical_argv: Type.Array(NonEmptyStringSchema, { minItems: 1 }),
+        cwd: NonEmptyStringSchema,
+        repeat_count: Type.Integer({ minimum: 1 }),
+        threshold: Type.Integer({ minimum: 1 }),
+        decision: DecisionSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const NetworkLimitSchema = Type.Object(
+  {
+    max_requests: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+    max_bytes: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+export type NetworkLimit = Static<typeof NetworkLimitSchema>;
+
+export const NetworkRequestEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("network/request"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        domain: NonEmptyStringSchema,
+        requests: Type.Integer({ minimum: 0 }),
+        bytes: Type.Integer({ minimum: 0 }),
+        limit: NetworkLimitSchema,
+        decision: DecisionSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const NetworkRedirectEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("network/redirect"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        from: NonEmptyStringSchema,
+        to: NonEmptyStringSchema,
+        status: Type.Integer({ minimum: 300, maximum: 399 }),
+        decision: DecisionSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const NetworkRejectedEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("network/rejected"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        domain: NonEmptyStringSchema,
+        reason: NonEmptyStringSchema,
+        limit: NetworkLimitSchema,
       },
       { additionalProperties: false },
     ),
@@ -765,6 +841,10 @@ export const SessionEventSchema = Type.Union([
   ModelRetryStartEventSchema,
   ModelRetryEndEventSchema,
   BudgetExceededEventSchema,
+  LoopGuardEventSchema,
+  NetworkRequestEventSchema,
+  NetworkRedirectEventSchema,
+  NetworkRejectedEventSchema,
   McpServerStartEventSchema,
   SkillLoadedEventSchema,
   SkillInvokedEventSchema,
@@ -800,6 +880,10 @@ export type ModelFallbackEvent = Static<typeof ModelFallbackEventSchema>;
 export type ModelRetryStartEvent = Static<typeof ModelRetryStartEventSchema>;
 export type ModelRetryEndEvent = Static<typeof ModelRetryEndEventSchema>;
 export type BudgetExceededEvent = Static<typeof BudgetExceededEventSchema>;
+export type LoopGuardEvent = Static<typeof LoopGuardEventSchema>;
+export type NetworkRequestEvent = Static<typeof NetworkRequestEventSchema>;
+export type NetworkRedirectEvent = Static<typeof NetworkRedirectEventSchema>;
+export type NetworkRejectedEvent = Static<typeof NetworkRejectedEventSchema>;
 export type McpServerStartEvent = Static<typeof McpServerStartEventSchema>;
 export type SkillLoadedEvent = Static<typeof SkillLoadedEventSchema>;
 export type SkillInvokedEvent = Static<typeof SkillInvokedEventSchema>;

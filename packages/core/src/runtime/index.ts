@@ -1176,19 +1176,16 @@ async function createRuntimeInner(
       ...(config.model.thinking !== undefined
         ? { thinkingLevel: config.model.thinking as never }
         : {}),
-      ...(config.budget.max_tokens !== null ||
-      config.budget.max_cost_usd !== null
-        ? {
-            budget: {
-              ...(config.budget.max_tokens === null
-                ? {}
-                : { maxTokens: config.budget.max_tokens }),
-              ...(config.budget.max_cost_usd === null
-                ? {}
-                : { maxCostUsd: config.budget.max_cost_usd }),
-            },
-          }
-        : {}),
+      budget: {
+        ...(config.budget.max_tokens === null
+          ? {}
+          : { maxTokens: config.budget.max_tokens }),
+        ...(config.budget.max_cost_usd === null
+          ? {}
+          : { maxCostUsd: config.budget.max_cost_usd }),
+        maxToolCalls: config.budget.max_tool_calls,
+        maxWallMs: config.budget.max_wall_ms,
+      },
       ...(state !== null ? { restore: state } : {}),
       runtimeFacts: {
         now: () => options.now?.() ?? new Date(),
