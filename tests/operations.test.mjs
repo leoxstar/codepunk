@@ -88,27 +88,90 @@ test("doctor passes with an injected healthy environment", async () => {
 test("doctor does not report ready on an unsupported platform", async () => {
   await withTempDirectory("codepunk-operations-platform-", async (root) => {
     const { paths } = await makeProject(root);
-    for (const unsupportedPlatform of ["freebsd", "win32"]) {
+    const report = await core.runDoctor({
+      paths,
+      config: core.defaultConfig(),
+      platform: "freebsd",
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+    });
+    assert.equal(report.ok, false);
+    const platform = report.checks.find((check) => check.id === "platform");
+    assert.equal(platform?.status, "error");
+    assert.match(platform?.message ?? "", /freebsd/u);
+    assert.match(core.formatDoctor(report), /doctor: blocking issues remain/u);
+  });
+});
+
+test("doctor accepts Windows 11 x64 and refuses older Windows", async () => {
+  await withTempDirectory("codepunk-operations-windows-gate-", async (root) => {
+    const { paths } = await makeProject(root);
+    const supported = await core.runDoctor({
+      paths,
+      config: core.defaultConfig(),
+      platform: "win32",
+      platformVersion: "10.0.26100",
+      arch: "x64",
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+      shellProbe: async () => null,
+    });
+    assert.equal(supported.ok, true);
+    const platform = supported.checks.find((check) => check.id === "platform");
+    assert.equal(platform?.status, "ok");
+    assert.equal(platform?.message, "win32 x64");
+    assert.match(core.formatDoctor(supported), /\[ok\] platform: win32 x64/u);
+    assert.match(core.formatDoctor(supported), /doctor: ready/u);
+
+    for (const blocked of [
+      { platformVersion: "10.0.19045", arch: "x64" },
+      { platformVersion: "10.0.26100", arch: "arm64" },
+    ]) {
       const report = await core.runDoctor({
         paths,
         config: core.defaultConfig(),
-        platform: unsupportedPlatform,
+        platform: "win32",
+        platformVersion: blocked.platformVersion,
+        arch: blocked.arch,
         environment: { PATH: "" },
         sandboxProbe: async () => null,
         modelProbe: async () => null,
+        shellProbe: async () => null,
       });
       assert.equal(report.ok, false);
-      const platform = report.checks.find((check) => check.id === "platform");
-      assert.equal(platform?.status, "error");
-      assert.match(
-        platform?.message ?? "",
-        new RegExp(unsupportedPlatform, "u"),
+      const platformCheck = report.checks.find(
+        (check) => check.id === "platform",
       );
+      assert.equal(platformCheck?.status, "error");
       assert.match(
         core.formatDoctor(report),
         /doctor: blocking issues remain/u,
       );
     }
+  });
+});
+
+test("doctor reports a missing Windows shell without failing the run", async () => {
+  await withTempDirectory("codepunk-operations-shell-", async (root) => {
+    const { paths } = await makeProject(root);
+    const report = await core.runDoctor({
+      paths,
+      config: core.defaultConfig(),
+      platform: "win32",
+      platformVersion: "10.0.26100",
+      arch: "x64",
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+      shellProbe: async () =>
+        "tools.shell=pwsh requires pwsh.exe or powershell.exe on PATH",
+    });
+    assert.equal(report.ok, false);
+    const shell = report.checks.find((check) => check.id === "tools.shell");
+    assert.equal(shell?.status, "error");
+    assert.match(core.formatDoctor(report), /\[error\] tools\.shell:/u);
   });
 });
 
