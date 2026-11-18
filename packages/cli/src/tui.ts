@@ -1517,7 +1517,6 @@ async function forkCurrentSession(
     );
     return;
   }
-  await session.waitForIdle();
   const entryId = argument.trim();
   if (entryId.length > 0) {
     const entry = runtime.host.sessionManager.getEntry(entryId);
@@ -1526,10 +1525,38 @@ async function forkCurrentSession(
       return;
     }
   }
-  const parentState = await runtime.host.saveAgentState();
+  await session.waitForIdle();
+  let parentState = await runtime.host.saveAgentState();
+  let stableSaves = 0;
+  for (
+    let attempt = 0;
+    attempt < 50 && parentState !== null && stableSaves < 2;
+    attempt += 1
+  ) {
+    if (runtime.session.metadata.state_covers_seq === runtime.session.lastSeq) {
+      stableSaves += 1;
+      if (stableSaves >= 2) {
+        break;
+      }
+    } else {
+      stableSaves = 0;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (stableSaves < 2) {
+      await session.waitForIdle();
+      parentState = await runtime.host.saveAgentState();
+    }
+  }
   if (parentState === null) {
     context.ui.notify(
       "the current session has no agent state to fork",
+      "error",
+    );
+    return;
+  }
+  if (stableSaves < 2) {
+    context.ui.notify(
+      "the current session did not settle before forking",
       "error",
     );
     return;
