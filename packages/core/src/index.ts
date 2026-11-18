@@ -120,11 +120,14 @@ export {
   coverageFor,
   decidePolicy,
   effectsForTool,
+  policyRequestForCall,
   policyRuleHash,
+  ruleMatches,
   type PolicyLayerInput,
   type PolicyMode,
   type PolicyRequest,
   type PolicyRule,
+  type PolicyRuleFixture,
   simpleShellArgv,
 } from "./policy/index.ts";
 export {

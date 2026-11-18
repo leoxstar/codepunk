@@ -554,6 +554,11 @@ function permissionSummary(runtime: CodepunkRuntime): string {
     `workspace trust: ${trustDisplay(runtime.workspaceTrust)} (${runtime.workspaceTrust.source})`,
     `trust root: ${runtime.workspaceTrust.root}`,
     `approvals: ${runtime.config.approval.mode} (${approval})`,
+    ...(runtime.workspaceTrust.trusted
+      ? []
+      : [
+          "approvals beyond this call: unavailable in an untrusted workspace; run /trust grant and restart",
+        ]),
     ...(runtime.config.approval.reviewer === "off"
       ? []
       : [
@@ -2466,6 +2471,7 @@ export class TuiApprovalChannel implements ApprovalChannel {
   private context: ExtensionContext | null = null;
   private persist: ((request: ApprovalRequest) => Promise<boolean>) | null =
     null;
+  private workspaceTrusted = false;
 
   constructor(isTTY = process.stdin.isTTY === true) {
     this.isTTY = isTTY;
@@ -2481,6 +2487,15 @@ export class TuiApprovalChannel implements ApprovalChannel {
     this.persist = handler;
   }
 
+  /**
+   * An untrusted workspace may only answer `once`. The broker enforces the
+   * same rule, but the selector must not offer a choice that would be
+   * rejected after the user already confirmed it.
+   */
+  setWorkspaceTrusted(trusted: boolean): void {
+    this.workspaceTrusted = trusted;
+  }
+
   async ask(request: ApprovalRequest): Promise<ApprovalAnswer | null> {
     if (!this.isTTY || this.context === null) {
       return null;
@@ -2490,14 +2505,15 @@ export class TuiApprovalChannel implements ApprovalChannel {
       request.argv.length > 0 &&
       request.cwd !== undefined;
     const choices = APPROVAL_CHOICES.filter(
-      (choice) => choice.scope === "once" || canReuseExact,
+      (choice) =>
+        choice.scope === "once" || (canReuseExact && this.workspaceTrusted),
     );
     const options = choices.map((choice) => choice.label);
+    const prompt = this.workspaceTrusted
+      ? formatApproval(request)
+      : `${formatApproval(request)}\n\nworkspace is untrusted; only "Allow once" is available for this call.`;
     while (true) {
-      const selected = await this.context.ui.select(
-        formatApproval(request),
-        options,
-      );
+      const selected = await this.context.ui.select(prompt, options);
       const choice = choices.find((candidate) => candidate.label === selected);
       if (choice === undefined || choice.decision === "deny") {
         const guidance =
@@ -2519,6 +2535,9 @@ export class TuiApprovalChannel implements ApprovalChannel {
         );
       }
       if (choice.scope === "persistent") {
+        if (!this.workspaceTrusted) {
+          return this.answer(request, "deny", "once");
+        }
         const confirmed = await this.context.ui.select(
           persistentApprovalPreview(request),
           [PERSIST_APPROVAL, PERSIST_BACK],
@@ -6043,6 +6062,9 @@ export function createTuiExtension(
 export function setTuiRuntime(state: TuiState, runtime: CodepunkRuntime): void {
   state.runtime = runtime;
   state.modelOnboardingShown = false;
+  if (typeof state.channel.setWorkspaceTrusted === "function") {
+    state.channel.setWorkspaceTrusted(runtime.workspaceTrust?.trusted ?? false);
+  }
   if (typeof state.channel.setPersistHandler === "function") {
     state.channel.setPersistHandler(async (request) => {
       if (

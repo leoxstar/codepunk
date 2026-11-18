@@ -1204,6 +1204,183 @@ test("rule hashes are canonical", () => {
   );
 });
 
+const V2_ECHO_POLICY = [
+  "version = 2",
+  "",
+  "[rules.allow_echo]",
+  'tool = "exec"',
+  'decision = "allow"',
+  'command = "/bin/echo"',
+  'justification = "exact echo only"',
+  "",
+  "[[rules.allow_echo.match]]",
+  'tool = "exec"',
+  'command = "/bin/echo"',
+  'argv = ["/bin/echo", "ok"]',
+  'cwd = "."',
+  "",
+  "[[rules.allow_echo.not_match]]",
+  'tool = "exec"',
+  'command = "/bin/echo"',
+  'argv = ["/bin/echo", "not-ok"]',
+  'cwd = "."',
+  "",
+].join("\n");
+
+test("policy rule match and not_match self-check", async () => {
+  await withTempDirectory("codepunk-policy-v2-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    await writeFile(path.join(paths.home, "policy.toml"), V2_ECHO_POLICY);
+    const loaded = await core.loadPolicyFiles(paths);
+    const rule = loaded.userRules[0];
+    assert.equal(rule.justification, "exact echo only");
+    assert.equal(rule.match.length, 1);
+    assert.equal(rule.not_match.length, 1);
+
+    const base = {
+      cwd: projectRoot,
+      workspaceRoot: paths.deliveryRoot,
+      deliveryRoot: paths.deliveryRoot,
+      codepunkHome: paths.home,
+      userRules: loaded.userRules,
+      layers: loaded.layers,
+    };
+    const execOk = core.decidePolicy(
+      core.policyRequestForCall({
+        ...base,
+        tool: "exec",
+        args: { argv: ["/bin/echo", "ok"] },
+        mode: "headless",
+      }),
+    );
+    assert.equal(execOk.decision, "allow");
+    assert.equal(execOk.rule, "allow_echo");
+    assert.equal(execOk.justification, "exact echo only");
+    assert.equal(execOk.layers[0].justification, "exact echo only");
+    assert.equal(execOk.layers[0].rule_sha256, core.policyRuleHash(rule));
+
+    const execNo = core.decidePolicy(
+      core.policyRequestForCall({
+        ...base,
+        tool: "exec",
+        args: { argv: ["/bin/echo", "not-ok"] },
+        mode: "headless",
+      }),
+    );
+    assert.notEqual(execNo.rule, "allow_echo");
+
+    const bashRequest = core.policyRequestForCall({
+      ...base,
+      tool: "bash",
+      args: { command: "/bin/echo ok" },
+    });
+    assert.equal(bashRequest.command, "/bin/echo ok");
+    assert.equal(bashRequest.argv, undefined);
+    const bashDecision = core.decidePolicy(bashRequest);
+    assert.notEqual(bashDecision.rule, "allow_echo");
+  });
+});
+
+test("policy command must be absolute", async () => {
+  await withTempDirectory("codepunk-policy-relative-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "policy.toml"),
+      V2_ECHO_POLICY.replace('command = "/bin/echo"', 'command = "echo"'),
+    );
+    await assert.rejects(
+      () => core.loadPolicyFiles(paths),
+      (error) => {
+        assert.equal(error.name, "ConfigError");
+        assert.equal(error.key, "rules.allow_echo.command");
+        assert.match(error.message, /absolute/u);
+        return true;
+      },
+    );
+  });
+});
+
+test("policy allow rules require a negative example", async () => {
+  await withTempDirectory("codepunk-policy-examples-", async (root) => {
+    const { paths } = await makeProject(root);
+    const withoutNegative = V2_ECHO_POLICY.slice(
+      0,
+      V2_ECHO_POLICY.indexOf("[[rules.allow_echo.not_match]]"),
+    );
+    await writeFile(path.join(paths.home, "policy.toml"), withoutNegative);
+    await assert.rejects(
+      () => core.loadPolicyFiles(paths),
+      (error) => {
+        assert.equal(error.name, "ConfigError");
+        assert.equal(error.key, "rules.allow_echo.not_match");
+        return true;
+      },
+    );
+
+    await writeFile(
+      path.join(paths.home, "policy.toml"),
+      [
+        "version = 2",
+        "",
+        "[rules.deny_rm]",
+        'tool = "bash"',
+        'decision = "deny"',
+        'justification = "never remove files"',
+        "",
+      ].join("\n"),
+    );
+    await assert.rejects(
+      () => core.loadPolicyFiles(paths),
+      (error) => {
+        assert.equal(error.name, "ConfigError");
+        assert.equal(error.key, "rules.deny_rm.match");
+        return true;
+      },
+    );
+  });
+});
+
+test("legacy policy loads with a migration warning", async () => {
+  await withTempDirectory("codepunk-policy-legacy-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "policy.toml"),
+      [
+        "version = 1",
+        "",
+        "[rules.legacy_echo]",
+        'tool = "exec"',
+        'decision = "allow"',
+        'command = "echo"',
+        'argv = ["echo", "ok"]',
+        "",
+      ].join("\n"),
+    );
+    const loaded = await core.loadPolicyFiles(paths);
+    assert.equal(loaded.userRules.length, 1);
+    assert.equal(loaded.userRules[0].command, "echo");
+    assert.equal(loaded.userRules[0].justification, undefined);
+    assert.equal(loaded.warnings.length, 1);
+    assert.match(loaded.warnings[0], /legacy version 1/u);
+    assert.match(loaded.warnings[0], /policy\.migrate_hint/u);
+    const decision = core.decidePolicy(
+      core.policyRequestForCall({
+        tool: "exec",
+        args: { argv: ["echo", "ok"] },
+        mode: "headless",
+        cwd: projectRoot,
+        workspaceRoot: paths.deliveryRoot,
+        deliveryRoot: paths.deliveryRoot,
+        codepunkHome: paths.home,
+        userRules: loaded.userRules,
+        layers: loaded.layers,
+      }),
+    );
+    assert.equal(decision.decision, "allow");
+    assert.equal(decision.rule, "legacy_echo");
+  });
+});
+
 test(
   "Windows absolute arguments keep their path separators",
   {

@@ -27,12 +27,19 @@ export interface ApprovalResult {
     | "expired"
     | "mismatch"
     | "already_answered"
+    | "scope_untrusted"
     | null;
 }
 
 export interface ApprovalBrokerOptions {
   ttlMs?: number;
   now?: () => Date;
+  /**
+   * Whether the current workspace may persist an approval beyond this call.
+   * Untrusted workspaces only receive `once`; the broker rejects broader
+   * scopes even if a channel or caller offers one.
+   */
+  workspaceTrusted?: boolean;
 }
 
 interface PendingApproval {
@@ -53,6 +60,7 @@ interface SessionGrant {
 export class ApprovalBroker {
   private readonly ttlMs: number;
   private readonly now: () => Date;
+  private readonly workspaceTrusted: boolean;
   private channel: ApprovalChannel | null = null;
   private readonly pending = new Map<string, PendingApproval>();
   private readonly sessionGrants: SessionGrant[] = [];
@@ -60,6 +68,7 @@ export class ApprovalBroker {
   constructor(options: ApprovalBrokerOptions = {}) {
     this.ttlMs = options.ttlMs ?? 120_000;
     this.now = options.now ?? (() => new Date());
+    this.workspaceTrusted = options.workspaceTrusted ?? false;
   }
 
   registerChannel(channel: ApprovalChannel): void {
@@ -246,11 +255,30 @@ export class ApprovalBroker {
       answer.session_id !== request.session_id ||
       answer.tool_call_id !== request.tool_call_id ||
       (answer.answer !== "allow" && answer.answer !== "deny") ||
-      (scope !== "once" && scope !== "session" && scope !== "persistent") ||
-      (scope !== "once" &&
-        (request.argv === undefined || request.cwd === undefined));
-    const approved = !correlationMismatch && answer.answer === "allow";
-    if (approved && scope !== "once") {
+      (scope !== "once" && scope !== "session" && scope !== "persistent");
+    if (
+      !correlationMismatch &&
+      answer.answer === "allow" &&
+      scope !== "once" &&
+      !this.workspaceTrusted
+    ) {
+      return {
+        approved: false,
+        answer,
+        evidence: approvalEvidence(request, answer),
+        reason:
+          "approval.scope_untrusted: an untrusted workspace only allows once; " +
+          "run `codepunk trust grant` and start a new session for session or persistent approvals",
+        failure: "scope_untrusted",
+      };
+    }
+    const scopeShapeMismatch =
+      !correlationMismatch &&
+      scope !== "once" &&
+      (request.argv === undefined || request.cwd === undefined);
+    const approved =
+      !correlationMismatch && !scopeShapeMismatch && answer.answer === "allow";
+    if (approved && scope !== "once" && !scopeShapeMismatch) {
       const tool = request.tool;
       if (
         tool !== undefined &&
@@ -273,14 +301,19 @@ export class ApprovalBroker {
       evidence: approvalEvidence(request, answer),
       reason: correlationMismatch
         ? "approval answer did not match the request"
-        : approved
-          ? "approval allowed"
-          : "approval denied",
-      failure: correlationMismatch ? "mismatch" : null,
+        : scopeShapeMismatch
+          ? "approval answer did not match the request"
+          : approved
+            ? "approval allowed"
+            : "approval denied",
+      failure: correlationMismatch || scopeShapeMismatch ? "mismatch" : null,
     };
   }
 
   private matchSessionGrant(request: ApprovalRequest): SessionGrant | null {
+    if (!this.workspaceTrusted) {
+      return null;
+    }
     if (
       request.tool === undefined ||
       request.argv === undefined ||

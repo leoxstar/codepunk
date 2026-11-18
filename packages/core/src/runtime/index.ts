@@ -1074,7 +1074,9 @@ async function createRuntimeInner(
     options.runId ?? createUlid(options.now?.() ?? new Date());
   const ledger = new RunLedger(paths, session.sessionId, initialRunId);
   await ledger.prepare(initialRunId);
-  const approval = new ApprovalBroker();
+  const approval = new ApprovalBroker({
+    workspaceTrusted: workspaceTrust.trusted,
+  });
   const interactiveApprovalChannel = options.approvalChannel ?? null;
   if (config.approval.mode !== "deny" && interactiveApprovalChannel !== null) {
     approval.registerChannel(interactiveApprovalChannel);

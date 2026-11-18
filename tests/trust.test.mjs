@@ -1259,3 +1259,108 @@ test("partial trust changes preserve unrelated grants", async () => {
     });
   });
 });
+
+test("trust grant applies to the next session", async () => {
+  await withTempDirectory("codepunk-trust-next-session-", async (root) => {
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".codepunk"), { recursive: true });
+    await fs.mkdir(home);
+    await writeFile(
+      path.join(workspace, ".codepunk", "config.toml"),
+      '[context]\nappend = "project instructions"\n',
+    );
+
+    const before = await core.resolveWorkspaceTrust({
+      cwd: workspace,
+      root: workspace,
+      home,
+    });
+    assert.equal(before.trusted, false);
+
+    let calls = 0;
+    const answer = (request) => ({
+      request_id: request.request_id,
+      answer: "allow",
+      scope: "session",
+      channel: "tui",
+      channel_id: request.channel_id,
+      nonce_sha256: request.nonce_sha256,
+      worker_id: request.worker_id,
+      session_id: request.session_id,
+      tool_call_id: request.tool_call_id,
+      answered_at: new Date().toISOString(),
+    });
+    const channel = {
+      id: "tui-main",
+      kind: "tui",
+      isTTY: true,
+      async ask(request) {
+        calls += 1;
+        return answer(request);
+      },
+    };
+    const input = {
+      sessionId: "current-session",
+      workerId: "worker-1",
+      tool: "bash",
+      argv: ["/bin/mkdir", "made"],
+      cwd: workspace,
+    };
+    const current = new core.ApprovalBroker({
+      workspaceTrusted: before.trusted,
+    });
+    current.registerChannel(channel);
+    const rejected = await current.request({
+      ...input,
+      toolCallId: "current-call",
+    });
+    assert.equal(rejected.failure, "scope_untrusted");
+
+    await core.saveWorkspaceTrustGrants(
+      home,
+      workspace,
+      core.allWorkspaceTrustGrants(true),
+      "cli",
+    );
+    const after = await core.resolveWorkspaceTrust({
+      cwd: workspace,
+      root: workspace,
+      home,
+    });
+    assert.equal(after.trusted, true);
+
+    const stillCurrent = await current.request({
+      ...input,
+      toolCallId: "current-call-2",
+    });
+    assert.equal(stillCurrent.failure, "scope_untrusted");
+    assert.equal(calls, 2);
+
+    const next = new core.ApprovalBroker({
+      workspaceTrusted: after.trusted,
+    });
+    next.registerChannel(channel);
+    const granted = await next.request({
+      ...input,
+      sessionId: "next-session",
+      toolCallId: "next-call",
+    });
+    assert.equal(granted.approved, true);
+    assert.equal(granted.evidence.scope, "session");
+    assert.equal(calls, 3);
+    const reused = await next.request({
+      ...input,
+      sessionId: "next-session",
+      workerId: "worker-2",
+      toolCallId: "next-call-2",
+    });
+    assert.equal(reused.approved, true);
+    assert.equal(
+      reused.evidence.reused_from_request_id,
+      granted.evidence.request_id,
+    );
+    assert.equal(calls, 3);
+  });
+});

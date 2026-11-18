@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import type {
-  AutonomyProfile,
   Coverage,
   Decision,
   Effects,
@@ -11,8 +10,6 @@ import type {
 import {
   effectiveApprovalDecision,
   type ApprovalClass,
-  type ApprovalMode,
-  type FilesystemMode,
 } from "../config/index.ts";
 import { recordHash } from "../platform/hash.ts";
 import {
@@ -24,59 +21,17 @@ import {
 } from "../platform/path.ts";
 import { isShellLauncher } from "../platform/shell.ts";
 import { MCP_RESOURCE_TOOL_NAMES, isMcpResourceTool } from "../mcp/names.ts";
+import { ruleMatches, type PolicyRequest, type PolicyRule } from "./match.ts";
+
+export type {
+  PolicyLayerInput,
+  PolicyRequest,
+  PolicyRule,
+  PolicyRuleFixture,
+} from "./match.ts";
+export { policyRequestForCall, ruleMatches } from "./match.ts";
 
 export type PolicyMode = "interactive" | "headless" | "worker";
-
-export interface PolicyRule {
-  id: string;
-  tool: string;
-  decision: Decision;
-  path?: string;
-  command?: string;
-  argv?: readonly string[];
-}
-
-export interface PolicyLayerInput {
-  layer: PolicyLayer["layer"];
-  source: string;
-  sha256: string;
-  rules: readonly PolicyRule[];
-}
-
-export interface PolicyRequest {
-  tool: string;
-  args?: Record<string, unknown>;
-  command?: string;
-  argv?: readonly string[];
-  cwd: string;
-  workspaceRoot: string;
-  /**
-   * Explicit extra file roots from `--add-dir`. They extend path containment
-   * only; project config, policy, skills, MCP servers, and instructions are
-   * never discovered from these roots.
-   */
-  additionalRoots?: readonly string[];
-  deliveryRoot?: string;
-  codepunkHome?: string;
-  mode?: PolicyMode;
-  autonomy?: AutonomyProfile;
-  approvalMode?: ApprovalMode;
-  /** Headless policy may defer an unresolved ask to an enabled model reviewer. */
-  reviewerAvailable?: boolean;
-  filesystem?: FilesystemMode;
-  writeSet?: readonly string[];
-  /**
-   * Exact skill files discovered and validated by the product. They remain
-   * readable even though their user/project roots are otherwise protected.
-   * This is an exact-file exception, not a directory-wide home exemption.
-   */
-  readableSkillFiles?: readonly string[];
-  userRules?: readonly PolicyRule[];
-  projectRules?: readonly PolicyRule[];
-  layers?: readonly PolicyLayerInput[];
-  userDefault?: Decision;
-  projectDefault?: Decision;
-}
 
 interface RuleResult {
   decision: Decision | null;
@@ -93,44 +48,6 @@ export const DEFAULT_POLICY_MODE: PolicyMode = "interactive";
 
 export function isMcpProductTool(tool: string): boolean {
   return tool.startsWith("mcp__") || isMcpResourceTool(tool);
-}
-
-function resolveRulePath(rulePath: string, cwd: string): string {
-  return path.isAbsolute(rulePath) ? rulePath : path.resolve(cwd, rulePath);
-}
-
-function ruleMatches(rule: PolicyRule, request: PolicyRequest): boolean {
-  if (rule.tool !== "*" && rule.tool !== request.tool) {
-    return false;
-  }
-  if (rule.command !== undefined && rule.command !== request.command) {
-    return false;
-  }
-  if (rule.argv !== undefined) {
-    if (
-      request.argv === undefined ||
-      rule.argv.length !== request.argv.length ||
-      rule.argv.some((value, index) => value !== request.argv?.[index])
-    ) {
-      return false;
-    }
-  }
-  if (rule.path !== undefined) {
-    const candidate = request.args?.["path"];
-    if (typeof candidate !== "string") {
-      return false;
-    }
-    const expected = resolveRulePath(rule.path, request.cwd);
-    const actual = normalizeAbsolute(
-      path.isAbsolute(candidate)
-        ? candidate
-        : path.resolve(request.cwd, candidate),
-    );
-    if (!isInsidePath(expected, actual)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function evaluateRules(
@@ -173,6 +90,13 @@ function layersFor(
         layer.layer === "project"
           ? ruleHash(projectRule, layer.sha256)
           : ruleHash(userRule, layer.sha256),
+      ...(layer.layer === "project"
+        ? projectRule?.justification === undefined
+          ? {}
+          : { justification: projectRule.justification }
+        : userRule?.justification === undefined
+          ? {}
+          : { justification: userRule.justification }),
     }));
   }
   return [
@@ -184,6 +108,9 @@ function layersFor(
         rules: request.userRules ?? [],
       }),
       rule_sha256: ruleHash(userRule, "user-floor"),
+      ...(userRule?.justification === undefined
+        ? {}
+        : { justification: userRule.justification }),
     },
   ];
 }
@@ -1942,6 +1869,9 @@ export function decidePolicy(request: PolicyRequest): PolicyDecision {
     approval_class: approvalClass,
     rule: selectedRule?.id ?? "policy.default",
     rule_sha256: ruleHash(selectedRule, "policy-default"),
+    ...(selectedRule?.justification === undefined
+      ? {}
+      : { justification: selectedRule.justification }),
     reason,
     layers: layersFor(request, user.rule, project.rule),
     match: {

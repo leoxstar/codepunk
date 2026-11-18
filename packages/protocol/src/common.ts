@@ -85,6 +85,7 @@ export const PolicyLayerSchema = Type.Object(
     source: NonEmptyStringSchema,
     sha256: Sha256Schema,
     rule_sha256: Sha256Schema,
+    justification: Type.Optional(NonEmptyStringSchema),
   },
   { additionalProperties: false },
 );
