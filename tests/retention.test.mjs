@@ -298,3 +298,150 @@ test("evidence count keeps 500 runs and prunes the oldest at 501", async () => {
     assert.equal(overBoundary.retainedCounts.evidenceRuns, 500);
   });
 });
+
+test("gc plans before deleting and preserves protected state", async () => {
+  await withTempDirectory("codepunk-gc-", async (root) => {
+    const { paths } = await makeProject(root);
+    const artifact = path.join(paths.artifactsDir, "old.txt");
+    await writeFile(artifact, "artifact bytes");
+    const artifactRelative = path
+      .relative(paths.home, artifact)
+      .split(path.sep)
+      .join("/");
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(artifact, old, old);
+    const sessionFile = path.join(paths.sessionsDir, "session.jsonl");
+    const evidenceFile = path.join(paths.evidenceDir, "run.jsonl");
+    const verdictFile = path.join(paths.verdictsDir, "run.json");
+    const checkpointFile = path.join(paths.sessionsDir, "checkpoints.json");
+    await writeFile(sessionFile, "session\n");
+    await writeFile(evidenceFile, "evidence\n");
+    await writeFile(verdictFile, "verdict\n");
+    await writeFile(checkpointFile, "checkpoint\n");
+
+    const before = await fs.readFile(artifact);
+    const dry = await core.applyGc(paths.home, {
+      dryRun: true,
+      now: new Date("2026-11-18T00:00:00.000Z"),
+    });
+    assert.equal(dry.dry_run, true);
+    assert.deepEqual(
+      dry.candidates.map((candidate) => candidate.path),
+      [artifactRelative],
+    );
+    assert.deepEqual(await fs.readFile(artifact), before);
+
+    const applied = await core.applyGc(paths.home, {
+      dryRun: false,
+      now: new Date("2026-11-18T00:00:00.000Z"),
+    });
+    assert.equal(applied.dry_run, false);
+    await assert.rejects(fs.readFile(artifact), { code: "ENOENT" });
+    for (const protectedPath of [
+      sessionFile,
+      evidenceFile,
+      verdictFile,
+      checkpointFile,
+    ]) {
+      assert.ok((await fs.readFile(protectedPath, "utf8")).length > 0);
+    }
+    assert.ok(applied.backup_id !== null);
+    await core.restoreBackup(paths.home, applied.backup_id);
+    assert.deepEqual(await fs.readFile(artifact), before);
+
+    const operations = await core.readRetentionOperations(paths.home);
+    assert.ok(operations.some((operation) => operation.action === "gc"));
+    assert.ok(
+      operations.every((operation, index) => operation.seq === index + 1),
+    );
+
+    await writeFile(artifact, "artifact bytes");
+    await fs.utimes(artifact, old, old);
+    await fs.rename(
+      path.join(paths.home, "backups"),
+      path.join(paths.home, "backups-saved"),
+    );
+    await writeFile(path.join(paths.home, "backups"), "not a directory");
+    await assert.rejects(
+      core.applyGc(paths.home, {
+        dryRun: false,
+        now: new Date("2026-11-18T00:00:00.000Z"),
+      }),
+    );
+    assert.deepEqual(await fs.readFile(artifact), before);
+  });
+});
+
+test("restore rejects a corrupted backup before touching targets", async () => {
+  await withTempDirectory("codepunk-restore-corrupt-", async (root) => {
+    const { paths } = await makeProject(root);
+    const target = path.join(paths.artifactsDir, "file.txt");
+    await writeFile(target, "original");
+    const relative = path
+      .relative(paths.home, target)
+      .split(path.sep)
+      .join("/");
+    const backup = await core.createBackup(paths.home, {
+      files: [relative],
+    });
+    const backupFile = path.join(
+      paths.home,
+      "backups",
+      backup.id,
+      "files",
+      ...relative.split("/"),
+    );
+    await writeFile(backupFile, "tampered");
+    await assert.rejects(
+      core.restoreBackup(paths.home, backup.id),
+      (error) => error.code === "retention.backup_corrupt",
+    );
+    assert.equal(await fs.readFile(target, "utf8"), "original");
+  });
+});
+
+test("restore rolls back a mid-write failure", async () => {
+  await withTempDirectory("codepunk-restore-rollback-", async (root) => {
+    const { paths } = await makeProject(root);
+    const first = path.join(paths.artifactsDir, "one.txt");
+    const second = path.join(paths.artifactsDir, "two.txt");
+    await writeFile(first, "backup one");
+    await writeFile(second, "backup two");
+    const relative = [first, second].map((file) =>
+      path.relative(paths.home, file).split(path.sep).join("/"),
+    );
+    const backup = await core.createBackup(paths.home, {
+      files: relative,
+    });
+    await writeFile(first, "current one");
+    await writeFile(second, "current two");
+    await assert.rejects(
+      core.restoreBackup(paths.home, backup.id, { failAfterWrites: 1 }),
+      (error) => error.code === "retention.restore_failed",
+    );
+    assert.equal(await fs.readFile(first, "utf8"), "current one");
+    assert.equal(await fs.readFile(second, "utf8"), "current two");
+  });
+});
+
+test("migrate backs up and restores on failure", async () => {
+  await withTempDirectory("codepunk-migrate-", async (root) => {
+    const { paths } = await makeProject(root);
+    const artifact = path.join(paths.artifactsDir, "file.txt");
+    await writeFile(artifact, "bytes");
+    const check = await core.checkMigration(paths.home);
+    assert.equal(check.required, true);
+    await assert.rejects(
+      core.applyMigration(paths.home, { failAfterWrites: 0 }),
+      (error) => error.code === "retention.migration_failed",
+    );
+    assert.equal(await fs.readFile(artifact, "utf8"), "bytes");
+    const after = await core.checkMigration(paths.home);
+    assert.equal(after.required, true);
+    const applied = await core.applyMigration(paths.home);
+    assert.ok(applied.backup_id !== null);
+    const migrated = await core.checkMigration(paths.home);
+    assert.equal(migrated.required, false);
+    assert.equal(migrated.current, core.STATE_VERSION);
+  });
+});
