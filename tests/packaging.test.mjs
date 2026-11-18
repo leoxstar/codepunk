@@ -11,6 +11,7 @@ import {
   execFilePortable,
   PRODUCT_VERSION,
   REPO_ROOT,
+  resolveInstallTimeoutMs,
   withTempDirectory,
 } from "./support/helpers.mjs";
 
@@ -118,7 +119,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
         "--no-fund",
         ...packed,
       ],
-      { timeout: 180_000 },
+      { timeout: resolveInstallTimeoutMs() },
     );
     const bin =
       process.platform === "win32"

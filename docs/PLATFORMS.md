@@ -86,4 +86,5 @@ No Windows support claim may be added without the manual verification evidence.
 
 `search` resolves local `rg` and `fd` binaries. It never downloads a binary at
 tool-call time. A missing binary fails with an installation hint and a
-`codepunk doctor` diagnostic.
+`codepunk doctor` diagnostic. `scripts/ci-install-sandbox-deps.sh` provisions
+both binaries on hosted Unix and Windows runners.

@@ -255,15 +255,16 @@ async function createPackagingFixture() {
 async function createNpmPackFixture(fixture, output, status = 0) {
   const directory = path.join(fixture.temporaryRoot, "bin");
   await mkdir(directory, { recursive: true });
+  const script = [
+    "#!/usr/bin/env node",
+    `process.stdout.write(${JSON.stringify(output)});`,
+    `process.exitCode = ${status};`,
+    "",
+  ].join("\n");
+  await writeFile(path.join(directory, "npm"), script, { mode: 0o755 });
   await writeFile(
-    path.join(directory, "npm"),
-    [
-      "#!/usr/bin/env node",
-      `process.stdout.write(${JSON.stringify(output)});`,
-      `process.exitCode = ${status};`,
-      "",
-    ].join("\n"),
-    { mode: 0o755 },
+    path.join(directory, "npm.cmd"),
+    '@echo off\r\nnode "%~dp0npm" %*\r\n',
   );
   return {
     ...process.env,

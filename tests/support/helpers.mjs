@@ -300,7 +300,8 @@ export function withoutAmbientProviderEnv(env = process.env) {
  * cold runner or a slow registry mirror legitimately needs longer than a warm
  * laptop, and a hard-coded value turns "slower than my machine" into "broken".
  */
-export const DEFAULT_INSTALL_TIMEOUT_MS = 120_000;
+export const DEFAULT_INSTALL_TIMEOUT_MS =
+  process.platform === "win32" ? 300_000 : 120_000;
 export const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
 
 const NETWORK_ERROR_CODES = new Set([

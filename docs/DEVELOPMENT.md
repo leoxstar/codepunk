@@ -145,8 +145,9 @@ capabilities (`kernel.apparmor_restrict_unprivileged_userns` on 24.04 and
 later, and the `bwrap-userns-restrict` profile on 25.04 and later, which the
 sysctl does not affect), and probes a nested capability-bearing namespace
 inside bubblewrap, the operation `srt`'s seccomp helper performs. On macOS the
-script is a no-op because `srt` uses the built-in Seatbelt sandbox. Windows is not a
-supported CI platform.
+script installs missing `rg` and `fd` but needs no sandbox packages because
+`srt` uses the built-in Seatbelt sandbox. On Windows it installs `rg` and `fd`
+through Chocolatey and skips privileged `srt` provisioning.
 
 ## Repository checks
 

@@ -9,12 +9,14 @@ import {
   canCreateFileSymlink,
   createDirectoryLink,
   makeProject,
+  windowsSrtSkipReason,
   withSandboxTempDirectory,
   withTempDirectory,
   writeFile,
 } from "./support/helpers.mjs";
 
 const core = await importCore();
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 
 test("a persisted full filesystem requires the dangerous start flag", async () => {
   await withTempDirectory("codepunk-config-full-fs-", async (root) => {
@@ -259,33 +261,42 @@ test("config reload turns loaded plugins off without restarting", async () => {
   });
 });
 
-test("read-only autonomy removes the runtime sandbox write grant", async () => {
-  await withSandboxTempDirectory("codepunk-config-readonly-", async (root) => {
-    const { projectRoot, paths } = await makeProject(root);
-    await writeFile(
-      path.join(paths.home, "config.toml"),
-      ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
+test(
+  "read-only autonomy removes the runtime sandbox write grant",
+  {
+    skip: process.platform === "win32" ? WINDOWS_SRT_SKIP : false,
+  },
+  async () => {
+    await withSandboxTempDirectory(
+      "codepunk-config-readonly-",
+      async (root) => {
+        const { projectRoot, paths } = await makeProject(root);
+        await writeFile(
+          path.join(paths.home, "config.toml"),
+          ["[autonomy]", 'profile = "read-only"', ""].join("\n"),
+        );
+        const runtime = await core.createRuntime({
+          cwd: projectRoot,
+          environment: { CODEPUNK_HOME: paths.home },
+          approvalChannel: null,
+          allowMissingModel: true,
+        });
+        try {
+          assert.ok(runtime.sandbox);
+          const target = path.join(projectRoot, "read-only-probe.txt");
+          const write = await runtime.sandbox.execCommand(
+            `node -e "require('fs').writeFileSync('read-only-probe.txt','blocked')"`,
+            projectRoot,
+          );
+          assert.notEqual(write.exitCode, 0, write.output);
+          await assert.rejects(fs.stat(target), { code: "ENOENT" });
+        } finally {
+          await runtime.dispose();
+        }
+      },
     );
-    const runtime = await core.createRuntime({
-      cwd: projectRoot,
-      environment: { CODEPUNK_HOME: paths.home },
-      approvalChannel: null,
-      allowMissingModel: true,
-    });
-    try {
-      assert.ok(runtime.sandbox);
-      const target = path.join(projectRoot, "read-only-probe.txt");
-      const write = await runtime.sandbox.execCommand(
-        `node -e "require('fs').writeFileSync('read-only-probe.txt','blocked')"`,
-        projectRoot,
-      );
-      assert.notEqual(write.exitCode, 0, write.output);
-      await assert.rejects(fs.stat(target), { code: "ENOENT" });
-    } finally {
-      await runtime.dispose();
-    }
-  });
-});
+  },
+);
 
 test("read-only autonomy skips plugins enabled by persisted config", async () => {
   await withTempDirectory("codepunk-config-readonly-plugins-", async (root) => {

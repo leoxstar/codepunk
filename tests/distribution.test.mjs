@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   classifyCommandFailure,
+  DEFAULT_INSTALL_TIMEOUT_MS,
   describeInstallFailure,
   ensureBuilt,
   escapeRegExp,
@@ -109,7 +110,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
 });
 
 test("external command timeouts are configurable", () => {
-  assert.equal(resolveInstallTimeoutMs({}), 120_000);
+  assert.equal(resolveInstallTimeoutMs({}), DEFAULT_INSTALL_TIMEOUT_MS);
   assert.equal(
     resolveInstallTimeoutMs({ CODEPUNK_TEST_INSTALL_TIMEOUT_MS: "45000" }),
     45_000,
