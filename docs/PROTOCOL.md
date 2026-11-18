@@ -235,3 +235,65 @@ CONNECT and is governed by the runtime allowlist alone.
 Readers must not silently drop an unknown event kind. `SessionStore` throws
 `SessionUnsupportedEventError` with the offending kind so an old binary fails
 closed instead of treating a new event as a no-op.
+
+## Plugin isolation
+
+Plugins run in a separate child host. The main process and the plugin host
+exchange newline-delimited JSON frames defined in
+`packages/protocol/src/plugin.ts`. A frame is one request or one response;
+the maximum frame size is `PLUGIN_MAX_FRAME_BYTES`.
+
+Every request carries a unique `call_id`, the `plugin_id`, the method, JSON
+parameters, a timeout, and an optional cancellation token. A response carries
+the same `call_id` and either a result or a typed `PluginError`. The stable
+error codes include `plugin.invalid_request`, `plugin.unknown_method`,
+`plugin.duplicate_call`, `plugin.timeout`, `plugin.cancelled`,
+`plugin.frame_too_large`, `plugin.crashed`, `plugin.capability_denied`,
+`plugin.policy_denied`, and `plugin.approval_denied`.
+
+The main process owns policy, approval, sandboxing, and evidence. A plugin
+cannot receive the parent approval broker or evidence ledger. Approval is
+routed back by the request's `call_id`; an answer for one call never applies
+to another.
+
+### Plugin events
+
+`plugin/started` records the manifest hash, child PID, startup credential
+verification, and start time:
+
+```json
+{
+  "kind": "plugin/started",
+  "data": {
+    "plugin_id": "example",
+    "version": "1.0.0",
+    "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "pid": 1234,
+    "credential_verified": true,
+    "started_at": "2026-11-18T00:00:00.000Z"
+  }
+}
+```
+
+`plugin/tool_call` binds a tool call to the plugin and its manifest:
+
+```json
+{
+  "kind": "plugin/tool_call",
+  "data": {
+    "run_id": "run-1",
+    "tool_call_id": "call-1",
+    "plugin_id": "example",
+    "plugin_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "executor": "child-host",
+    "decision": "allow",
+    "approval": null,
+    "outcome": "completed",
+    "reason": null
+  }
+}
+```
+
+`plugin/stopped` records the child PID, startup credential verification,
+reason, exit code, and stop time. If isolation is unavailable, the plugin is
+not loaded; there is no in-process fallback.

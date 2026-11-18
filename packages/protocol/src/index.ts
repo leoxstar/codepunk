@@ -120,6 +120,9 @@ export {
   NetworkRedirectEventSchema,
   NetworkRejectedEventSchema,
   NetworkRequestEventSchema,
+  PluginStartedEventSchema,
+  PluginStoppedEventSchema,
+  PluginToolCallEventSchema,
   PlanStepSchema,
   PlanUpdateEventSchema,
   RunEndEventSchema,
@@ -162,6 +165,9 @@ export {
   type NetworkRedirectEvent,
   type NetworkRejectedEvent,
   type NetworkRequestEvent,
+  type PluginStartedEvent,
+  type PluginStoppedEvent,
+  type PluginToolCallEvent,
   type PlanStep,
   type PlanUpdateEvent,
   type RunEndEvent,
@@ -181,6 +187,23 @@ export {
   type TrustDecisionEvent,
   type UserInputEvent,
 } from "./session.ts";
+
+export {
+  PLUGIN_MAX_FRAME_BYTES,
+  PLUGIN_PROTOCOL_VERSION,
+  PluginErrorCodeSchema,
+  PluginErrorSchema,
+  PluginFrameSchema,
+  PluginMethodSchema,
+  PluginRequestSchema,
+  PluginResponseSchema,
+  type PluginError,
+  type PluginErrorCode,
+  type PluginFrame,
+  type PluginMethod,
+  type PluginRequest,
+  type PluginResponse,
+} from "./plugin.ts";
 
 export {
   SignOffRequestSchema,

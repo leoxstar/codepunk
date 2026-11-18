@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { importCore } from "./support/core.mjs";
+import { importCore, importProtocol } from "./support/core.mjs";
 import {
   createLinkedEntry,
   makeProject,
@@ -15,6 +15,7 @@ import {
 import { TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
+const protocol = await importProtocol();
 const execFileAsync = promisify(execFile);
 
 async function createHost(paths, extensionPaths, sessionId, overrides = {}) {
@@ -74,6 +75,125 @@ test("user plugins are opt-in and project plugins are never scanned", async () =
     assert.deepEqual(enabled.paths, [pluginPath]);
     assert.equal(enabled.paths.includes(projectPlugin), false);
   });
+});
+
+function sessionFrame(kind, data) {
+  return {
+    type: "codepunk/event",
+    version: 1,
+    seq: 1,
+    at: "2026-11-18T00:00:00.000Z",
+    kind,
+    data,
+  };
+}
+
+test("plugin events validate against the session schema", () => {
+  const manifest = `sha256:${"a".repeat(64)}`;
+  const started = sessionFrame("plugin/started", {
+    plugin_id: "hello",
+    version: "1.0.0",
+    manifest_sha256: manifest,
+    pid: 4242,
+    credential_verified: true,
+    started_at: "2026-11-18T00:00:00.000Z",
+  });
+  const call = sessionFrame("plugin/tool_call", {
+    run_id: "run-1",
+    tool_call_id: "call-1",
+    plugin_id: "hello",
+    plugin_manifest_sha256: manifest,
+    executor: "child-host",
+    decision: "allow",
+    approval: null,
+    outcome: "completed",
+    reason: null,
+  });
+  const stopped = sessionFrame("plugin/stopped", {
+    plugin_id: "hello",
+    pid: 4242,
+    credential_verified: true,
+    reason: "exit",
+    exit_code: 0,
+    stopped_at: "2026-11-18T00:00:01.000Z",
+  });
+  for (const event of [started, call, stopped]) {
+    const validation = protocol.validateSchema(
+      protocol.SessionEventSchema,
+      event,
+    );
+    assert.ok(
+      validation.ok,
+      `${event.kind} failed schema: ${JSON.stringify(validation)}`,
+    );
+  }
+
+  const missingCredential = structuredClone(stopped);
+  delete missingCredential.data.credential_verified;
+  assert.equal(
+    protocol.validateSchema(protocol.SessionEventSchema, missingCredential).ok,
+    false,
+  );
+  const wrongExecutor = structuredClone(call);
+  wrongExecutor.data.executor = "in-process";
+  assert.equal(
+    protocol.validateSchema(protocol.SessionEventSchema, wrongExecutor).ok,
+    false,
+  );
+});
+
+test("plugin IPC frames reject malformed requests and responses", () => {
+  const request = {
+    type: "codepunk/plugin-request",
+    version: 1,
+    call_id: "call-1",
+    plugin_id: "hello",
+    method: "tools/call",
+    params: { name: "read" },
+    timeout_ms: 1000,
+  };
+  assert.equal(
+    protocol.validateSchema(protocol.PluginRequestSchema, request).ok,
+    true,
+  );
+
+  const unknownField = structuredClone(request);
+  unknownField.argv = ["/bin/sh"];
+  assert.equal(
+    protocol.validateSchema(protocol.PluginRequestSchema, unknownField).ok,
+    false,
+  );
+
+  const unknownMethod = structuredClone(request);
+  unknownMethod.method = "tools/spawn";
+  assert.equal(
+    protocol.validateSchema(protocol.PluginRequestSchema, unknownMethod).ok,
+    false,
+  );
+
+  const response = {
+    type: "codepunk/plugin-response",
+    version: 1,
+    call_id: "call-1",
+    plugin_id: "hello",
+    ok: false,
+    error: {
+      code: "plugin.timeout",
+      message: "timed out",
+      retryable: false,
+    },
+  };
+  assert.equal(
+    protocol.validateSchema(protocol.PluginResponseSchema, response).ok,
+    true,
+  );
+  const unknownCode = structuredClone(response);
+  unknownCode.error.code = "plugin.magic";
+  assert.equal(
+    protocol.validateSchema(protocol.PluginResponseSchema, unknownCode).ok,
+    false,
+  );
+  assert.ok(protocol.PLUGIN_MAX_FRAME_BYTES > 0);
 });
 
 test("a user command plugin loads through the guarded host", async () => {

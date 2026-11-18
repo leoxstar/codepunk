@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { ApprovalAnswerSchema } from "./approval.ts";
+import { ApprovalAnswerSchema, ApprovalEvidenceSchema } from "./approval.ts";
 import {
   AutonomyProfileSchema,
   AutonomyRuleSchema,
@@ -819,6 +819,78 @@ export const SubagentResultEventSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const PluginStartedEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("plugin/started"),
+    data: Type.Object(
+      {
+        plugin_id: NonEmptyStringSchema,
+        version: NonEmptyStringSchema,
+        manifest_sha256: Sha256Schema,
+        pid: Type.Integer({ minimum: 1 }),
+        credential_verified: Type.Boolean(),
+        started_at: TimestampSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const PluginToolCallEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("plugin/tool_call"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        tool_call_id: NonEmptyStringSchema,
+        plugin_id: NonEmptyStringSchema,
+        plugin_manifest_sha256: Sha256Schema,
+        executor: Type.Literal("child-host"),
+        decision: DecisionSchema,
+        approval: Type.Union([ApprovalEvidenceSchema, Type.Null()]),
+        outcome: Type.Union([
+          Type.Literal("completed"),
+          Type.Literal("failed"),
+          Type.Literal("denied"),
+          Type.Literal("cancelled"),
+        ]),
+        reason: Type.Union([NonEmptyStringSchema, Type.Null()]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const PluginStoppedEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("plugin/stopped"),
+    data: Type.Object(
+      {
+        plugin_id: NonEmptyStringSchema,
+        pid: Type.Integer({ minimum: 1 }),
+        credential_verified: Type.Boolean(),
+        reason: Type.Union([
+          Type.Literal("exit"),
+          Type.Literal("crash"),
+          Type.Literal("timeout"),
+          Type.Literal("cancel"),
+          Type.Literal("shutdown"),
+          Type.Literal("error"),
+        ]),
+        exit_code: Type.Union([Type.Integer(), Type.Null()]),
+        stopped_at: TimestampSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionEventSchema = Type.Union([
   RunStartEventSchema,
   UserInputEventSchema,
@@ -853,6 +925,9 @@ export const SessionEventSchema = Type.Union([
   AutonomyProfileEventSchema,
   AutonomyRevokedEventSchema,
   SubagentResultEventSchema,
+  PluginStartedEventSchema,
+  PluginToolCallEventSchema,
+  PluginStoppedEventSchema,
 ]);
 
 export type SessionEvent = Static<typeof SessionEventSchema>;
@@ -890,6 +965,9 @@ export type SkillInvokedEvent = Static<typeof SkillInvokedEventSchema>;
 export type AutonomyProfileEvent = Static<typeof AutonomyProfileEventSchema>;
 export type AutonomyRevokedEvent = Static<typeof AutonomyRevokedEventSchema>;
 export type SubagentResultEvent = Static<typeof SubagentResultEventSchema>;
+export type PluginStartedEvent = Static<typeof PluginStartedEventSchema>;
+export type PluginToolCallEvent = Static<typeof PluginToolCallEventSchema>;
+export type PluginStoppedEvent = Static<typeof PluginStoppedEventSchema>;
 
 export const SessionRecordSchema = Type.Union([
   SessionHeaderSchema,
