@@ -144,6 +144,9 @@ export interface TuiState {
   modelOnboardingShown?: boolean;
   ready: boolean;
   childHostArgv: readonly string[];
+  shuttingDown: boolean;
+  titleTimers?: NodeJS.Timeout[];
+  buildWatch?: NodeJS.Timeout | undefined;
   subagents?: Map<string, BackgroundSubagent>;
   /**
    * Slash command names the Pi host will accept in this session. Pi's builtin
@@ -5290,7 +5293,16 @@ export function createTuiExtension(
         setRuntimeStatus(state, context, "run", "settled");
       });
       pi.on("session_shutdown", async (event) => {
+        for (const timer of state.titleTimers ?? []) {
+          clearTimeout(timer);
+        }
+        state.titleTimers = [];
+        if (state.buildWatch !== undefined) {
+          clearInterval(state.buildWatch);
+          state.buildWatch = undefined;
+        }
         if (event.reason === "quit" && state.runtime !== null) {
+          state.shuttingDown = true;
           await persistPiDefaultModel(state.runtime);
           // Pi's /quit path can terminate the process without returning to the
           // caller's finally block. Release the session writer here so the
