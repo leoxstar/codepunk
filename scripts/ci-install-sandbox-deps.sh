@@ -9,6 +9,18 @@
 # from PATH and the runner image does not ship it.
 set -euo pipefail
 
+if [ "${RUNNER_OS:-}" = "Windows" ]; then
+  echo "sandbox dependency provisioning is skipped on Windows hosted runners"
+  exit 0
+fi
+
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW* | MSYS* | CYGWIN*)
+    echo "sandbox dependency provisioning is skipped on Windows shells"
+    exit 0
+    ;;
+esac
+
 if [ "$(uname -s)" = "Darwin" ]; then
   if ! command -v rg >/dev/null 2>&1; then
     HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
