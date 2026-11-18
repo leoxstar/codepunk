@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   checkWindowsDependenciesAsync,
+  parseWindowsBinShell,
   resolveSrtWin,
   SandboxManager,
   VENDORED_SRT_WIN_EXE,
   type SandboxDependencyCheck,
   type SandboxRuntimeConfig,
+  type WindowsBinShell,
   type WrapWithSandboxOptions,
 } from "@anthropic-ai/sandbox-runtime";
+export type { WindowsBinShell } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxDescriptor } from "@codepunk/protocol";
+import { ConfigError } from "../config/index.ts";
 import { sha256Value } from "../platform/hash.ts";
 import {
   isInsidePath,
@@ -140,11 +144,6 @@ interface SrtManager {
   reset?(): Promise<void>;
 }
 
-export interface WindowsBinShell {
-  exe: string;
-  args: readonly string[];
-}
-
 const WINDOWS_ARGV_MARKER = "C:\\__codepunk_argv__\\runner.exe";
 const WINDOWS_ARGV_SENTINEL = "__CODEPUNK_ARGV_SENTINEL__";
 const WINDOWS_SCRIPT = /\.(?:cmd|bat|ps1)$/iu;
@@ -211,6 +210,137 @@ export function resolveWindowsExecutable(
   );
 }
 
+export interface WindowsShellSelection {
+  readonly kind: "auto" | "bash" | "pwsh";
+  readonly executable: string | null;
+  readonly binShell: WindowsBinShell | null;
+}
+
+function windowsSystemBashPath(environment: NodeJS.ProcessEnv): string {
+  const systemRoot =
+    environment["SystemRoot"] ??
+    environment["windir"] ??
+    process.env["SystemRoot"] ??
+    process.env["windir"] ??
+    "C:\\Windows";
+  return path.win32.join(systemRoot, "System32", "bash.exe");
+}
+
+/**
+ * Resolve the shell selected by `tools.shell` without starting a session.
+ * Windows startup uses this before creating the runtime so an explicit
+ * shell that cannot be resolved fails with a ConfigError instead of
+ * falling back to cmd.exe or direct execution.
+ */
+export async function resolveWindowsShell(
+  choice: "auto" | "bash" | "pwsh",
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<WindowsShellSelection> {
+  if (platform !== "win32" || choice === "auto") {
+    return { kind: choice, executable: null, binShell: null };
+  }
+  if (choice === "pwsh") {
+    for (const name of ["pwsh.exe", "powershell.exe"]) {
+      try {
+        const executable = resolveWindowsExecutable(name, environment);
+        return {
+          kind: choice,
+          executable,
+          binShell: parseWindowsBinShell(executable),
+        };
+      } catch {
+        // Try powershell.exe after pwsh.exe.
+      }
+    }
+    throw new ConfigError(
+      "tools.shell=pwsh requires pwsh.exe or powershell.exe on PATH",
+      "tools.shell",
+    );
+  }
+  let executable: string;
+  try {
+    executable = resolveWindowsExecutable("bash.exe", environment);
+  } catch {
+    throw new ConfigError(
+      "tools.shell=bash requires bash.exe from Git for Windows or MSYS2 on PATH",
+      "tools.shell",
+    );
+  }
+  if (
+    path.win32.resolve(executable).toLowerCase() ===
+    path.win32.resolve(windowsSystemBashPath(environment)).toLowerCase()
+  ) {
+    throw new ConfigError(
+      "tools.shell=bash refuses %SystemRoot%\\System32\\bash.exe (WSL); use Git for Windows or MSYS2 bash",
+      "tools.shell",
+    );
+  }
+  let version: WindowsCommandResult;
+  try {
+    version = await runWindowsCommand(executable, ["--version"], environment);
+  } catch (error) {
+    throw new ConfigError(
+      `tools.shell=bash version preflight failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "tools.shell",
+    );
+  }
+  const firstLine = version.stdout.split(/\r?\n/u)[0]?.trim() ?? "";
+  if (
+    version.code !== 0 ||
+    !/pc-msys/iu.test(firstLine) ||
+    /pc-cygwin|pc-linux-gnu/iu.test(firstLine)
+  ) {
+    throw new ConfigError(
+      `tools.shell=bash requires an MSYS bash (pc-msys); got ${firstLine || `exit ${version.code}`}`,
+      "tools.shell",
+    );
+  }
+  return {
+    kind: choice,
+    executable,
+    binShell: parseWindowsBinShell(executable),
+  };
+}
+
+/**
+ * Run a no-op command through the selected Windows shell inside srt.
+ * Resolution alone is not proof that the shell starts under the sandbox;
+ * callers use this before opening a session.
+ */
+export async function probeWindowsShell(
+  sandbox: ShellProvider,
+  selection: WindowsShellSelection,
+  cwd: string,
+): Promise<void> {
+  if (selection.kind === "auto" || selection.executable === null) {
+    return;
+  }
+  const argv =
+    selection.kind === "pwsh"
+      ? [selection.executable, "-NoProfile", "-Command", "exit 0"]
+      : [selection.executable, "-lc", "exit 0"];
+  let result: ShellExecutionResult;
+  try {
+    result = await sandbox.execArgv(argv, cwd, { timeout: 30_000 });
+  } catch (error) {
+    throw new ConfigError(
+      `tools.shell=${selection.kind} srt preflight failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "tools.shell",
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new ConfigError(
+      `tools.shell=${selection.kind} srt preflight exited ${result.exitCode}: ${result.output.trim()}`,
+      "tools.shell",
+    );
+  }
+}
+
 export interface CreateSrtSandboxOptions {
   manager?: SrtManager;
   /**
@@ -241,6 +371,11 @@ export interface CreateSrtSandboxOptions {
     codepunkHome: string,
     srtWinPath: string | undefined,
   ) => Promise<void>;
+  /**
+   * Inner Windows shell resolved from `tools.shell`. `auto` leaves this
+   * undefined so srt-win keeps its default cmd.exe.
+   */
+  windowsBinShell?: WindowsBinShell;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -333,10 +468,12 @@ interface WindowsCommandResult {
 async function runWindowsCommand(
   executable: string,
   args: readonly string[],
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<WindowsCommandResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(executable, [...args], {
       stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
       windowsHide: true,
     });
     const stdout: Buffer[] = [];
@@ -722,6 +859,32 @@ function isAddressInUse(error: unknown): boolean {
   return "cause" in error && isAddressInUse(error.cause);
 }
 
+function terminateProcessTree(
+  child: ChildProcess,
+  platform: NodeJS.Platform,
+): void {
+  if (platform === "win32" && child.pid !== undefined) {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    const killDirect = () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    };
+    killer.once("error", killDirect);
+    killer.once("exit", (code) => {
+      if (code !== 0) {
+        killDirect();
+      }
+    });
+    killer.unref();
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
 /**
  * Check whether srt can run without initializing a session. On Windows a
  * full initialize stamps persistent filesystem ACLs, which is far too much
@@ -763,6 +926,7 @@ export class SrtSandbox implements ShellProvider {
   readonly warnings: readonly string[];
   private readonly manager: SrtManager;
   private readonly platform: NodeJS.Platform;
+  private readonly windowsBinShell: WindowsBinShell | undefined;
   private disposed = false;
 
   private constructor(
@@ -770,10 +934,12 @@ export class SrtSandbox implements ShellProvider {
     config: SandboxRuntimeConfig,
     warnings: readonly string[],
     platform: NodeJS.Platform,
+    windowsBinShell: WindowsBinShell | undefined,
   ) {
     this.manager = manager;
     this.warnings = warnings;
     this.platform = platform;
+    this.windowsBinShell = windowsBinShell;
     this.descriptor = {
       backend: "srt",
       version: SRT_VERSION,
@@ -854,7 +1020,13 @@ export class SrtSandbox implements ShellProvider {
         { cause: error },
       );
     }
-    return new SrtSandbox(manager, config, dependencies.warnings, platform);
+    return new SrtSandbox(
+      manager,
+      config,
+      dependencies.warnings,
+      platform,
+      options.windowsBinShell,
+    );
   }
 
   private assertAvailable(): void {
@@ -884,7 +1056,7 @@ export class SrtSandbox implements ShellProvider {
     });
     const onAbort = () => {
       cancelled = true;
-      child.kill("SIGKILL");
+      terminateProcessTree(child, this.platform);
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) {
@@ -894,7 +1066,7 @@ export class SrtSandbox implements ShellProvider {
     if (options.timeout !== undefined && options.timeout > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGKILL");
+        terminateProcessTree(child, this.platform);
       }, options.timeout);
       timer.unref();
     }
@@ -951,7 +1123,7 @@ export class SrtSandbox implements ShellProvider {
     if (this.platform === "win32") {
       const wrapped = await this.manager.wrapWithSandboxArgv(
         command,
-        undefined,
+        this.windowsBinShell,
         undefined,
         options.signal,
         cwd,

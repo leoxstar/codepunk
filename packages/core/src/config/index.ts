@@ -1267,12 +1267,6 @@ export async function loadConfig(
       "context.replace_system_prompt",
     );
   }
-  if (config.tools.shell === "pwsh") {
-    throw new ConfigError(
-      "tools.shell=pwsh requires Windows support, which is not implemented",
-      "tools.shell",
-    );
-  }
   if (config.approval.reviewer === "model") {
     if (config.approval.mode !== "auto") {
       warnings.push(
