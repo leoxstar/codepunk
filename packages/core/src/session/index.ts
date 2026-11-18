@@ -23,6 +23,7 @@ import {
   appendFileSynced,
   atomicWriteFile,
   ensurePrivateDir,
+  ensurePrivateFile,
   readJsonFile,
   writeJsonAtomic,
 } from "../platform/fs.ts";
@@ -378,12 +379,18 @@ async function createExclusive(
     }
     throw error;
   }
+  let committed = false;
   try {
+    await ensurePrivateFile(filePath);
     await handle.writeFile(content, "utf8");
     await handle.sync();
+    committed = true;
     return true;
   } finally {
     await handle.close();
+    if (!committed) {
+      await fs.unlink(filePath).catch(() => undefined);
+    }
   }
 }
 
@@ -491,11 +498,17 @@ export class SessionStore {
       throw new SessionError("cannot create an invalid session header");
     }
     const handle = await fs.open(paths.logPath, "wx", 0o600);
+    let committed = false;
     try {
+      await ensurePrivateFile(paths.logPath);
       await handle.writeFile(`${JSON.stringify(header)}\n`, "utf8");
       await handle.sync();
+      committed = true;
     } finally {
       await handle.close();
+      if (!committed) {
+        await fs.unlink(paths.logPath).catch(() => undefined);
+      }
     }
     const meta: SessionMeta = {
       version: 1,

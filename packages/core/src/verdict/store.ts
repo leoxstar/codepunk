@@ -6,7 +6,11 @@ import type {
   Verdict,
 } from "@codepunk/protocol";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
-import { atomicWriteFile } from "../platform/fs.ts";
+import {
+  appendFileSynced,
+  atomicWriteFile,
+  ensurePrivateDir,
+} from "../platform/fs.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 import { SessionStore } from "../session/index.ts";
 import {
@@ -66,15 +70,9 @@ export async function appendEvidenceIndex(
     ),
     updated_at: new Date().toISOString(),
   };
-  await fs.mkdir(path.dirname(evidenceIndexPath(paths, sessionId)), {
-    recursive: true,
-    mode: 0o700,
-  });
-  await fs.appendFile(
-    evidenceIndexPath(paths, sessionId),
-    `${JSON.stringify(entry)}\n`,
-    { mode: 0o600 },
-  );
+  const indexPath = evidenceIndexPath(paths, sessionId);
+  await ensurePrivateDir(path.dirname(indexPath));
+  await appendFileSynced(indexPath, `${JSON.stringify(entry)}\n`);
 }
 
 export async function findRunOwner(
