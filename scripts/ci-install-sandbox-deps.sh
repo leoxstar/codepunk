@@ -12,11 +12,23 @@ set -euo pipefail
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
   echo "sandbox provisioning is skipped on Windows hosted runners"
-  if ! command -v choco >/dev/null 2>&1; then
-    echo "choco is required to provision ripgrep and fd on Windows" >&2
-    exit 1
+  dest="$(cygpath -u "${RUNNER_TEMP:-C:/tools}")/codepunk-search"
+  dest_win="$(cygpath -m "$dest")"
+  mkdir -p "$dest"
+  curl -fsSL --retry 3 --retry-delay 2 \
+    -o "$dest/ripgrep.zip" \
+    "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
+  curl -fsSL --retry 3 --retry-delay 2 \
+    -o "$dest/fd.zip" \
+    "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-x86_64-pc-windows-msvc.zip"
+  powershell.exe -NoProfile -NonInteractive -Command \
+    "Expand-Archive -LiteralPath '$dest_win/ripgrep.zip' -DestinationPath '$dest_win/ripgrep' -Force; Expand-Archive -LiteralPath '$dest_win/fd.zip' -DestinationPath '$dest_win/fd' -Force"
+  cp "$(find "$dest/ripgrep" -type f -name rg.exe -print -quit)" "$dest/rg.exe"
+  cp "$(find "$dest/fd" -type f -name fd.exe -print -quit)" "$dest/fd.exe"
+  if [ -n "${GITHUB_PATH:-}" ]; then
+    printf '%s\n' "$dest_win" >> "$GITHUB_PATH"
   fi
-  choco install ripgrep fd -y --no-progress --limit-output
+  export PATH="$dest:$PATH"
   rg --version | head -n 1
   fd --version
   exit 0

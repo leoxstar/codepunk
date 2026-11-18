@@ -147,7 +147,7 @@ sysctl does not affect), and probes a nested capability-bearing namespace
 inside bubblewrap, the operation `srt`'s seccomp helper performs. On macOS the
 script installs missing `rg` and `fd` but needs no sandbox packages because
 `srt` uses the built-in Seatbelt sandbox. On Windows it installs `rg` and `fd`
-through Chocolatey and skips privileged `srt` provisioning.
+from pinned GitHub release archives and skips privileged `srt` provisioning.
 
 ## Repository checks
 
