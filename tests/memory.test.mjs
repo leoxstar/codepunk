@@ -590,11 +590,16 @@ test("failed and aborted runs do not auto-write", async () => {
     });
     try {
       await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+      let streamReady;
+      const ready = new Promise((resolve) => {
+        streamReady = resolve;
+      });
       host.session.agent.streamFunction = (model, _context, options) => {
         const deferred = createDeferredStream(model);
         options.signal.addEventListener("abort", () => deferred.abort(), {
           once: true,
         });
+        streamReady();
         return deferred.stream;
       };
       let calls = 0;
@@ -603,7 +608,7 @@ test("failed and aborted runs do not auto-write", async () => {
         throw new Error("must not run");
       };
       const prompt = host.session.prompt("this run is aborted");
-      await waitFor(() => host.session.isStreaming);
+      await ready;
       await host.session.abort();
       await prompt;
       assert.equal(calls, 0);
