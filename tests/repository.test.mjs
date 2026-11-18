@@ -1284,6 +1284,38 @@ test("ignored product runtime state is scanned but not rejected", async () => {
   }
 });
 
+test("ignored deja runtime state is scanned but not rejected", async () => {
+  const fixture = await copyRepositoryToTemporaryDirectory();
+  try {
+    const removeState = await createDirectoryFixture(
+      fixture.root,
+      ".deja",
+      "session.json",
+      '{"session":"local"}\n',
+    );
+    assertClean(runCheck(fixture.root), "ignored deja runtime state");
+
+    const accessKey = ["AK", "IA"].join("") + "A".repeat(16);
+    const removeSecret = await createFileFixture(
+      fixture.root,
+      ".deja/session-evidence.txt",
+      `Fixture value: ${accessKey}\n`,
+    );
+    try {
+      assertRuleFailure(
+        runCheck(fixture.root),
+        "security.credential",
+        ".deja/session-evidence.txt",
+      );
+    } finally {
+      await removeSecret();
+      await removeState();
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("each planted violation fails and removal restores zero", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
   try {

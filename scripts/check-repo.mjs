@@ -163,7 +163,7 @@ const EXPECTED_CI_SHA256 =
   "06902bbaceeee07ca7dd0ab449d440a3fc1cda21ffc9726fe535919cd5b072d4";
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "cb4e5db6953fda4b2ce0303e0db4d77843fae361917a091205d3495fe4f5a494";
+  "ec4c6da3981975a314a6829d97e4781ecdf8441c78877078ccd4cc638807d90a";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -207,13 +207,14 @@ const CI_RUN_COMMANDS = [
 
 const LOCAL_STATE_DIRECTORIES = new Set([
   ".codepunk",
+  ".deja",
   ".idea",
   ".nyc_output",
   ".pi",
   ".vscode",
 ]);
 
-const IGNORED_PRODUCT_STATE_DIRECTORIES = new Set([".codepunk"]);
+const IGNORED_PRODUCT_STATE_DIRECTORIES = new Set([".codepunk", ".deja"]);
 
 const RUNTIME_STATE_DIRECTORIES = new Set([
   "artifacts",

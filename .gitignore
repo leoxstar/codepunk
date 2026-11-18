@@ -8,6 +8,7 @@ coverage/
 
 # Local runtime state and user data
 .codepunk/
+.deja/
 .pi/
 .pi/**
 /sessions/
