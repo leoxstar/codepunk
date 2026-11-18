@@ -2163,6 +2163,7 @@ async function checkPackagePackaging(
         encoding: "utf8",
         timeout: 10_000,
         maxBuffer: 1_048_576,
+        shell: process.platform === "win32",
         env: { ...process.env, npm_config_update_notifier: "false" },
       },
     );
