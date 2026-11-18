@@ -2,9 +2,9 @@
 
 ## CI targets
 
-These are configured CI targets. The six Unix targets passed in run
-`44264867998`; `windows-latest` is hosted-CI evidence only and is not a
-Windows 11 support claim:
+These are configured CI targets. Run `44297264124` passed all seven jobs.
+`windows-latest` is hosted-CI evidence only and is not a Windows 11 support
+claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
@@ -24,11 +24,13 @@ CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `mac
 
 The CI matrix is configured to run the full repository gate on each target:
 install, formatting, repository checks, typecheck, tests, build, and
-built-entry checks. The six Unix targets passed in run `44264867998`.
-`windows-latest` runs the non-privileged Windows checks; it is Windows Server
-2025, not Windows 11, and does not replace the real-machine acceptance in
-spec 0007. The release runbook additionally requires a clean global install
-and `codepunk doctor` smoke test on each release target.
+built-entry checks. Run `44297264124` passed all seven jobs. The six Unix
+jobs each reported `# tests 747 / # pass 738 / # fail 0 / # skipped 9`.
+`windows-latest` reported `# tests 747 / # pass 707 / # fail 0 / # skipped 40`;
+it is Windows Server 2025 (`10.0.26100`, image `windows-2025-vs2026`), not
+Windows 11, and does not replace the real-machine acceptance in spec 0007.
+The release runbook additionally requires a clean global install and
+`codepunk doctor` smoke test on each release target.
 
 Node.js `>=22.19.0` is required. Linux needs the dependencies required by the
 pinned `srt` release, including bubblewrap, socat, and ripgrep. Run as a
@@ -64,10 +66,15 @@ WSL2 smoke test.
 ## Windows
 
 Windows 11 x64 support is still not claimed as verified. The 0007 code path
-and the hosted `windows-latest` job are implemented, but support requires a
-real ConPTY TUI smoke test plus a manual `srt` install, shell check, ACL
-check, and process-tree termination check on Windows 11 hardware; hosted CI
-alone is insufficient.
+and the hosted `windows-latest` job are implemented, and run `44297264124`
+passed the hosted Windows gate. That gate ran 707 tests with 0 failures and
+40 explicit skips: 10 daemon/view tests because the daemon requires a Unix
+socket and Windows is fail-closed, 23 tests that use POSIX executables, shell
+syntax, permission bits, or mount types, and 7 tests that require the
+one-time elevated `srt-win` provisioning. Support still requires a real
+ConPTY TUI smoke test plus a manual `srt` install, shell check, ACL check,
+and process-tree termination check on Windows 11 hardware; hosted CI alone is
+insufficient.
 
 Until those checks pass, Windows behavior is fail-closed:
 
