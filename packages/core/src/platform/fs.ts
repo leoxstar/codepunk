@@ -47,12 +47,15 @@ async function icacls(
   }
 }
 
-function aclEntries(output: string): string[] {
+function aclEntries(output: string, target: string): string[] {
   const entries: string[] = [];
   for (const rawLine of output.split(/\r?\n/u)) {
-    const line = rawLine.trim();
+    let line = rawLine.trim();
     if (/^(?:Successfully processed|Mandatory Label)/iu.test(line)) {
       continue;
+    }
+    if (line.toLowerCase().startsWith(target.toLowerCase())) {
+      line = line.slice(target.length).trim();
     }
     const match = /^(.*?):(\([^)]*\))*\(([^)]*)\)$/u.exec(line);
     if (match === null) {
@@ -107,7 +110,7 @@ async function ensureWindowsPrivateAcl(
   }
   await icacls(target, ["/inheritance:r"]);
   const current = await icacls(target, []);
-  for (const identity of new Set(aclEntries(current))) {
+  for (const identity of new Set(aclEntries(current, target))) {
     if (!trustedWindowsPrincipal(identity, sid, name)) {
       try {
         await icacls(target, ["/remove:g", identity]);
@@ -130,7 +133,7 @@ async function ensureWindowsPrivateAcl(
     windowsAce("S-1-5-32-544", options),
   ]);
   const verified = await icacls(target, []);
-  const foreign = aclEntries(verified).filter(
+  const foreign = aclEntries(verified, target).filter(
     (identity) => !trustedWindowsPrincipal(identity, sid, name),
   );
   if (foreign.length > 0) {
