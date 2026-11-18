@@ -64,6 +64,7 @@ const defaultRunner: NpmRunner = async (invocation, options) => {
       env: options.env ?? process.env,
       timeout: options.timeoutMs ?? 300_000,
       maxBuffer: 16 * 1024 * 1024,
+      shell: process.platform === "win32",
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
