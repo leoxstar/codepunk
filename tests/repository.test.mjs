@@ -1016,8 +1016,8 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     async apply(root) {
       return replaceFile(root, ".github/workflows/ci.yml", (content) =>
         content.replace(
-          "    timeout-minutes: 20\n",
-          "    timeout-minutes: 20\n    if: false\n",
+          "    timeout-minutes: 45\n",
+          "    timeout-minutes: 45\n    if: false\n",
         ),
       );
     },
