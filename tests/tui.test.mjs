@@ -2402,6 +2402,7 @@ test("header and footer can be disabled without disabling the session", async ()
       assert.doesNotMatch(session.output(), /codepunk · auto\/auto/u);
       assert.doesNotMatch(session.output(), /approvals ask · autonomy ask/u);
       assert.doesNotMatch(session.output(), /project [0-9a-f]{16}/u);
+      await waitForQuiet(session, 250);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -2409,7 +2410,11 @@ test("header and footer can be disabled without disabling the session", async ()
           setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
         ),
       ]);
-      assert.deepEqual(result, { code: 0, signal: null });
+      assert.deepEqual(
+        result,
+        { code: 0, signal: null },
+        stripAnsi(session.output()).slice(-4_000),
+      );
     } finally {
       await stopPty(session);
     }
