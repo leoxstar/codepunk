@@ -23,14 +23,19 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
     "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-x86_64-pc-windows-msvc.zip"
   powershell.exe -NoProfile -NonInteractive -Command \
     "Expand-Archive -LiteralPath '$dest_win/ripgrep.zip' -DestinationPath '$dest_win/ripgrep' -Force; Expand-Archive -LiteralPath '$dest_win/fd.zip' -DestinationPath '$dest_win/fd' -Force"
-  cp "$(find "$dest/ripgrep" -type f -name rg.exe -print -quit)" "$dest/rg.exe"
-  cp "$(find "$dest/fd" -type f -name fd.exe -print -quit)" "$dest/fd.exe"
+  rg_bin="$(find "$dest/ripgrep" -type f -name rg.exe -print -quit)"
+  fd_bin="$(find "$dest/fd" -type f -name fd.exe -print -quit)"
+  test -n "$rg_bin"
+  test -n "$fd_bin"
+  cp "$rg_bin" "$dest/rg.exe"
+  cp "$fd_bin" "$dest/fd.exe"
+  chmod 755 "$dest/rg.exe" "$dest/fd.exe"
   if [ -n "${GITHUB_PATH:-}" ]; then
     printf '%s\n' "$dest_win" >> "$GITHUB_PATH"
   fi
   export PATH="$dest:$PATH"
-  rg --version | head -n 1
-  fd --version
+  "$dest/rg.exe" --version | head -n 1
+  "$dest/fd.exe" --version
   exit 0
 fi
 
