@@ -6,6 +6,7 @@ import {
   validateSchema,
   type EvidenceRecord,
 } from "@codepunk/protocol";
+import { appendFileSynced, ensurePrivateDir } from "../platform/fs.ts";
 import { canonicalJson, recordHash, sha256Text } from "../platform/hash.ts";
 
 export class EvidenceError extends Error {
@@ -190,17 +191,8 @@ export class EvidenceLedger {
           .join("; ")}`,
       );
     }
-    await fs.mkdir(path.dirname(this.filePath), {
-      recursive: true,
-      mode: 0o700,
-    });
-    const handle = await fs.open(this.filePath, "a", 0o600);
-    try {
-      await handle.write(`${canonicalJson(record)}\n`);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await ensurePrivateDir(path.dirname(this.filePath));
+    await appendFileSynced(this.filePath, `${canonicalJson(record)}\n`);
     this.records.push(record);
     return record;
   }

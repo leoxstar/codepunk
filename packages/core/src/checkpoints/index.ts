@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   atomicWriteBytes,
   ensurePrivateDir,
+  ensurePrivateFile,
   readJsonFile,
   writeJsonAtomic,
 } from "../platform/fs.ts";
@@ -303,11 +304,17 @@ export class CheckpointStore {
     await ensurePrivateDir(this.checkpointsDir);
     const filePath = this.blobPath(name);
     const handle = await fs.open(filePath, "wx", 0o600);
+    let committed = false;
     try {
+      await ensurePrivateFile(filePath);
       await handle.writeFile(bytes);
       await handle.sync();
+      committed = true;
     } finally {
       await handle.close();
+      if (!committed) {
+        await fs.unlink(filePath).catch(() => undefined);
+      }
     }
     return name;
   }

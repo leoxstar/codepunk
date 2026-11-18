@@ -35,23 +35,13 @@ const OTHER_USERS_PRINCIPALS = [
 const TRUSTED_WINDOWS_PRINCIPALS = [
   /^nt authority\\system$/iu,
   /^builtin\\administrators$/iu,
-  /^creator owner$/iu,
-  /^owner rights$/iu,
-  // The Codex sandbox creates this local group and applies it to the
-  // temporary roots the tests run under. It is part of the invoking
-  // environment, not another human user.
-  /\\codexsandboxusers$/iu,
-  /\\sandbox-runtime-users$/iu,
 ];
 
 /**
  * Principals injected by the test harness itself. They are not another
  * interactive user, even though their names end in "Users".
  */
-const ENVIRONMENT_WINDOWS_PRINCIPALS = [
-  /\\codexsandboxusers$/iu,
-  /\\sandbox-runtime-users$/iu,
-];
+const ENVIRONMENT_WINDOWS_PRINCIPALS = [];
 
 let currentWindowsIdentityCache;
 
@@ -123,6 +113,9 @@ export async function privateFileStatus(filePath) {
   const lines = stdout.split(/\r?\n/u);
   for (const [index, rawLine] of lines.entries()) {
     let line = rawLine.trim();
+    if (/^Mandatory Label/iu.test(line)) {
+      continue;
+    }
     if (index === 0 && line.startsWith(filePath)) {
       line = line.slice(filePath.length).trim();
     }
@@ -147,26 +140,22 @@ export async function privateFileStatus(filePath) {
       OTHER_USERS_PRINCIPALS.some((pattern) => pattern.test(entry.identity)),
   );
   const identity = await currentWindowsIdentity();
-  const owner = identity.name.split("\\").at(-1)?.toLowerCase() ?? "";
+  const owner = identity.name.toLowerCase();
   if (identity.sid !== null) {
     identity.sids.add(identity.sid);
   }
-  const explicitForeign = entries.filter(
+  const foreign = entries.filter(
     (entry) =>
       !entry.deny &&
-      !entry.inherited &&
-      // An unresolved SID is a service or sandbox principal on this host.
-      // The named-principal and well-known group checks still catch a file
-      // widened to other interactive users.
-      !/^S-\d+-\d+(?:-\d+)+$/iu.test(entry.identity) &&
-      !entry.identity.toLowerCase().endsWith(`\\${owner}`) &&
-      !identity.sids.has(entry.identity.toUpperCase()) &&
+      !/^(?:S-1-5-18|S-1-5-32-544)$/iu.test(entry.identity) &&
+      entry.identity.toLowerCase() !== owner &&
+      entry.identity.toUpperCase() !== identity.sid &&
       !TRUSTED_WINDOWS_PRINCIPALS.some((pattern) =>
         pattern.test(entry.identity),
       ),
   );
   return {
-    ok: otherUsers.length === 0 && explicitForeign.length === 0,
+    ok: foreign.length === 0,
     detail: entries
       .map(
         (entry) =>
@@ -174,7 +163,7 @@ export async function privateFileStatus(filePath) {
       )
       .join(", "),
     otherUsers,
-    explicitForeign,
+    foreign,
   };
 }
 
