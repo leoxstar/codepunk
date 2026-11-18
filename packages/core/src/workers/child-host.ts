@@ -764,6 +764,14 @@ async function runChild(
     tool_mask: toolMask,
     permission_mode: permissionMode,
     parent_policy: options.parentPolicy,
+    ...(options.workspaceTrustOverride === undefined
+      ? {}
+      : {
+          workspace_trusted:
+            options.workspaceTrustOverride === "trust" ||
+            (options.workspaceTrustOverride !== "no-trust" &&
+              Object.values(options.workspaceTrustOverride).every(Boolean)),
+        }),
     ...(profilePolicy === undefined ? {} : { profile_policy: profilePolicy }),
     depth: 0,
     worktree,

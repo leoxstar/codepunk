@@ -60,6 +60,11 @@ export interface SubagentRequest {
   sibling_root?: string;
   write_set?: readonly string[];
   approval_channel?: ApprovalChannel;
+  /**
+   * Trust inherited from the parent workspace. An untrusted parent must not
+   * let an in-process child grant `session` or `persistent` approval.
+   */
+  workspace_trusted?: boolean;
   spawn_approved?: boolean;
   budget?: {
     max_tool_calls?: number;
@@ -509,7 +514,9 @@ export class Subagent {
       );
     }
     this.childStarted = true;
-    const approval = new ApprovalBroker();
+    const approval = new ApprovalBroker({
+      workspaceTrusted: this.request.workspace_trusted === true,
+    });
     if (this.request.approval_channel !== undefined) {
       approval.registerChannel(this.request.approval_channel);
     }

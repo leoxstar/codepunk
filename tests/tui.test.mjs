@@ -327,6 +327,7 @@ test("a failed persistent write allows only the current call", async () => {
     "Save exact rule and allow",
   ];
   const channel = new TuiApprovalChannel(true);
+  channel.setWorkspaceTrusted(true);
   channel.attach({
     ui: {
       async select(_title, options) {
@@ -362,6 +363,54 @@ test("a failed persistent write allows only the current call", async () => {
       level: "warning",
     },
   ]);
+});
+
+test("untrusted TUI approval selector", async () => {
+  const { TuiApprovalChannel } = await importSource("packages/cli/src/tui.ts");
+  let title = "";
+  let options = [];
+  const channel = new TuiApprovalChannel(true);
+  channel.attach({
+    ui: {
+      async select(nextTitle, nextOptions) {
+        title = nextTitle;
+        options = nextOptions;
+        return "Allow once";
+      },
+      notify() {},
+    },
+  });
+  const request = {
+    request_id: "request-untrusted",
+    nonce_sha256: `sha256:${"b".repeat(64)}`,
+    ttl_ms: 30_000,
+    worker_id: "local",
+    session_id: "session-1",
+    tool_call_id: "call-1",
+    channel_id: "tui-main",
+    tool: "bash",
+    command: "touch probe.txt",
+    argv: ["touch", "probe.txt"],
+    cwd: "/workspace",
+    created_at: "2026-11-14T00:00:00.000Z",
+    expires_at: "2026-11-14T00:00:30.000Z",
+  };
+
+  channel.setWorkspaceTrusted(false);
+  const deniedScope = await channel.ask(request);
+  assert.equal(deniedScope.answer, "allow");
+  assert.equal(deniedScope.scope, "once");
+  assert.equal(title.includes("workspace is untrusted"), true);
+  assert.deepEqual(options, [
+    "Allow once",
+    "Deny",
+    "Deny with guidance for the model",
+  ]);
+
+  channel.setWorkspaceTrusted(true);
+  await channel.ask(request);
+  assert.ok(options.includes("Allow this exact command for the session"));
+  assert.ok(options.includes("Always allow this exact command"));
 });
 
 test("the Codepunk help lists the real command surface", async () => {

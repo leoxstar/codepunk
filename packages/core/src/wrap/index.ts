@@ -45,6 +45,7 @@ import {
   decidePolicy,
   effectsForTool,
   isMcpProductTool,
+  policyRequestForCall,
   simpleShellArgv,
   type PolicyLayerInput,
   type PolicyMode,
@@ -329,6 +330,8 @@ function approvalFailure(result: Pick<ApprovalResult, "failure" | "reason">): {
       return { rule: "approval.expired", reason: result.reason };
     case "mismatch":
       return { rule: "approval.mismatch", reason: result.reason };
+    case "scope_untrusted":
+      return { rule: "approval.scope_untrusted", reason: result.reason };
     case "already_answered":
       return { rule: "approval.already_answered", reason: result.reason };
     case "not_answered":
@@ -804,40 +807,40 @@ export async function wrapToolDefinition(
           ? params["command"]
           : null;
       const approvalMode = resolveApprovalMode(options);
-      const policy = decidePolicy({
-        tool: definition.name,
-        args: params,
-        ...(command !== null ? { command } : {}),
-        ...(commandArgv !== null ? { argv: commandArgv } : {}),
-        cwd: options.cwd,
-        workspaceRoot: options.workspaceRoot,
-        ...(options.additionalRoots !== undefined
-          ? { additionalRoots: options.additionalRoots }
-          : {}),
-        deliveryRoot: options.deliveryRoot,
-        codepunkHome: options.codepunkHome,
-        ...(options.mode !== undefined ? { mode: options.mode } : {}),
-        approvalMode,
-        ...(options.filesystem !== undefined
-          ? { filesystem: options.filesystem }
-          : {}),
-        reviewerAvailable:
-          options.reviewer !== null && options.reviewer !== undefined,
-        ...(autonomy !== null ? { autonomy: autonomy.profile } : {}),
-        ...(options.writeSet !== undefined
-          ? { writeSet: options.writeSet }
-          : {}),
-        ...(options.readableSkillFiles !== undefined
-          ? { readableSkillFiles: options.readableSkillFiles }
-          : {}),
-        ...(options.userRules !== undefined
-          ? { userRules: options.userRules }
-          : {}),
-        ...(options.projectRules !== undefined
-          ? { projectRules: options.projectRules }
-          : {}),
-        ...(options.layers !== undefined ? { layers: options.layers } : {}),
-      });
+      const policy = decidePolicy(
+        policyRequestForCall({
+          tool: definition.name,
+          args: params,
+          cwd: options.cwd,
+          workspaceRoot: options.workspaceRoot,
+          ...(options.additionalRoots !== undefined
+            ? { additionalRoots: options.additionalRoots }
+            : {}),
+          deliveryRoot: options.deliveryRoot,
+          codepunkHome: options.codepunkHome,
+          ...(options.mode !== undefined ? { mode: options.mode } : {}),
+          approvalMode,
+          ...(options.filesystem !== undefined
+            ? { filesystem: options.filesystem }
+            : {}),
+          reviewerAvailable:
+            options.reviewer !== null && options.reviewer !== undefined,
+          ...(autonomy !== null ? { autonomy: autonomy.profile } : {}),
+          ...(options.writeSet !== undefined
+            ? { writeSet: options.writeSet }
+            : {}),
+          ...(options.readableSkillFiles !== undefined
+            ? { readableSkillFiles: options.readableSkillFiles }
+            : {}),
+          ...(options.userRules !== undefined
+            ? { userRules: options.userRules }
+            : {}),
+          ...(options.projectRules !== undefined
+            ? { projectRules: options.projectRules }
+            : {}),
+          ...(options.layers !== undefined ? { layers: options.layers } : {}),
+        }),
+      );
       const releaseMutation =
         isMutation && target !== null
           ? await acquireToolMutation(target)
@@ -1369,36 +1372,38 @@ export async function wrapUserBashCommand(
   const sandboxProvider = options.sandbox ?? null;
   const autonomy = options.autonomy ?? null;
   const approvalMode = resolveApprovalMode(options);
-  const policy = decidePolicy({
-    tool: "user_bash",
-    command,
-    cwd: options.cwd,
-    workspaceRoot: options.workspaceRoot,
-    ...(options.additionalRoots !== undefined
-      ? { additionalRoots: options.additionalRoots }
-      : {}),
-    deliveryRoot: options.deliveryRoot,
-    codepunkHome: options.codepunkHome,
-    ...(options.mode !== undefined ? { mode: options.mode } : {}),
-    approvalMode,
-    ...(options.filesystem !== undefined
-      ? { filesystem: options.filesystem }
-      : {}),
-    reviewerAvailable:
-      options.reviewer !== null && options.reviewer !== undefined,
-    ...(autonomy !== null ? { autonomy: autonomy.profile } : {}),
-    ...(options.writeSet !== undefined ? { writeSet: options.writeSet } : {}),
-    ...(options.readableSkillFiles !== undefined
-      ? { readableSkillFiles: options.readableSkillFiles }
-      : {}),
-    ...(options.userRules !== undefined
-      ? { userRules: options.userRules }
-      : {}),
-    ...(options.projectRules !== undefined
-      ? { projectRules: options.projectRules }
-      : {}),
-    ...(options.layers !== undefined ? { layers: options.layers } : {}),
-  });
+  const policy = decidePolicy(
+    policyRequestForCall({
+      tool: "user_bash",
+      rawCommand: command,
+      cwd: options.cwd,
+      workspaceRoot: options.workspaceRoot,
+      ...(options.additionalRoots !== undefined
+        ? { additionalRoots: options.additionalRoots }
+        : {}),
+      deliveryRoot: options.deliveryRoot,
+      codepunkHome: options.codepunkHome,
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+      approvalMode,
+      ...(options.filesystem !== undefined
+        ? { filesystem: options.filesystem }
+        : {}),
+      reviewerAvailable:
+        options.reviewer !== null && options.reviewer !== undefined,
+      ...(autonomy !== null ? { autonomy: autonomy.profile } : {}),
+      ...(options.writeSet !== undefined ? { writeSet: options.writeSet } : {}),
+      ...(options.readableSkillFiles !== undefined
+        ? { readableSkillFiles: options.readableSkillFiles }
+        : {}),
+      ...(options.userRules !== undefined
+        ? { userRules: options.userRules }
+        : {}),
+      ...(options.projectRules !== undefined
+        ? { projectRules: options.projectRules }
+        : {}),
+      ...(options.layers !== undefined ? { layers: options.layers } : {}),
+    }),
+  );
 
   let approvalEvidence: EvidenceRecord["approval"] = null;
   let reviewerEvidence: EvidenceRecord["reviewer"] = null;

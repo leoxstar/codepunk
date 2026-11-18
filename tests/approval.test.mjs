@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
+import { withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
 
@@ -263,7 +266,7 @@ test("a channel can be replaced and the request carries action details", async (
 });
 
 test("session scope reuses only the exact tool, argv, and cwd", async () => {
-  const broker = new core.ApprovalBroker();
+  const broker = new core.ApprovalBroker({ workspaceTrusted: true });
   let calls = 0;
   broker.registerChannel({
     id: "tui-main",
@@ -326,7 +329,7 @@ test("session scope reuses only the exact tool, argv, and cwd", async () => {
 });
 
 test("reused approvals require an exact action and reject unknown scopes", async () => {
-  const broker = new core.ApprovalBroker();
+  const broker = new core.ApprovalBroker({ workspaceTrusted: true });
   broker.registerChannel({
     id: "tui-main",
     kind: "tui",
@@ -361,4 +364,44 @@ test("reused approvals require an exact action and reject unknown scopes", async
   });
   assert.equal(unknownScope.approved, false);
   assert.match(unknownScope.reason, /did not match/u);
+});
+
+test("untrusted workspace rejects session and persistent approvals", async () => {
+  await withTempDirectory("codepunk-approval-untrusted-", async (root) => {
+    const scopedRules = path.join(root, "scoped-rules.toml");
+    let answerScope = "once";
+    const broker = new core.ApprovalBroker({ workspaceTrusted: false });
+    broker.registerChannel({
+      id: "tui-main",
+      kind: "tui",
+      isTTY: true,
+      async ask(request) {
+        return answerFor(request, { scope: answerScope });
+      },
+    });
+    const input = {
+      sessionId: "session-untrusted",
+      workerId: "worker-1",
+      tool: "bash",
+      argv: ["/bin/mkdir", "made"],
+      cwd: root,
+    };
+
+    const once = await broker.request({ ...input, toolCallId: "call-once" });
+    assert.equal(once.approved, true);
+    assert.equal(once.evidence.scope, "once");
+
+    for (const scope of ["session", "persistent"]) {
+      answerScope = scope;
+      const rejected = await broker.request({
+        ...input,
+        toolCallId: `call-${scope}`,
+      });
+      assert.equal(rejected.approved, false, scope);
+      assert.equal(rejected.failure, "scope_untrusted", scope);
+      assert.match(rejected.reason, /approval\.scope_untrusted/u);
+      assert.equal(rejected.evidence.scope, scope);
+      await assert.rejects(fs.stat(scopedRules), { code: "ENOENT" });
+    }
+  });
 });

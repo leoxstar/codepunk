@@ -1,9 +1,17 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { PolicyLayerInput, PolicyRule } from "../policy/index.ts";
+import {
+  policyRequestForCall,
+  ruleMatches,
+  type PolicyLayerInput,
+  type PolicyRequest,
+  type PolicyRule,
+  type PolicyRuleFixture,
+} from "../policy/match.ts";
 import { sha256Text } from "../platform/hash.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
+import { isShellLauncher } from "../platform/shell.ts";
 import {
   assertProjectConfigFileSafe,
   assertProjectConfigSafe,
@@ -39,7 +47,7 @@ export interface HeadlessPolicy {
 }
 
 const POLICY_KEYS = new Set(["version", "write_set", "rules"]);
-const RULE_KEYS = new Set([
+const LEGACY_RULE_KEYS = new Set([
   "id",
   "tool",
   "decision",
@@ -47,6 +55,16 @@ const RULE_KEYS = new Set([
   "command",
   "argv",
 ]);
+const V2_RULE_KEYS = new Set([
+  ...LEGACY_RULE_KEYS,
+  "justification",
+  "match",
+  "not_match",
+]);
+const FIXTURE_KEYS = new Set(["tool", "path", "command", "argv", "cwd"]);
+const MIGRATE_HINT =
+  "policy.migrate_hint: set version = 2 and add a non-empty justification, " +
+  "at least one match and not_match fixture, and absolute shell commands";
 
 async function readOptional(filePath: string): Promise<string | null> {
   try {
@@ -64,7 +82,8 @@ async function readOptional(filePath: string): Promise<string | null> {
 function parsePolicyFile(
   content: string,
   source: "user" | "project",
-): { writeSet: string[]; rules: PolicyRule[] } {
+  fixtureRoot: string,
+): { writeSet: string[]; rules: PolicyRule[]; warnings: string[] } {
   let parsed: TomlTable;
   try {
     parsed = parseToml(content);
@@ -79,8 +98,18 @@ function parsePolicyFile(
       throw new ConfigError(`unknown ${source} policy key: ${key}`, key);
     }
   }
-  if (parsed["version"] !== 1) {
-    throw new ConfigError(`${source} policy version must be 1`, "version");
+  const version = parsed["version"];
+  if (version !== 1 && version !== 2) {
+    throw new ConfigError(
+      `${source} policy version must be 1 or 2; ${MIGRATE_HINT}`,
+      "version",
+    );
+  }
+  const warnings: string[] = [];
+  if (version === 1) {
+    warnings.push(
+      `${source} policy uses legacy version 1 without rule self-check; ${MIGRATE_HINT}`,
+    );
   }
   const writeSet = parsed["write_set"] ?? [];
   if (
@@ -109,8 +138,9 @@ function parsePolicyFile(
     ) {
       throw new ConfigError(`${source} policy rule ${id} must be a table`);
     }
+    const allowedKeys = version === 1 ? LEGACY_RULE_KEYS : V2_RULE_KEYS;
     for (const key of Object.keys(ruleValue)) {
-      if (!RULE_KEYS.has(key)) {
+      if (!allowedKeys.has(key)) {
         throw new ConfigError(
           `unknown ${source} policy rule key: ${key}`,
           `rules.${id}.${key}`,
@@ -167,9 +197,293 @@ function parsePolicyFile(
       }
       rule.argv = argv as string[];
     }
+    if (version === 2) {
+      parseV2Rule(rule, ruleValue, source, fixtureRoot);
+    }
     rules.push(rule);
   }
-  return { writeSet: writeSet as string[], rules };
+  return { writeSet: writeSet as string[], rules, warnings };
+}
+
+function parseV2Rule(
+  rule: PolicyRule,
+  ruleValue: TomlTable,
+  source: "user" | "project",
+  fixtureRoot: string,
+): void {
+  const justification = ruleValue["justification"];
+  if (typeof justification !== "string" || justification.trim().length === 0) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} needs a non-empty justification; ${MIGRATE_HINT}`,
+      `rules.${rule.id}.justification`,
+    );
+  }
+  rule.justification = justification;
+
+  rule.match = parseFixtures(rule, ruleValue["match"], "match", source);
+  rule.not_match = parseFixtures(
+    rule,
+    ruleValue["not_match"],
+    "not_match",
+    source,
+  );
+
+  if (rule.tool === "exec" && rule.argv === undefined) {
+    // The accepted version 2 example states the exact argv in its match
+    // fixture instead of repeating it on the rule. Use that one shape only
+    // when every positive example agrees, so the rule still matches exactly
+    // one argv rather than a prefix.
+    const derived = fixtureArgv(rule.match);
+    if (derived === null) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} exec rule needs an exact argv shared by every match fixture; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.argv`,
+      );
+    }
+    rule.argv = derived;
+  }
+  if (rule.tool === "bash" && rule.argv !== undefined) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} bash rules carry a command and no argv; ${MIGRATE_HINT}`,
+      `rules.${rule.id}.argv`,
+    );
+  }
+  if (rule.argv !== undefined && rule.tool !== "exec") {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} argv is only valid for exec rules; ${MIGRATE_HINT}`,
+      `rules.${rule.id}.argv`,
+    );
+  }
+  if (rule.argv !== undefined && isShellLauncher(rule.argv)) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} argv starts a shell or interpreter; ${MIGRATE_HINT}`,
+      `rules.${rule.id}.argv`,
+    );
+  }
+  if (rule.tool === "exec") {
+    if (rule.argv === undefined || rule.argv.length === 0) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} exec rule needs an exact argv; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.argv`,
+      );
+    }
+    if (rule.command === undefined) {
+      const executable = rule.argv[0];
+      if (executable === undefined) {
+        throw new ConfigError(
+          `${source} policy rule ${rule.id} exec rule needs an executable; ${MIGRATE_HINT}`,
+          `rules.${rule.id}.argv`,
+        );
+      }
+      rule.command = executable;
+    } else if (rule.command !== rule.argv[0]) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} exec command must equal argv[0]; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.command`,
+      );
+    }
+    if (!path.isAbsolute(rule.command) || isShellLauncher([rule.command])) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} exec command must be an absolute non-launcher executable path; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.command`,
+      );
+    }
+  } else if (rule.command !== undefined && rule.tool !== "bash") {
+    if (
+      rule.command.length === 0 ||
+      !path.isAbsolute(rule.command) ||
+      isShellLauncher([rule.command])
+    ) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} command must be an absolute non-launcher executable path; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.command`,
+      );
+    }
+  }
+
+  checkFixtures(rule, rule.match, "match", source, fixtureRoot);
+  checkFixtures(rule, rule.not_match, "not_match", source, fixtureRoot);
+}
+
+function parseFixtures(
+  rule: PolicyRule,
+  value: unknown,
+  kind: "match" | "not_match",
+  source: "user" | "project",
+): PolicyRuleFixture[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} needs at least one ${kind} fixture; ${MIGRATE_HINT}`,
+      `rules.${rule.id}.${kind}`,
+    );
+  }
+  return value.map((entry, index) =>
+    parseFixture(entry, rule, kind, index, source),
+  );
+}
+
+function fixtureArgv(fixtures: readonly PolicyRuleFixture[]): string[] | null {
+  const first = fixtures[0]?.argv;
+  if (first === undefined || first.length === 0) {
+    return null;
+  }
+  for (const fixture of fixtures) {
+    if (
+      fixture.argv === undefined ||
+      fixture.argv.length !== first.length ||
+      fixture.argv.some((value, index) => value !== first[index])
+    ) {
+      return null;
+    }
+  }
+  return [...first];
+}
+
+function checkFixtures(
+  rule: PolicyRule,
+  fixtures: readonly PolicyRuleFixture[],
+  kind: "match" | "not_match",
+  source: "user" | "project",
+  fixtureRoot: string,
+): void {
+  const expected = kind === "match";
+  fixtures.forEach((fixture, index) => {
+    const actual = ruleMatches(rule, fixtureRequest(fixture, fixtureRoot));
+    if (actual !== expected) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] expected ${expected} but got ${actual}; ${MIGRATE_HINT}`,
+        `rules.${rule.id}.${kind}[${index}]`,
+      );
+    }
+  });
+}
+
+function parseFixture(
+  value: unknown,
+  rule: PolicyRule,
+  kind: "match" | "not_match",
+  index: number,
+  source: "user" | "project",
+): PolicyRuleFixture {
+  const key = `rules.${rule.id}.${kind}[${index}]`;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} ${kind}[${index}] must be a table; ${MIGRATE_HINT}`,
+      key,
+    );
+  }
+  const table = value as TomlTable;
+  for (const fixtureKey of Object.keys(table)) {
+    if (!FIXTURE_KEYS.has(fixtureKey)) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] has unknown key ${fixtureKey}; ${MIGRATE_HINT}`,
+        `${key}.${fixtureKey}`,
+      );
+    }
+  }
+  const tool = table["tool"];
+  if (typeof tool !== "string" || tool.length === 0) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} ${kind}[${index}] needs a tool; ${MIGRATE_HINT}`,
+      `${key}.tool`,
+    );
+  }
+  const fixture: PolicyRuleFixture = { tool };
+  for (const field of ["path", "command", "cwd"] as const) {
+    const fieldValue = table[field];
+    if (fieldValue !== undefined) {
+      if (typeof fieldValue !== "string") {
+        throw new ConfigError(
+          `${source} policy rule ${rule.id} ${kind}[${index}] ${field} must be a string; ${MIGRATE_HINT}`,
+          `${key}.${field}`,
+        );
+      }
+      fixture[field] = fieldValue;
+    }
+  }
+  const argv = table["argv"];
+  if (argv !== undefined) {
+    if (
+      !Array.isArray(argv) ||
+      argv.some((entry) => typeof entry !== "string")
+    ) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] argv must be a string array; ${MIGRATE_HINT}`,
+        `${key}.argv`,
+      );
+    }
+    fixture.argv = argv as string[];
+  }
+  if (fixture.tool === "bash") {
+    if (fixture.argv !== undefined) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] bash fixtures carry a command and no argv; ${MIGRATE_HINT}`,
+        `${key}.argv`,
+      );
+    }
+    if (fixture.command === undefined || fixture.command.length === 0) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] bash fixture needs a command; ${MIGRATE_HINT}`,
+        `${key}.command`,
+      );
+    }
+  }
+  if (fixture.tool === "exec") {
+    if (fixture.argv === undefined || fixture.argv.length === 0) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] exec fixture needs argv; ${MIGRATE_HINT}`,
+        `${key}.argv`,
+      );
+    }
+    if (fixture.command !== undefined && fixture.command !== fixture.argv[0]) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] exec command must equal argv[0]; ${MIGRATE_HINT}`,
+        `${key}.command`,
+      );
+    }
+    const executable = fixture.argv[0];
+    if (
+      executable === undefined ||
+      !path.isAbsolute(executable) ||
+      isShellLauncher([executable])
+    ) {
+      throw new ConfigError(
+        `${source} policy rule ${rule.id} ${kind}[${index}] exec argv[0] must be an absolute non-launcher executable path; ${MIGRATE_HINT}`,
+        `${key}.argv`,
+      );
+    }
+  } else if (fixture.argv !== undefined) {
+    throw new ConfigError(
+      `${source} policy rule ${rule.id} ${kind}[${index}] argv is only valid for exec fixtures; ${MIGRATE_HINT}`,
+      `${key}.argv`,
+    );
+  }
+  return fixture;
+}
+
+function fixtureRequest(
+  fixture: PolicyRuleFixture,
+  fixtureRoot: string,
+): PolicyRequest {
+  const cwd = normalizeAbsolute(path.resolve(fixtureRoot, fixture.cwd ?? "."));
+  const args: Record<string, unknown> = {};
+  if (fixture.path !== undefined) {
+    args["path"] = fixture.path;
+  }
+  if (fixture.command !== undefined) {
+    args["command"] = fixture.command;
+  }
+  if (fixture.argv !== undefined) {
+    args["argv"] = [...fixture.argv];
+  }
+  return policyRequestForCall({
+    tool: fixture.tool,
+    args,
+    cwd,
+    workspaceRoot: normalizeAbsolute(fixtureRoot),
+    deliveryRoot: normalizeAbsolute(fixtureRoot),
+    mode: "interactive",
+  });
 }
 
 export async function loadPolicyFiles(
@@ -197,9 +511,19 @@ export async function loadPolicyFiles(
     }
   }
   const user =
-    userContent === null ? null : parsePolicyFile(userContent, "user");
+    userContent === null
+      ? null
+      : parsePolicyFile(userContent, "user", paths.cwd);
   const project =
-    projectContent === null ? null : parsePolicyFile(projectContent, "project");
+    projectContent === null
+      ? null
+      : parsePolicyFile(projectContent, "project", paths.cwd);
+  for (const warning of user?.warnings ?? []) {
+    warnings.push(`${userPath}: ${warning}`);
+  }
+  for (const warning of project?.warnings ?? []) {
+    warnings.push(`${projectPath}: ${warning}`);
+  }
   const userWriteSet = user?.writeSet ?? [];
   const projectWriteSet = project?.writeSet ?? [];
   if (

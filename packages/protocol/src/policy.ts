@@ -39,6 +39,7 @@ export const PolicyDecisionSchema = Type.Object(
     ),
     rule: NonEmptyStringSchema,
     rule_sha256: Sha256Schema,
+    justification: Type.Optional(NonEmptyStringSchema),
     reason: NonEmptyStringSchema,
     layers: Type.Array(PolicyLayerSchema),
     match: PolicyMatchSchema,
