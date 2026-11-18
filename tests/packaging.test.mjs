@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  describeInstallFailure,
   ensureBuilt,
   escapeRegExp,
   execFilePortable,
@@ -107,20 +108,25 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
       packed.push(JSON.parse(stdout).filename);
     }
     const prefix = path.join(root, "prefix");
-    await execFilePortable(
-      "npm",
-      [
-        "install",
-        "--global",
-        "--prefix",
-        prefix,
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        ...packed,
-      ],
-      { timeout: resolveInstallTimeoutMs() },
-    );
+    const installTimeoutMs = resolveInstallTimeoutMs();
+    try {
+      await execFilePortable(
+        "npm",
+        [
+          "install",
+          "--global",
+          "--prefix",
+          prefix,
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          ...packed,
+        ],
+        { timeout: installTimeoutMs },
+      );
+    } catch (error) {
+      assert.fail(describeInstallFailure(error, installTimeoutMs));
+    }
     const bin =
       process.platform === "win32"
         ? path.join(prefix, "codepunk.cmd")
