@@ -143,7 +143,7 @@ async function liveWriters(
       const lock = await readLock(
         path.join(sessionsDir, session.name, "session.lock"),
       ).catch(() => null);
-      if (lock !== null && staleLockReason(lock, now, leaseMs) === null) {
+      if (lock !== null && staleLockReason(lock, now, leaseMs) !== null) {
         writers.push({
           project: project.name,
           session: session.name,
@@ -157,6 +157,14 @@ async function liveWriters(
 
 function relativePath(home: string, candidate: string): string {
   return path.relative(home, candidate).split(path.sep).join("/");
+}
+
+function projectForCandidate(relative: string): string | null {
+  const parts = relative.split("/");
+  if (parts[0] !== "projects" || parts.length < 3) {
+    return null;
+  }
+  return parts[1] ?? null;
 }
 
 function writerOverlaps(
@@ -646,14 +654,25 @@ export async function applyGc(
     const writer = writers.find((entry) =>
       writerOverlaps(home, entry, [candidate.path]),
     );
-    if (writer === undefined) {
-      deletable.push(candidate);
-    } else {
+    if (writer !== undefined) {
       skipped.push({
         path: candidate.path,
         reason: `active_writer:${writer.session}`,
       });
+      continue;
     }
+    const project = projectForCandidate(candidate.path);
+    if (
+      project !== null &&
+      writers.some((entry) => entry.project === project)
+    ) {
+      skipped.push({
+        path: candidate.path,
+        reason: `active_writer_project:${project}`,
+      });
+      continue;
+    }
+    deletable.push(candidate);
   }
   let backup: BackupManifest | null = null;
   if (deletable.length > 0) {
