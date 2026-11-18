@@ -21,11 +21,16 @@ import {
   DaemonClientError,
   DaemonServer,
   allWorkspaceTrustGrants,
+  appendRetentionOperation,
+  applyGc,
+  applyMigration,
   applyWorkspaceTrustGrantChanges,
   MemoryManager,
   collectCapabilities,
   configFilePaths,
   configSummary,
+  checkMigration,
+  createBackup,
   createRuntime,
   daemonSocketPath,
   decidePolicy,
@@ -56,6 +61,7 @@ import {
   isPermissionProfile,
   isThinkingLevel,
   listUserPluginFiles,
+  listBackups,
   listModelCatalog,
   listProjectSessions,
   loadConfig,
@@ -78,6 +84,7 @@ import {
   probeConfiguredModel,
   projectPaths,
   probeSrtSandbox,
+  restoreBackup,
   removeMcpServer,
   readMcpConfig,
   readSavedWorkspaceTrustGrants,
@@ -198,6 +205,7 @@ interface CliOptions {
   bare: boolean;
   headlessPolicy: string | undefined;
   apply: boolean;
+  check: boolean;
   unpin: boolean;
   allProjects: boolean;
   verdict: "complete" | "incomplete" | undefined;
@@ -239,6 +247,7 @@ function usage(): string {
     "",
     "Session commands:",
     "  codepunk sessions [prune] [--apply]",
+    "      sessions prune is dry-run only; --apply is refused, use codepunk gc --apply",
     "  codepunk sessions tree [session-id] [--json]",
     "  codepunk sessions graph [--json]",
     "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
@@ -248,6 +257,14 @@ function usage(): string {
     "  codepunk sign <run-id> --verdict complete|incomplete",
     "  codepunk daemon [--socket path]",
     "  codepunk view [session-id] [--json] [--socket path]",
+    "",
+    "Retention commands:",
+    "  codepunk gc [--dry-run|--apply]",
+    "      dry-run lists artifact candidates; apply backs up before deleting",
+    "  codepunk migrate [--check|--apply]",
+    "      check reports the state version; apply backs up before migrating",
+    "  codepunk backup create|list|restore <id>",
+    "      create snapshots projects, config, and state version without credentials",
     "",
     "Memory commands:",
     "  codepunk memory list [--scope user|project]",
@@ -375,6 +392,7 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "usage:",
           "  codepunk sessions",
           "  codepunk sessions prune [--apply]",
+          "      prune is dry-run only; --apply is refused, use codepunk gc --apply",
           "  codepunk sessions tree [session-id] [--json]",
           "  codepunk sessions graph [--json]",
           "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
@@ -384,6 +402,29 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "  codepunk sign <run-id> --verdict complete|incomplete",
           "  codepunk daemon [--socket path]",
           "  codepunk view [session-id] [--json] [--socket path]",
+        ];
+      case "gc":
+        return [
+          "usage:",
+          "  codepunk gc [--dry-run|--apply]",
+          "      dry-run is the default; --apply backs up candidates before deleting",
+          "      only artifacts are deleted; sessions, evidence, verdicts, and checkpoints stay",
+        ];
+      case "migrate":
+        return [
+          "usage:",
+          "  codepunk migrate [--check|--apply]",
+          "      --check is the default and exits 1 when a migration is required",
+          "      --apply backs up state-version.json and restores it on failure",
+        ];
+      case "backup":
+        return [
+          "usage:",
+          "  codepunk backup create",
+          "  codepunk backup list [--json]",
+          "  codepunk backup restore <id>",
+          "      backups include projects, config.toml, and state-version.json",
+          "      auth.json and models.json are never included",
         ];
       case "export":
         return ["usage:", "  codepunk export [session-id] [--output path]"];
@@ -553,6 +594,7 @@ function parseCli(argv: string[]): CliOptions {
       "no-mcp": { type: "boolean" },
       "headless-policy": { type: "string" },
       apply: { type: "boolean" },
+      check: { type: "boolean" },
       unpin: { type: "boolean" },
       "all-projects": { type: "boolean" },
       verdict: { type: "string" },
@@ -941,6 +983,7 @@ function parseCli(argv: string[]): CliOptions {
     bare,
     headlessPolicy: values["headless-policy"],
     apply: values.apply === true,
+    check: values.check === true,
     unpin: values.unpin === true,
     allProjects: values["all-projects"] === true,
     verdict,
@@ -1905,6 +1948,11 @@ async function runTui(options: CliOptions): Promise<number> {
 async function commandSessions(options: CliOptions): Promise<number> {
   const { paths, config } = await resolveProject(options);
   if (options.positionals.includes("prune")) {
+    if (options.apply) {
+      throw new Error(
+        "sessions prune --apply is refused because it bypasses the backup boundary; use codepunk gc --apply for artifact cleanup",
+      );
+    }
     const plan = await planRetention(
       paths,
       {
@@ -1997,6 +2045,156 @@ async function commandSessions(options: CliOptions): Promise<number> {
       : `${formatSessionList(sessions)}\n`,
   );
   return 0;
+}
+
+function formatByteCount(bytes: number): string {
+  return `${bytes} byte${bytes === 1 ? "" : "s"}`;
+}
+
+async function commandGc(options: CliOptions): Promise<number> {
+  const { paths, config } = await resolveProject(options);
+  if (options.apply && (options.dryRun || options.check)) {
+    throw new Error("gc accepts --dry-run or --apply, not both");
+  }
+  const result = await applyGc(paths.home, {
+    dryRun: !options.apply,
+    olderThanMs: config.evidence.retention_days * 86_400_000,
+    now: new Date(),
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return result.skipped.length === 0 ? 0 : 1;
+  }
+  const lines = [
+    `${result.dry_run ? "GC DRY RUN" : "GC APPLIED"}: ${result.candidates.length} candidate(s)`,
+  ];
+  for (const candidate of result.candidates) {
+    lines.push(
+      `  ${candidate.path}  ${formatByteCount(candidate.bytes)}  ${candidate.reason}`,
+    );
+  }
+  if (!result.dry_run) {
+    lines.push(
+      `backup: ${result.backup_id ?? "(none; nothing to delete)"}`,
+      `deleted: ${result.deleted.length}`,
+    );
+  }
+  for (const skipped of result.skipped) {
+    lines.push(`skipped: ${skipped.path}  ${skipped.reason}`);
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+  return result.skipped.length === 0 ? 0 : 1;
+}
+
+async function commandMigrate(options: CliOptions): Promise<number> {
+  const { paths } = await resolveProject(options);
+  if (options.apply && options.check) {
+    throw new Error("migrate accepts --check or --apply, not both");
+  }
+  if (options.apply) {
+    const result = await applyMigration(paths.home);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stdout.write(
+        [
+          `migrate: ${result.status.current} -> ${result.status.target}`,
+          `backup: ${result.backup_id ?? "(none; already current)"}`,
+        ].join("\n") + "\n",
+      );
+    }
+    return 0;
+  }
+  const status = await checkMigration(paths.home);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(status)}\n`);
+  } else {
+    process.stdout.write(
+      [
+        `current: ${status.current}`,
+        `target: ${status.target}`,
+        `migration required: ${status.required ? "yes" : "no"}`,
+      ].join("\n") + "\n",
+    );
+  }
+  return status.required ? 1 : 0;
+}
+
+async function commandBackup(options: CliOptions): Promise<number> {
+  const { paths } = await resolveProject(options);
+  const action = options.positionals[1] ?? "list";
+  if (action === "create") {
+    const manifest = await createBackup(paths.home, {
+      roots: ["projects"],
+      include: ["config.toml", "state-version.json"],
+      waitForWritersMs: 5_000,
+    });
+    await appendRetentionOperation(paths.home, {
+      at: manifest.created_at,
+      action: "backup.create",
+      mode: "apply",
+      paths: manifest.files.map((file) => ({
+        path: file.path,
+        before_sha256: null,
+        after_sha256: file.sha256,
+        bytes: file.bytes,
+      })),
+      backup_id: manifest.id,
+      exit_code: 0,
+      failure: null,
+    });
+    const totalBytes = manifest.files.reduce(
+      (sum, file) => sum + file.bytes,
+      0,
+    );
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(manifest)}\n`);
+    } else {
+      process.stdout.write(
+        [
+          `created backup ${manifest.id}`,
+          `files: ${manifest.files.length}`,
+          `bytes: ${totalBytes}`,
+          `path: ${path.join(paths.home, "backups", manifest.id)}`,
+        ].join("\n") + "\n",
+      );
+    }
+    return 0;
+  }
+  if (action === "list") {
+    const backups = await listBackups(paths.home);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(backups)}\n`);
+    } else if (backups.length === 0) {
+      process.stdout.write("No backups.\n");
+    } else {
+      process.stdout.write(
+        backups
+          .map(
+            (backup) =>
+              `${backup.id}  ${backup.created_at}  ${backup.files.length} file(s)`,
+          )
+          .join("\n") + "\n",
+      );
+    }
+    return 0;
+  }
+  if (action === "restore") {
+    const id = options.positionals[2];
+    if (id === undefined) {
+      throw new Error("backup restore requires a backup id");
+    }
+    const manifest = await restoreBackup(paths.home, id);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(manifest)}\n`);
+    } else {
+      process.stdout.write(
+        `restored backup ${manifest.id} (${manifest.files.length} file(s))\n`,
+      );
+    }
+    return 0;
+  }
+  throw new Error(`unknown backup command: ${action}`);
 }
 
 function formatDaemonList(result: DaemonSessionListResult): string {
@@ -4051,6 +4249,15 @@ async function main(argv: string[]): Promise<number> {
     }
     process.stdout.write(`${usage()}\n`);
     return 0;
+  }
+  if (command === "gc") {
+    return commandGc(options);
+  }
+  if (command === "migrate") {
+    return commandMigrate(options);
+  }
+  if (command === "backup") {
+    return commandBackup(options);
   }
   if (command === "sessions" || command === "prune") {
     return commandSessions(options);

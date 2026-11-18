@@ -754,6 +754,123 @@ test("sessions emit machine-readable lists and prune plans", async () => {
   });
 });
 
+test("retention command help and surfaces", async () => {
+  const cli = await ensureBuilt();
+  const help = await execFileAsync(process.execPath, [cli, "--help"]);
+  assert.match(help.stdout, /codepunk gc \[--dry-run\|--apply\]/u);
+  assert.match(help.stdout, /codepunk migrate \[--check\|--apply\]/u);
+  assert.match(help.stdout, /codepunk backup create\|list\|restore <id>/u);
+  assert.match(help.stdout, /sessions prune is dry-run only/u);
+
+  for (const [args, pattern] of [
+    [["gc", "--help"], /codepunk gc \[--dry-run\|--apply\]/u],
+    [["migrate", "--help"], /codepunk migrate \[--check\|--apply\]/u],
+    [["backup", "--help"], /codepunk backup create|list|restore <id>/u],
+  ]) {
+    const scoped = await execFileAsync(process.execPath, [cli, ...args]);
+    assert.match(scoped.stdout, pattern);
+    assert.doesNotMatch(scoped.stdout, /codepunk \[options\]/u);
+  }
+  const pruneHelp = await execFileAsync(process.execPath, [
+    cli,
+    "sessions",
+    "prune",
+    "--help",
+  ]);
+  assert.match(pruneHelp.stdout, /--apply is refused/u);
+
+  await withTempDirectory("codepunk-cli-retention-", async (root) => {
+    const { project, home } = await makeProject(root);
+    const projectId = core.projectIdFor(await fs.realpath(project));
+    const projectDir = path.join(home, "projects", projectId);
+    const artifact = path.join(projectDir, "artifacts", "old.txt");
+    const sessionFile = path.join(
+      projectDir,
+      "sessions",
+      "S1",
+      "session.jsonl",
+    );
+    const evidenceFile = path.join(projectDir, "evidence", "S1", "run.jsonl");
+    await fs.mkdir(path.dirname(artifact), { recursive: true });
+    await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+    await fs.mkdir(path.dirname(evidenceFile), { recursive: true });
+    await fs.writeFile(artifact, "artifact\n");
+    const old = new Date("2020-01-01T00:00:00.000Z");
+    await fs.utimes(artifact, old, old);
+    await fs.writeFile(sessionFile, "session\n");
+    await fs.writeFile(evidenceFile, "evidence\n");
+
+    const dry = JSON.parse(
+      (
+        await runCli(["gc", "--dry-run", "--json"], {
+          cwd: project,
+          home,
+        })
+      ).stdout,
+    );
+    assert.equal(dry.dry_run, true);
+    assert.equal(dry.candidates.length, 1);
+    assert.equal(await fs.readFile(artifact, "utf8"), "artifact\n");
+
+    const applied = JSON.parse(
+      (
+        await runCli(["gc", "--apply", "--json"], {
+          cwd: project,
+          home,
+        })
+      ).stdout,
+    );
+    assert.ok(applied.backup_id);
+    await assert.rejects(fs.readFile(artifact), { code: "ENOENT" });
+    assert.equal(await fs.readFile(sessionFile, "utf8"), "session\n");
+    assert.equal(await fs.readFile(evidenceFile, "utf8"), "evidence\n");
+
+    await runCli(["backup", "restore", applied.backup_id], {
+      cwd: project,
+      home,
+    });
+    assert.equal(await fs.readFile(artifact, "utf8"), "artifact\n");
+
+    await assert.rejects(
+      () => runCli(["sessions", "prune", "--apply"], { cwd: project, home }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /prune --apply is refused/u);
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      () => runCli(["migrate", "--check", "--json"], { cwd: project, home }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(JSON.parse(error.stdout).required, true);
+        return true;
+      },
+    );
+    const migrated = JSON.parse(
+      (
+        await runCli(["migrate", "--apply", "--json"], {
+          cwd: project,
+          home,
+        })
+      ).stdout,
+    );
+    assert.ok(migrated.backup_id);
+    assert.equal(
+      await fs.readFile(path.join(home, "state-version.json"), "utf8"),
+      '{\n  "version": 1\n}\n',
+    );
+    await runCli(["backup", "restore", migrated.backup_id], {
+      cwd: project,
+      home,
+    });
+    await assert.rejects(fs.access(path.join(home, "state-version.json")), {
+      code: "ENOENT",
+    });
+  });
+});
+
 test("permission commands show effective modes, explain commands, and persist profiles", async () => {
   await withTempDirectory("codepunk-cli-permissions-", async (root) => {
     const { project, home } = await makeProject(root);
