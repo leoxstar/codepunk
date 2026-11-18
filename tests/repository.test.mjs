@@ -214,6 +214,28 @@ async function refreshFixtureControlCorpusDigest(root) {
   return replaceExpectedDigest(root, "EXPECTED_CONTROL_CORPUS_SHA256", digest);
 }
 
+async function refreshFixtureReleaseSmokeDigest(root) {
+  const digest = createHash("sha256")
+    .update(
+      await readFile(path.join(root, ".github/workflows/release-smoke.yml")),
+    )
+    .digest("hex");
+  return replaceExpectedDigest(root, "EXPECTED_RELEASE_SMOKE_SHA256", digest);
+}
+
+async function mutateReleaseSmokeAndRefreshDigest(root, transform) {
+  const restoreWorkflow = await replaceFile(
+    root,
+    ".github/workflows/release-smoke.yml",
+    transform,
+  );
+  const restoreDigest = await refreshFixtureReleaseSmokeDigest(root);
+  return async () => {
+    await restoreDigest();
+    await restoreWorkflow();
+  };
+}
+
 async function mutateWorkflowAndRefreshDigest(root, transform) {
   const restoreWorkflow = await replaceFile(
     root,
@@ -1409,6 +1431,140 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         await assertRestored("restored exact LF policy");
       },
     );
+  } finally {
+    await restoreControlDigest();
+    await fixture.cleanup();
+  }
+});
+
+test("0004 release-smoke contract rejects drift and extra workflows", async (t) => {
+  const fixture = await copyRepositoryToTemporaryDirectory();
+  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
+    fixture.root,
+  );
+  const assertRestored = async (label) => {
+    assertClean(await runFixtureCheck(fixture), label);
+  };
+
+  try {
+    await assertRestored("0004 fixture before planting violations");
+
+    const cases = [
+      {
+        name: "release-smoke matrix rejects an omitted runner",
+        transform: (content) =>
+          content.replace("          - ubuntu-24.04-arm\n", ""),
+        message:
+          /release-smoke matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26/u,
+      },
+      {
+        name: "release-smoke rejects a push trigger",
+        transform: (content) =>
+          content.replace(
+            "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Published @codepunk/cli version, for example 0.1.0\n        required: true\n        type: string\n",
+            "on:\n  push:\n",
+          ),
+        message: /only workflow_dispatch may trigger the release smoke/u,
+      },
+      {
+        name: "release-smoke rejects an unreviewed Windows runner",
+        transform: (content) =>
+          content.replace(
+            "          - macos-26\n",
+            "          - macos-26\n          - windows-latest\n",
+          ),
+        message:
+          /release-smoke matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26/u,
+      },
+      {
+        name: "release-smoke rejects an npm publish step",
+        transform: (content) =>
+          content.replace(
+            "      - name: Run published-package smoke\n",
+            "      - name: Publish\n        run: npm publish\n\n      - name: Run published-package smoke\n",
+          ),
+        message:
+          /release smoke contains a publish command, secret reference, or non-blocking step/u,
+      },
+    ];
+
+    for (const testCase of cases) {
+      await t.test(testCase.name, async () => {
+        const restore = await mutateReleaseSmokeAndRefreshDigest(
+          fixture.root,
+          testCase.transform,
+        );
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertRuleFailure(
+            result,
+            "release-smoke",
+            ".github/workflows/release-smoke.yml",
+          );
+          assert.match(outputOf(result), testCase.message);
+        } finally {
+          await restore();
+        }
+        await assertRestored(`restored ${testCase.name}`);
+      });
+    }
+
+    await t.test("stale release-smoke digest fails first", async () => {
+      const restore = await replaceExpectedDigest(
+        fixture.root,
+        "EXPECTED_RELEASE_SMOKE_SHA256",
+        "0".repeat(64),
+      );
+      try {
+        const result = await runFixtureCheck(fixture);
+        assertRuleFailure(
+          result,
+          "release-smoke",
+          ".github/workflows/release-smoke.yml",
+        );
+        assert.match(outputOf(result), /workflow digest differs/u);
+      } finally {
+        await restore();
+      }
+      await assertRestored("restored release-smoke digest");
+    });
+
+    await t.test("a third workflow is still rejected", async () => {
+      const remove = await createFileFixture(
+        fixture.root,
+        ".github/workflows/unreviewed.yml",
+        "name: unreviewed\n",
+      );
+      try {
+        const result = await runFixtureCheck(fixture);
+        assertRuleFailure(
+          result,
+          "ci.contract",
+          ".github/workflows/unreviewed.yml",
+        );
+      } finally {
+        await remove();
+      }
+      await assertRestored("removed the third workflow");
+    });
+
+    await t.test("a missing release-smoke workflow is rejected", async () => {
+      const relativePath = ".github/workflows/release-smoke.yml";
+      const absolutePath = path.join(fixture.root, relativePath);
+      const original = await readFile(absolutePath);
+      await rm(absolutePath);
+      try {
+        const result = await runFixtureCheck(fixture);
+        assertRuleFailure(result, "release-smoke", relativePath);
+        assert.match(
+          outputOf(result),
+          /reviewed release-smoke workflow is missing/u,
+        );
+      } finally {
+        await writeFile(absolutePath, original);
+      }
+      await assertRestored("restored the release-smoke workflow");
+    });
   } finally {
     await restoreControlDigest();
     await fixture.cleanup();

@@ -174,8 +174,17 @@ const EXPECTED_CI_RUNNERS = [
   "windows-latest",
 ];
 
+const RELEASE_SMOKE_PATH = ".github/workflows/release-smoke.yml";
+
+const EXPECTED_RELEASE_SMOKE_SHA256 =
+  "413ede79bf04146aa1571a616eb3888e0c2b5c5da6065f9869213e6742ec0552";
+
+const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_CI_RUNNERS.filter(
+  (runner) => runner !== "windows-latest",
+);
+
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "928639db908fb461e82a00c2044f485b979144801d560b96109f38c283837e12";
+  "1a38a177dc016df21b2418d2073fe27bd5360e3c6ef0b285b292fb4ddd9ba66d";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -742,15 +751,20 @@ function checkRequiredDocs(root, add) {
 async function checkCiContract(root, files, add) {
   const relativeCi = ".github/workflows/ci.yml";
   const absoluteCi = path.join(root, relativeCi);
+  const allowedWorkflows = new Set([relativeCi, RELEASE_SMOKE_PATH]);
   for (const relativePath of files) {
-    if (relativePath.startsWith(".github/") && relativePath !== relativeCi) {
+    if (
+      relativePath.startsWith(".github/") &&
+      !allowedWorkflows.has(relativePath)
+    ) {
       add(
         "ci.contract",
         relativePath,
-        "only the reviewed CI workflow is permitted",
+        "only the reviewed CI and release-smoke workflows are permitted",
       );
     }
   }
+  await checkReleaseSmokeContract(root, files, add);
   if (!existsSync(absoluteCi)) {
     return;
   }
@@ -831,6 +845,121 @@ async function checkCiContract(root, files, add) {
         "ci.contract",
         relativeCi,
         "CI contains a condition, shell override, environment block, or alternate trigger",
+      );
+    }
+  }
+}
+
+async function checkReleaseSmokeContract(root, files, add) {
+  const relativePath = RELEASE_SMOKE_PATH;
+  const absolutePath = path.join(root, relativePath);
+  if (!files.includes(relativePath)) {
+    add(
+      "release-smoke",
+      relativePath,
+      "reviewed release-smoke workflow is missing",
+    );
+    return;
+  }
+  const content = await readFile(absolutePath, "utf8");
+  const digest = createHash("sha256").update(content).digest("hex");
+  if (digest !== EXPECTED_RELEASE_SMOKE_SHA256) {
+    add(
+      "release-smoke",
+      relativePath,
+      "workflow digest differs from the reviewed release-smoke contract",
+    );
+  }
+  if (!content.startsWith("name: release-smoke\n")) {
+    add(
+      "release-smoke",
+      relativePath,
+      "workflow name must remain release-smoke",
+    );
+  }
+  const trigger = content.match(/\non:\n([\s\S]*?)\npermissions:/u)?.[1] ?? "";
+  if (!/^\s{2}workflow_dispatch:\s*$/mu.test(trigger)) {
+    add(
+      "release-smoke",
+      relativePath,
+      "only workflow_dispatch may trigger the release smoke",
+    );
+  }
+  if (
+    /^\s{2}(?:push|pull_request|schedule|workflow_call|workflow_run|release|issues|discussion|merge_group):/mu.test(
+      trigger,
+    )
+  ) {
+    add(
+      "release-smoke",
+      relativePath,
+      "release smoke must not run on push, pull_request, schedule, or another repository event",
+    );
+  }
+  const matrixMatch = content.match(
+    /\n[ \t]+os:[ \t]*\n((?:[ \t]+-[ \t]+\S+[ \t]*\n?)+)/u,
+  );
+  const runners = matrixMatch?.[1]
+    ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
+    : [];
+  if (
+    runners.length !== EXPECTED_RELEASE_SMOKE_RUNNERS.length ||
+    !runners.every(
+      (runner, index) => runner === EXPECTED_RELEASE_SMOKE_RUNNERS[index],
+    )
+  ) {
+    add(
+      "release-smoke",
+      relativePath,
+      `release-smoke matrix must require ${EXPECTED_RELEASE_SMOKE_RUNNERS.join(
+        ", ",
+      )}`,
+    );
+  }
+  for (const required of [
+    "permissions:\n  contents: read",
+    "runs-on: ${{ matrix.os }}",
+    "node-version: 22.19.0",
+    "version: 12.18.0",
+    "persist-credentials: false",
+    "ref: v${{ inputs.version }}",
+    "run: bash scripts/ci-install-sandbox-deps.sh",
+    'run: bash scripts/release-smoke.sh "$VERSION"',
+    "type: string",
+  ]) {
+    if (!content.includes(required)) {
+      add(
+        "release-smoke",
+        relativePath,
+        `missing release-smoke contract: ${required}`,
+      );
+    }
+  }
+  const uses = [...content.matchAll(/^\s*uses:\s*(\S+)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  if (
+    uses.length !== 3 ||
+    uses[0] !== "actions/checkout@v4" ||
+    uses[1] !== "pnpm/action-setup@v4" ||
+    uses[2] !== "actions/setup-node@v4"
+  ) {
+    add(
+      "release-smoke",
+      relativePath,
+      "release smoke may use only the reviewed checkout, pnpm setup, and setup-node actions",
+    );
+  }
+  for (const forbidden of [
+    /\bnpm\s+publish\b/iu,
+    /\bsecrets\b/iu,
+    /\bcontinue-on-error\s*:/iu,
+  ]) {
+    if (forbidden.test(content)) {
+      add(
+        "release-smoke",
+        relativePath,
+        "release smoke contains a publish command, secret reference, or non-blocking step",
       );
     }
   }
