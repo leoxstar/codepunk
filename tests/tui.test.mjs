@@ -592,35 +592,6 @@ test("fallback selection still resolves to the configured physical model", async
   assert.equal(state.modelSelected, true);
 });
 
-function runPty(command, args, { cwd, env }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      PTY_RUNNER[0],
-      [...PTY_RUNNER.slice(1), command, ...args],
-      {
-        cwd,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    const output = [];
-    child.stdout.on("data", (chunk) => output.push(chunk.toString("utf8")));
-    child.stderr.on("data", (chunk) => output.push(chunk.toString("utf8")));
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("timed out waiting for the TUI"));
-    }, 30_000);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", () => {
-      clearTimeout(timer);
-      resolve(output.join(""));
-    });
-  });
-}
-
 function startPty(command, args, { cwd, env }) {
   const pidFile = path.join(
     env.CODEPUNK_HOME,
@@ -894,27 +865,41 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
     );
     await execFileAsync("git", ["init", "-q"], { cwd: project });
     const cli = await ensureBuilt();
-    const output = await runPty(process.execPath, [cli], {
+    const session = startPty(process.execPath, [cli], {
       cwd: project,
       env: {
         ...BASE_ENV,
         CODEPUNK_HOME: home,
         TERM: "xterm-256color",
         NO_COLOR: "1",
-        PTY_RUN_TIMEOUT: "10",
       },
     });
-    assert.match(output, /codepunk · auto\/auto/u);
-    assert.match(
-      output,
-      /project .* · session .* · next sandbox uncovered · fs workspace/u,
-    );
-    assert.match(
-      output,
-      /permissions custom · trust trusted · shell disabled · evidence 0 · budget off/u,
-    );
-    assert.match(output, /session [0-9A-Z]{10}/u);
-    assert.doesNotMatch(output, /v1\.5\.2/u);
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await waitForQuiet(session, 250);
+      const output = stripAnsi(session.output());
+      assert.match(output, /codepunk · auto\/auto/u);
+      assert.match(
+        output,
+        /project .* · session .* · next sandbox uncovered · fs workspace/u,
+      );
+      assert.match(
+        output,
+        /permissions custom · trust trusted · shell disabled · evidence 0 · budget off/u,
+      );
+      assert.match(output, /session [0-9A-Z]{10}/u);
+      assert.doesNotMatch(output, /v1\.5\.2/u);
+      session.child.stdin.write("/quit\r");
+      const exited = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(exited, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
   });
 });
 

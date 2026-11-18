@@ -301,7 +301,7 @@ export function withoutAmbientProviderEnv(env = process.env) {
  * laptop, and a hard-coded value turns "slower than my machine" into "broken".
  */
 export const DEFAULT_INSTALL_TIMEOUT_MS =
-  process.platform === "win32" ? 300_000 : 120_000;
+  process.platform === "win32" ? 600_000 : 120_000;
 export const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
 
 const NETWORK_ERROR_CODES = new Set([
