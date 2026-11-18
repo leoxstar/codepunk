@@ -843,22 +843,39 @@ async function createRuntimeInner(
   const autonomy = new AutonomyController(autonomyRegistration);
   let sandbox: ShellProvider | null = null;
   let sandboxUnavailableReason: string | null = null;
+  // The sandbox starts before the Pi host exists. The ref is filled in once
+  // the host is created, so the sandbox's network events reach the session
+  // log through the host's own append chain.
+  const hostRef: { current: PiHost | null } = { current: null };
   if (config.sandbox.mode === "required") {
     try {
-      sandbox = await SrtSandbox.create({
-        cwd: paths.cwd,
-        workspaceRoot: paths.deliveryRoot,
-        deliveryRoot: paths.deliveryRoot,
-        codepunkHome: paths.home,
-        writeSet: writeSetWithAdditionalRoots,
-        additionalRoots: paths.additionalRoots,
-        networkAllow: config.sandbox.network_allow,
-        networkDeny: config.sandbox.network_deny,
-        readOnly: config.autonomy.profile === "read-only",
-        ...(windowsShell.binShell === null
-          ? {}
-          : { windowsBinShell: windowsShell.binShell }),
-      });
+      sandbox = await SrtSandbox.create(
+        {
+          cwd: paths.cwd,
+          workspaceRoot: paths.deliveryRoot,
+          deliveryRoot: paths.deliveryRoot,
+          codepunkHome: paths.home,
+          writeSet: writeSetWithAdditionalRoots,
+          additionalRoots: paths.additionalRoots,
+          networkAllow: config.sandbox.network_allow,
+          networkDeny: config.sandbox.network_deny,
+          networkMaxRequests: config.sandbox.network_max_requests,
+          networkMaxBytes: config.sandbox.network_max_bytes,
+          readOnly: config.autonomy.profile === "read-only",
+          ...(windowsShell.binShell === null
+            ? {}
+            : { windowsBinShell: windowsShell.binShell }),
+        },
+        {
+          // The sandbox starts before the session writer lock is acquired, so
+          // the run id and the sink are resolved lazily. The callback is only
+          // invoked for events after the host has acquired the writer.
+          runId: () => hostRef.current?.currentRunId ?? initialRunId,
+          onNetworkEvent: async (kind, data) => {
+            await hostRef.current?.recordEvent(kind, data);
+          },
+        },
+      );
     } catch (error) {
       sandboxUnavailableReason =
         error instanceof Error ? error.message : String(error);
@@ -1210,6 +1227,7 @@ async function createRuntimeInner(
     await mcp.close();
     throw error;
   }
+  hostRef.current = host;
   await host.recordEvent("autonomy/profile", {
     profile: autonomy.profile,
     source: autonomy.source,

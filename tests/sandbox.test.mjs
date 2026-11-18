@@ -902,6 +902,82 @@ test("network allowlist reaches the srt profile and descriptor", async () => {
   assert.deepEqual(sandbox.descriptor.network_denied_domains, [
     "evil.npmjs.org",
   ]);
+  // Without budgets the profile keeps its previous shape: no filter hook,
+  // and therefore a descriptor hash identical to the pre-budget profile.
+  assert.equal(captured.network.filterRequest, undefined);
+  assert.equal(sandbox.networkGuard, null);
+});
+
+test("network budgets install the srt filterRequest guard and emit events", async () => {
+  let captured = null;
+  const manager = {
+    isSupportedPlatform: () => true,
+    checkDependencies: () => ({ errors: [], warnings: [] }),
+    initialize: async (config) => {
+      captured = config;
+    },
+    wrapWithSandbox: async () => "true",
+    wrapWithSandboxArgv: async () => ({ argv: ["true"], env: {} }),
+    annotateStderrWithSandboxFailures: (_command, stderr) => stderr,
+  };
+  const events = [];
+  const sandbox = await core.SrtSandbox.create(
+    {
+      cwd: "/workspace",
+      workspaceRoot: "/workspace",
+      deliveryRoot: "/workspace",
+      codepunkHome: "/srv/codepunk-home",
+      writeSet: ["."],
+      networkAllow: ["allowed.example"],
+      networkMaxRequests: 1,
+      networkMaxBytes: 1024,
+    },
+    {
+      manager,
+      platform: "linux",
+      runId: "run-sandbox",
+      onNetworkEvent: (kind, data) => {
+        events.push({ kind, data });
+      },
+    },
+  );
+  assert.equal(typeof captured.network.filterRequest, "function");
+  assert.ok(sandbox.networkGuard !== null);
+
+  // The profile's hook and the instance share one guard, so counters do not
+  // diverge between what the proxy enforces and what tests observe.
+  const first = await captured.network.filterRequest(
+    new Request("http://allowed.example/"),
+    { target: { host: "allowed.example", port: 80 }, scheme: "http" },
+  );
+  assert.equal(first.action, "allow");
+  assert.deepEqual(sandbox.networkGuard.usageFor("allowed.example"), {
+    requests: 1,
+    bytes: 0,
+  });
+  const second = await captured.network.filterRequest(
+    new Request("http://allowed.example/"),
+    { target: { host: "allowed.example", port: 80 }, scheme: "http" },
+  );
+  assert.equal(second.action, "deny");
+  assert.equal(second.status, 403);
+  assert.equal(second.mark, "network_policy");
+  assert.deepEqual(
+    events.map((entry) => entry.kind),
+    ["network/request", "network/request", "network/rejected"],
+  );
+  assert.equal(events[0].data.run_id, "run-sandbox");
+  assert.equal(events[0].data.decision, "allow");
+  assert.equal(events[1].data.decision, "deny");
+  assert.equal(events[2].data.reason, "max_requests");
+  assert.deepEqual(events[2].data.limit, {
+    max_requests: 1,
+    max_bytes: 1024,
+  });
+  // The guard must not mutate the descriptor's recorded domain lists.
+  assert.deepEqual(sandbox.descriptor.network_allowed_domains, [
+    "allowed.example",
+  ]);
 });
 
 test(

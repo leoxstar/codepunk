@@ -496,6 +496,99 @@ test("the network lists are writable, normalized, and clearable", async () => {
   });
 });
 
+test("network budgets are user-scoped, default to null, and are validated", async () => {
+  await withTempDirectory("codepunk-config-network-budget-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const userConfig = path.join(paths.home, "config.toml");
+    const defaults = await core.loadConfig(paths);
+    assert.equal(defaults.config.sandbox.network_max_requests, null);
+    assert.equal(defaults.config.sandbox.network_max_bytes, null);
+
+    await writeFile(
+      userConfig,
+      [
+        "[sandbox]",
+        "network_max_requests = 5",
+        "network_max_bytes = 0",
+        "",
+      ].join("\n"),
+    );
+    const loaded = await core.loadConfig(paths);
+    assert.equal(loaded.config.sandbox.network_max_requests, 5);
+    assert.equal(loaded.config.sandbox.network_max_bytes, 0);
+
+    // An explicit null restores the unlimited default.
+    await writeFile(
+      userConfig,
+      ["[sandbox]", 'network_max_requests = "null"', ""].join("\n"),
+    );
+    const unlimited = await core.loadConfig(paths);
+    assert.equal(unlimited.config.sandbox.network_max_requests, null);
+
+    // The budgets are user-scoped, like the allow and deny lists.
+    await writeFile(
+      path.join(projectRoot, ".codepunk", "config.toml"),
+      "[sandbox]\nnetwork_max_requests = 50\n",
+    );
+    await assert.rejects(
+      () => core.loadConfig(paths),
+      /user\/CLI-only and cannot appear in project config/u,
+    );
+    await fs.rm(path.join(projectRoot, ".codepunk", "config.toml"));
+
+    for (const bad of ["-1", "1.5", "true"]) {
+      await writeFile(userConfig, `[sandbox]\nnetwork_max_requests = ${bad}\n`);
+      await assert.rejects(
+        () => core.loadConfig(paths),
+        /sandbox\.network_max_requests/u,
+        bad,
+      );
+    }
+    await writeFile(userConfig, "[sandbox]\nnetwork_max_bytes = -1\n");
+    await assert.rejects(
+      () => core.loadConfig(paths),
+      /sandbox\.network_max_bytes/u,
+    );
+  });
+});
+
+test("network budgets have environment overrides and a config summary", async () => {
+  await withTempDirectory(
+    "codepunk-config-network-budget-env-",
+    async (root) => {
+      const { paths } = await makeProject(root);
+      const loaded = await core.loadConfig(paths, {
+        CODEPUNK_NETWORK_MAX_REQUESTS: "3",
+        CODEPUNK_NETWORK_MAX_BYTES: "4096",
+      });
+      assert.equal(loaded.config.sandbox.network_max_requests, 3);
+      assert.equal(loaded.config.sandbox.network_max_bytes, 4096);
+
+      const cleared = await core.loadConfig(paths, {
+        CODEPUNK_NETWORK_MAX_REQUESTS: "null",
+        CODEPUNK_NETWORK_MAX_BYTES: "null",
+      });
+      assert.equal(cleared.config.sandbox.network_max_requests, null);
+      assert.equal(cleared.config.sandbox.network_max_bytes, null);
+
+      await assert.rejects(
+        () => core.loadConfig(paths, { CODEPUNK_NETWORK_MAX_REQUESTS: "nope" }),
+        /sandbox\.network_max_requests/u,
+      );
+
+      const summary = core.configSummary(loaded.config);
+      assert.ok(
+        summary.includes(
+          "network limit: 3 requests/domain / 4096 bytes/domain",
+        ),
+        summary.join("\n"),
+      );
+      const off = core.configSummary(cleared.config);
+      assert.ok(off.includes("network limit: off"), off.join("\n"));
+    },
+  );
+});
+
 test("CLI overrides environment, project, and user layers", async () => {
   await withTempDirectory("codepunk-config-", async (root) => {
     const { paths } = await makeProject(root);

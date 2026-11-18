@@ -103,6 +103,8 @@ export interface CodepunkConfig {
     mode: SandboxMode;
     network_allow: string[];
     network_deny: string[];
+    network_max_requests: number | null;
+    network_max_bytes: number | null;
   };
   filesystem: {
     mode: FilesystemMode;
@@ -177,6 +179,7 @@ type KeyType =
   | "boolean"
   | "number"
   | "integer"
+  | "integer-or-null"
   | "boolean-or-header"
   | "string-array";
 
@@ -306,6 +309,14 @@ const KEY_SPECS = new Map<string, KeySpec>([
   ["sandbox.network_allow", { type: "string-array", scope: "user" }],
   ["sandbox.network_deny", { type: "string-array", scope: "user" }],
   [
+    "sandbox.network_max_requests",
+    { type: "integer-or-null", minimum: 0, scope: "user" },
+  ],
+  [
+    "sandbox.network_max_bytes",
+    { type: "integer-or-null", minimum: 0, scope: "user" },
+  ],
+  [
     "filesystem.mode",
     {
       type: "string",
@@ -416,6 +427,8 @@ export function defaultConfig(): CodepunkConfig {
       mode: "required",
       network_allow: [],
       network_deny: [],
+      network_max_requests: null,
+      network_max_bytes: null,
     },
     filesystem: {
       mode: "workspace",
@@ -562,6 +575,18 @@ function validateValue(key: string, raw: TomlValue, spec: KeySpec): unknown {
   if (spec.type === "boolean-or-header") {
     if (raw !== true && raw !== false && raw !== "header") {
       throw valueError(key, 'true, false, or "header"');
+    }
+    return raw;
+  }
+  if (spec.type === "integer-or-null") {
+    if (raw === null || raw === "null") {
+      return null;
+    }
+    if (typeof raw !== "number" || !Number.isInteger(raw)) {
+      throw valueError(key, "an integer or null");
+    }
+    if (spec.minimum !== undefined && raw < spec.minimum) {
+      throw valueError(key, `at least ${spec.minimum}`);
     }
     return raw;
   }
@@ -917,6 +942,26 @@ function applyEnvironment(
       "sandbox.mode",
       (value) =>
         validateValue("sandbox.mode", value, KEY_SPECS.get("sandbox.mode")!),
+    ],
+    [
+      "CODEPUNK_NETWORK_MAX_REQUESTS",
+      "sandbox.network_max_requests",
+      (value) =>
+        validateValue(
+          "sandbox.network_max_requests",
+          value === "null" ? "null" : Number(value),
+          KEY_SPECS.get("sandbox.network_max_requests")!,
+        ),
+    ],
+    [
+      "CODEPUNK_NETWORK_MAX_BYTES",
+      "sandbox.network_max_bytes",
+      (value) =>
+        validateValue(
+          "sandbox.network_max_bytes",
+          value === "null" ? "null" : Number(value),
+          KEY_SPECS.get("sandbox.network_max_bytes")!,
+        ),
     ],
     [
       "CODEPUNK_FILESYSTEM_MODE",
@@ -2021,6 +2066,21 @@ export function configSummary(
     ...(config.sandbox.network_deny.length === 0
       ? []
       : [`network deny: ${config.sandbox.network_deny.join(", ")}`]),
+    `network limit: ${
+      config.sandbox.network_max_requests === null &&
+      config.sandbox.network_max_bytes === null
+        ? "off"
+        : [
+            config.sandbox.network_max_requests === null
+              ? null
+              : `${config.sandbox.network_max_requests} requests/domain`,
+            config.sandbox.network_max_bytes === null
+              ? null
+              : `${config.sandbox.network_max_bytes} bytes/domain`,
+          ]
+            .filter((entry): entry is string => entry !== null)
+            .join(" / ")
+    }`,
     `filesystem: ${config.filesystem.mode}`,
     `tools: ${config.tools.enabled.join(", ")}`,
     `write set: ${writeSet.length === 0 ? "(empty)" : writeSet.join(", ")}`,

@@ -17,6 +17,7 @@ import {
 export type { WindowsBinShell } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxDescriptor } from "@codepunk/protocol";
 import { ConfigError } from "../config/index.ts";
+import { NetworkGuard, type NetworkEventSink } from "../network/index.ts";
 import { sha256Value } from "../platform/hash.ts";
 import {
   isInsidePath,
@@ -67,11 +68,29 @@ export interface SrtProfileInput {
    */
   networkDeny?: readonly string[];
   /**
+   * Per-domain request budget. `null` is unlimited and keeps the previous
+   * behavior. The counters live on the sandbox because they cover a session,
+   * not one command.
+   */
+  networkMaxRequests?: number | null;
+  /**
+   * Per-domain byte budget. `null` is unlimited. Only bytes the proxy can
+   * observe are counted: a request body's declared length and a response's
+   * `content-length`. An opaque HTTPS tunnel is neither counted nor budgeted.
+   */
+  networkMaxBytes?: number | null;
+  /**
    * Remove the workspace write grant entirely. Policy already denies
    * mutations under read-only autonomy; this makes the same claim at the
    * sandbox layer so a policy regression cannot become a filesystem write.
    */
   readOnly?: boolean;
+  /**
+   * An already-constructed guard. `SrtSandbox.create` builds the guard and
+   * passes it here so the profile and the sandbox instance share one set of
+   * counters.
+   */
+  networkGuard?: NetworkGuard;
   worker?: {
     worktree: string;
     runDir: string;
@@ -376,6 +395,17 @@ export interface CreateSrtSandboxOptions {
    * undefined so srt-win keeps its default cmd.exe.
    */
   windowsBinShell?: WindowsBinShell;
+  /**
+   * Run id stamped on the network events. The sandbox starts before the
+   * first run exists, so a callback reads the current run id at the moment
+   * the event is emitted. A plain string is accepted for a fixed sandbox.
+   */
+  runId?: string | (() => string);
+  /**
+   * Sink for the network events the sandbox proxy emits. When it is absent
+   * the guard still enforces the budgets; the events are only dropped.
+   */
+  onNetworkEvent?: NetworkEventSink;
 }
 
 function writeRoots(input: SrtProfileInput): string[] {
@@ -655,6 +685,14 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
   const codepunkHome = normalizeAbsolute(input.codepunkHome);
   const allowedDomains = [...new Set(input.networkAllow ?? [])].sort();
   const deniedDomains = [...new Set(input.networkDeny ?? [])].sort();
+  // The guard repeats the runtime's domain decision so codepunk can count
+  // requests and bytes per domain, refuse a request before it is forwarded
+  // when a budget would be exceeded, and record every redirect hop. It is
+  // installed whenever the budgets are configured or an event sink exists;
+  // otherwise the profile is byte-identical to the previous shape, so the
+  // descriptor hash does not drift when the feature is off.
+  const networkGuard = input.networkGuard ?? null;
+  const filterRequest = networkGuard?.filterRequest;
   const projectConfig = path.join(
     normalizeAbsolute(input.deliveryRoot),
     ".codepunk",
@@ -666,6 +704,7 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
       network: {
         allowedDomains,
         deniedDomains,
+        ...(filterRequest !== undefined ? { filterRequest } : {}),
       },
       filesystem: {
         denyRead: [
@@ -734,6 +773,7 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
     network: {
       allowedDomains,
       deniedDomains,
+      ...(filterRequest !== undefined ? { filterRequest } : {}),
     },
     filesystem: {
       denyRead: [codepunkHome, ...protectedConfigDirs],
@@ -924,6 +964,12 @@ export class SrtSandbox implements ShellProvider {
   readonly descriptor: SandboxDescriptor;
   readonly sandboxed = true;
   readonly warnings: readonly string[];
+  /**
+   * The network guard, when one was installed. Tests inject requests and
+   * redirects directly so the budget and redirect behavior can be checked
+   * without a public network or a running proxy.
+   */
+  readonly networkGuard: NetworkGuard | null;
   private readonly manager: SrtManager;
   private readonly platform: NodeJS.Platform;
   private readonly windowsBinShell: WindowsBinShell | undefined;
@@ -935,11 +981,13 @@ export class SrtSandbox implements ShellProvider {
     warnings: readonly string[],
     platform: NodeJS.Platform,
     windowsBinShell: WindowsBinShell | undefined,
+    networkGuard: NetworkGuard | null,
   ) {
     this.manager = manager;
     this.warnings = warnings;
     this.platform = platform;
     this.windowsBinShell = windowsBinShell;
+    this.networkGuard = networkGuard;
     this.descriptor = {
       backend: "srt",
       version: SRT_VERSION,
@@ -966,7 +1014,24 @@ export class SrtSandbox implements ShellProvider {
         options.userHome ?? os.homedir(),
       );
     }
-    let config = srtProfile(input);
+    const networkGuard =
+      (input.networkMaxRequests !== undefined &&
+        input.networkMaxRequests !== null) ||
+      (input.networkMaxBytes !== undefined && input.networkMaxBytes !== null)
+        ? new NetworkGuard({
+            runId: options.runId ?? "sandbox",
+            allow: [...new Set(input.networkAllow ?? [])].sort(),
+            deny: [...new Set(input.networkDeny ?? [])].sort(),
+            maxRequests: input.networkMaxRequests ?? null,
+            maxBytes: input.networkMaxBytes ?? null,
+            onEvent: options.onNetworkEvent,
+          })
+        : null;
+    const profileInput: SrtProfileInput = {
+      ...input,
+      ...(networkGuard !== null ? { networkGuard } : {}),
+    };
+    let config = srtProfile(profileInput);
     let runtimeConfig = runtimeConfigFor(
       config,
       platform,
@@ -1026,6 +1091,7 @@ export class SrtSandbox implements ShellProvider {
       dependencies.warnings,
       platform,
       options.windowsBinShell,
+      networkGuard,
     );
   }
 

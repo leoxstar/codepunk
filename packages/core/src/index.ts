@@ -165,6 +165,21 @@ export {
   type WindowsShellSelection,
 } from "./sandbox/index.ts";
 export {
+  NETWORK_EVENT_KINDS,
+  NetworkGuard,
+  canonicalNetworkHost,
+  type NetworkDecision,
+  type NetworkEventData,
+  type NetworkEventKind,
+  type NetworkEventSink,
+  type NetworkGuardOptions,
+  type NetworkLimit,
+  type NetworkRedirectEventData,
+  type NetworkRejectedEventData,
+  type NetworkRejectionReason,
+  type NetworkRequestEventData,
+} from "./network/index.ts";
+export {
   CODEPUNK_TOOL_NAMES,
   HEADLESS_EXEC_TOOL_NAME,
   createCodepunkToolDefinitions,
