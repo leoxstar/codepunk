@@ -1213,6 +1213,58 @@ test(
   },
 );
 
+test("windows shell preflight reports tools.shell when no shell resolves", async () => {
+  for (const shell of ["pwsh", "bash"]) {
+    await assert.rejects(
+      () => core.resolveWindowsShell(shell, { PATH: "" }, "win32"),
+      (error) => {
+        assert.ok(error instanceof core.ConfigError);
+        assert.equal(error.key, "tools.shell");
+        return true;
+      },
+    );
+  }
+  assert.deepEqual(
+    await core.resolveWindowsShell("auto", { PATH: "" }, "win32"),
+    { kind: "auto", executable: null, binShell: null },
+  );
+});
+
+test("windows shell preflight fails closed when the srt probe fails", async () => {
+  const sandbox = {
+    descriptor: { backend: "srt" },
+    sandboxed: true,
+    execCommand: async () => {
+      throw new Error("unused");
+    },
+    execArgv: async () => {
+      throw new Error("srt-win probe failed");
+    },
+  };
+  await assert.rejects(
+    () =>
+      core.probeWindowsShell(
+        sandbox,
+        {
+          kind: "pwsh",
+          executable:
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          binShell: {
+            exe: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            args: ["-NoProfile", "-Command"],
+          },
+        },
+        os.tmpdir(),
+      ),
+    (error) => {
+      assert.ok(error instanceof core.ConfigError);
+      assert.equal(error.key, "tools.shell");
+      assert.match(error.message, /srt preflight failed/u);
+      return true;
+    },
+  );
+});
+
 test(
   "windows srt blocks network egress unless the destination is allowed",
   {

@@ -148,7 +148,9 @@ export {
   SrtSandbox,
   UnsandboxedShell,
   decodeShellOutput,
+  probeWindowsShell,
   probeSrtSandbox,
+  resolveWindowsShell,
   resolveWindowsExecutable,
   srtProfile,
   type CreateSrtSandboxOptions,
@@ -156,6 +158,8 @@ export {
   type ShellExecutionResult,
   type ShellProvider,
   type SrtProfileInput,
+  type WindowsBinShell,
+  type WindowsShellSelection,
 } from "./sandbox/index.ts";
 export {
   CODEPUNK_TOOL_NAMES,

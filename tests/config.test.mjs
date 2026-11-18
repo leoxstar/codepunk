@@ -1187,14 +1187,8 @@ test("context replacement and compaction thresholds are live", async () => {
         "replace_system_prompt = true",
         'system_prompt_file = "SYSTEM.md"',
         "",
-        "[tools]",
-        'shell = "pwsh"',
         "",
       ].join("\n"),
-    );
-    await assert.rejects(
-      () => core.loadConfig(paths, {}),
-      /requires Windows support, which is not implemented/u,
     );
 
     const config = core.defaultConfig();
@@ -1212,6 +1206,20 @@ test("context replacement and compaction thresholds are live", async () => {
       false,
       "an unresolved context window must inherit Pi's compaction default instead of pinning zero",
     );
+  });
+});
+
+test("the config layer accepts every documented tools.shell value", async () => {
+  await withTempDirectory("codepunk-config-shell-", async (root) => {
+    const { paths } = await makeProject(root);
+    for (const shell of ["auto", "bash", "pwsh"]) {
+      await writeFile(
+        path.join(paths.home, "config.toml"),
+        ["[tools]", `shell = "${shell}"`, ""].join("\n"),
+      );
+      const loaded = await core.loadConfig(paths, {});
+      assert.equal(loaded.config.tools.shell, shell);
+    }
   });
 });
 

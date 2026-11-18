@@ -18,6 +18,7 @@ import {
   type ScopedRule,
 } from "../autonomy/index.ts";
 import {
+  ConfigError,
   loadConfig,
   piSettings,
   type CodepunkConfig,
@@ -97,6 +98,8 @@ import {
   type SkillSource,
 } from "../skills/index.ts";
 import {
+  probeWindowsShell,
+  resolveWindowsShell,
   SrtSandbox,
   UnsandboxedShell,
   type ShellProvider,
@@ -666,6 +669,20 @@ async function createRuntimeInner(
     projectTrusted: workspaceTrust.grants.config,
   });
   const config = loadedConfig.config;
+  const windowsShell = await resolveWindowsShell(
+    config.tools.shell,
+    environment,
+  );
+  if (
+    process.platform === "win32" &&
+    windowsShell.kind !== "auto" &&
+    config.sandbox.mode !== "required"
+  ) {
+    throw new ConfigError(
+      `tools.shell=${windowsShell.kind} requires sandbox.mode=required on Windows`,
+      "tools.shell",
+    );
+  }
   const disableContext = bare;
   if (bare) {
     config.memory.enabled = false;
@@ -838,6 +855,9 @@ async function createRuntimeInner(
         networkAllow: config.sandbox.network_allow,
         networkDeny: config.sandbox.network_deny,
         readOnly: config.autonomy.profile === "read-only",
+        ...(windowsShell.binShell === null
+          ? {}
+          : { windowsBinShell: windowsShell.binShell }),
       });
     } catch (error) {
       sandboxUnavailableReason =
@@ -845,6 +865,15 @@ async function createRuntimeInner(
       sandbox = null;
     }
     sandboxRef.current = sandbox;
+  }
+  if (process.platform === "win32" && windowsShell.kind !== "auto") {
+    if (sandbox === null) {
+      throw new ConfigError(
+        `tools.shell=${windowsShell.kind} requires the srt sandbox on Windows; shell tools stay disabled until srt is available`,
+        "tools.shell",
+      );
+    }
+    await probeWindowsShell(sandbox, windowsShell, paths.cwd);
   }
   if (
     sandbox === null &&
