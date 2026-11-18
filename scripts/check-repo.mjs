@@ -161,17 +161,19 @@ const EXPECTED_LOCKFILE_SHA256 =
   "180e75ea6ecdee97126746c6b345fdfe7109a97c2fcc48a6e85f2c245847e196";
 
 const EXPECTED_CI_SHA256 =
-  "7def7652060d132a200ee8ad608f67aa063f5be00871d7c8a2f7bf221c929a8c";
+  "d5133615fac2f3ec92c20f725fbd21b8234b4a59c6235123be5d01b447d99ad8";
 
 const EXPECTED_CI_RUNNERS = [
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
-  "macos-26",
+  "ubuntu-26.04",
+  "macos-15",
   "macos-15-intel",
+  "macos-26",
 ];
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "880988f24f018c3be06f5986ff2df71399b57f1fa8864f29e5fd64a0817f151f";
+  "89a4a961680641b09a7281b7a964ae7bd40926aa5c40c61b6a3ff24d794beca5";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
@@ -600,7 +602,7 @@ async function checkLineEndingPolicy(root, add) {
     const content = await readFile(path.join(root, relativePath), "utf8");
     const hasLfPolicy = content
       .split(/\r?\n/u)
-      .some((line) => line.trim() === "* text=auto eol=lf");
+      .some((line) => line === "* text=auto eol=lf");
     if (!hasLfPolicy) {
       add(
         "repo.lineEndings",
@@ -777,7 +779,10 @@ async function checkCiContract(root, files, add) {
   const runners = matrixMatch?.[1]
     ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
     : [];
-  if (!sameSet(runners, EXPECTED_CI_RUNNERS)) {
+  if (
+    runners.length !== EXPECTED_CI_RUNNERS.length ||
+    !runners.every((runner, index) => runner === EXPECTED_CI_RUNNERS[index])
+  ) {
     add(
       "ci.contract",
       relativeCi,
@@ -827,8 +832,110 @@ async function checkCiContract(root, files, add) {
       );
     }
   }
-  if (/\bwindows-(?:latest|\d+)\b/iu.test(content)) {
-    add("ci.contract", relativeCi, "Windows is not a supported CI runner");
+}
+
+async function checkPlatformDocumentation(root, add) {
+  const runnerLine = `CI runners: ${EXPECTED_CI_RUNNERS.map(
+    (runner) => `\`${runner}\``,
+  ).join(", ")}.`;
+  const documents = ["README.md", "docs/DEVELOPMENT.md", "docs/PLATFORMS.md"];
+  const contents = new Map();
+
+  for (const relativePath of documents) {
+    try {
+      const content = await readFile(path.join(root, relativePath), "utf8");
+      contents.set(relativePath, content);
+      const occurrences = content
+        .split(/\r?\n/u)
+        .filter((line) => line === runnerLine).length;
+      if (occurrences !== 1) {
+        add(
+          "docs.platforms",
+          relativePath,
+          `expected exactly one CI runner line, found ${occurrences}: ${runnerLine}`,
+        );
+      }
+    } catch (error) {
+      add(
+        "docs.platforms",
+        relativePath,
+        `cannot read platform documentation: ${error.message}`,
+      );
+    }
+  }
+
+  const relativePath = "docs/PLATFORMS.md";
+  const content = contents.get(relativePath);
+  if (content === undefined) {
+    return;
+  }
+  const startMarker = "<!-- ci-targets:start -->";
+  const endMarker = "<!-- ci-targets:end -->";
+  const start = content.indexOf(startMarker);
+  const end = content.indexOf(endMarker);
+  if (start === -1 || end === -1 || end <= start) {
+    add(
+      "docs.platforms",
+      relativePath,
+      "missing or misplaced ci-targets start/end markers",
+    );
+    return;
+  }
+
+  const section = content.slice(start + startMarker.length, end);
+  const lines = section.split(/\r?\n/u);
+  const headerIndexes = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\s*\|.*\|\s*$/u.test(lines[index])) {
+      const cells = lines[index]
+        .trim()
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => cell.trim());
+      if (cells.includes("CI runner")) {
+        headerIndexes.push({ index, runnerColumn: cells.indexOf("CI runner") });
+      }
+    }
+  }
+  if (headerIndexes.length !== 1) {
+    add(
+      "docs.platforms",
+      relativePath,
+      "ci-targets must contain exactly one table with a CI runner column",
+    );
+    return;
+  }
+
+  const { index: headerIndex, runnerColumn } = headerIndexes[0];
+  const runners = [];
+  for (let index = headerIndex + 2; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!/^\s*\|.*\|\s*$/u.test(line)) {
+      break;
+    }
+    const cells = line
+      .trim()
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => cell.trim());
+    const cell = cells[runnerColumn];
+    if (cell === undefined) {
+      runners.push("");
+      continue;
+    }
+    runners.push(
+      cell.startsWith("`") && cell.endsWith("`") ? cell.slice(1, -1) : cell,
+    );
+  }
+  if (
+    runners.length !== EXPECTED_CI_RUNNERS.length ||
+    !runners.every((runner, index) => runner === EXPECTED_CI_RUNNERS[index])
+  ) {
+    add(
+      "docs.platforms",
+      relativePath,
+      `CI runner table must require ${EXPECTED_CI_RUNNERS.join(", ")} in order`,
+    );
   }
 }
 
@@ -2218,6 +2325,7 @@ export async function checkRepository({
   await checkMarkdownLinks(normalizedRoot, scanned, add);
   await checkCiContract(normalizedRoot, scanned, add);
   await checkDocumentationContract(normalizedRoot, add);
+  await checkPlatformDocumentation(normalizedRoot, add);
   await checkControlCorpus(normalizedRoot, add);
   // A pack started after the first root scan can still disappear before this
   // point. Ignore it during the scans above, but require it to be gone here;

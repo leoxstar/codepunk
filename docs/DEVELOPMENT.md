@@ -126,10 +126,16 @@ false positives.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` is configured to run the same install, formatting,
-repository, typecheck, test, build, and built-entry checks on `ubuntu-24.04`
-(x64), `ubuntu-24.04-arm` (arm64), `macos-26` (arm64), and `macos-15-intel`
-(x64). The workflow uses `pnpm/action-setup` and a frozen lockfile.
+`.github/workflows/ci.yml` defines six CI targets; the complete six-target CI
+run is not yet verified:
+
+CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.
+
+Each target is configured to run the same install, formatting, repository,
+typecheck, test, build, and built-entry checks. The workflow uses
+`pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64 is manual-smoke only
+and is not CI-covered. Windows is not claimed; native Windows support is
+handled by 0007 and remains fail-closed until real evidence exists.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without
@@ -144,30 +150,32 @@ supported CI platform.
 
 `scripts/check-repo.mjs` reports stable rule identifiers:
 
-| Rule                       | Guards                                                                 |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `repo.root`                | Only reviewed root entries are present                                 |
-| `repo.docs`                | Required product documentation exists                                  |
-| `docs.link`                | Local Markdown links resolve inside the repository                     |
-| `docs.absolute`            | Markdown does not link to an absolute path                             |
-| `docs.contract`            | Documentation records reviewed commands, pins, and dependency risk     |
-| `pkg.layout`               | Exactly the three product packages exist                               |
-| `pkg.manifest`             | Identity, module type, license, Node engine, and exact script commands |
-| `pkg.exports`              | One public entry point with import/type targets and no deep exports    |
-| `pkg.built`                | Built entry points exist and are newer than source                     |
-| `deps.direction`           | Internal dependencies follow the package direction                     |
-| `deps.pin`                 | Direct dependency versions are exact and match the reviewed set        |
-| `deps.review`              | No unreviewed dependency, override, or lifecycle hook                  |
-| `deps.lock`                | Reviewed digest, workspace links, resolved versions, and integrity     |
-| `source.import`            | No upward, deep, escaping, computed, or research import                |
-| `ci.contract`              | Exact workflow digest, triggers, actions, runners, and blocking steps  |
-| `repo.controls`            | The reviewed negative-control corpus is present and unchanged          |
-| `hygiene.forbidden`        | No research, runtime, generated, log, or editor artifact               |
-| `hygiene.env`              | No local environment or credential file; templates remain allowed      |
-| `hygiene.binary`           | No binary or NUL-containing file in the product tree                   |
-| `security.absolute-path`   | No local personal absolute path                                        |
-| `security.credential`      | No obvious credential-shaped value                                     |
-| `security.research-import` | No import from verification or research material                       |
+| Rule                       | Guards                                                                  |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `repo.root`                | Only reviewed root entries are present                                  |
+| `repo.docs`                | Required product documentation exists                                   |
+| `repo.lineEndings`         | LF policy and no carriage returns in repository text files              |
+| `docs.link`                | Local Markdown links resolve inside the repository                      |
+| `docs.absolute`            | Markdown does not link to an absolute path                              |
+| `docs.contract`            | Documentation records reviewed commands, pins, and dependency risk      |
+| `docs.platforms`           | Exact runner line in three docs and the ordered six-row CI target table |
+| `pkg.layout`               | Exactly the three product packages exist                                |
+| `pkg.manifest`             | Identity, module type, license, Node engine, and exact script commands  |
+| `pkg.exports`              | One public entry point with import/type targets and no deep exports     |
+| `pkg.built`                | Built entry points exist and are newer than source                      |
+| `deps.direction`           | Internal dependencies follow the package direction                      |
+| `deps.pin`                 | Direct dependency versions are exact and match the reviewed set         |
+| `deps.review`              | No unreviewed dependency, override, or lifecycle hook                   |
+| `deps.lock`                | Reviewed digest, workspace links, resolved versions, and integrity      |
+| `source.import`            | No upward, deep, escaping, computed, or research import                 |
+| `ci.contract`              | Exact workflow digest, triggers, actions, runners, and blocking steps   |
+| `repo.controls`            | The reviewed negative-control corpus is present and unchanged           |
+| `hygiene.forbidden`        | No research, runtime, generated, log, or editor artifact                |
+| `hygiene.env`              | No local environment or credential file; templates remain allowed       |
+| `hygiene.binary`           | No binary or NUL-containing file in the product tree                    |
+| `security.absolute-path`   | No local personal absolute path                                         |
+| `security.credential`      | No obvious credential-shaped value                                      |
+| `security.research-import` | No import from verification or research material                        |
 
 ## Release checklist
 
