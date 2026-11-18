@@ -112,6 +112,7 @@ const ROOT_DEV_DEPENDENCIES = {
   "@earendil-works/pi-ai": "1.5.2",
   "@earendil-works/pi-coding-agent": "1.5.2",
   "@types/node": "22.19.1",
+  "node-pty": "1.1.0",
   prettier: "3.10.1",
   typescript: "7.0.2",
 };
@@ -158,10 +159,10 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "180e75ea6ecdee97126746c6b345fdfe7109a97c2fcc48a6e85f2c245847e196";
+  "a525e3148f8139c3b02189b39d350333c3fd8d99f08f810978196679497a5c32";
 
 const EXPECTED_CI_SHA256 =
-  "d5133615fac2f3ec92c20f725fbd21b8234b4a59c6235123be5d01b447d99ad8";
+  "db520c9d8470f14f731f953ea704b96c6f1b41ebf273882ce298152e3b160db6";
 
 const EXPECTED_CI_RUNNERS = [
   "ubuntu-24.04",
@@ -170,10 +171,11 @@ const EXPECTED_CI_RUNNERS = [
   "macos-15",
   "macos-15-intel",
   "macos-26",
+  "windows-latest",
 ];
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "89a4a961680641b09a7281b7a964ae7bd40926aa5c40c61b6a3ff24d794beca5";
+  "c708ed59f738f7f817bb02e4f229e54be41e8c15ddc981c48ccd92d1f5986b7d";
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:

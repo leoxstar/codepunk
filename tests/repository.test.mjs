@@ -166,7 +166,7 @@ async function copyRepositoryToTemporaryDirectory() {
 }
 
 const CI_RUNNER_DOCUMENTATION_LINE =
-  "CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.";
+  "CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.";
 
 async function createExecutableFixtureChecker(fixture) {
   const script = path.join(fixture.temporaryRoot, "check-repo.mjs");
@@ -1065,8 +1065,8 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     async apply(root) {
       return replaceFile(root, ".github/workflows/ci.yml", (content) =>
         content.replace(
-          "          - macos-15-intel\n",
-          "          - macos-15-intel\n          - windows-latest\n",
+          "          - windows-latest\n",
+          "          - windows-latest\n          - windows-11-arm\n",
         ),
       );
     },
@@ -1212,7 +1212,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
     assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
     assert.match(
       outputOf(result),
-      /CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26/u,
+      /CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26, windows-latest/u,
     );
     assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
     assert.doesNotMatch(
@@ -1234,8 +1234,8 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         name: "ordered matrix rejects an unreviewed Windows runner without a permanent Windows rule",
         transform: (content) =>
           content.replace(
-            "          - macos-15-intel\n",
-            "          - macos-15-intel\n          - windows-latest\n",
+            "          - windows-latest\n",
+            "          - windows-latest\n          - windows-11-arm\n",
           ),
       },
       {
