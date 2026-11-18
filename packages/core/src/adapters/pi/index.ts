@@ -15,6 +15,7 @@ import {
   type ContextEvent,
   type ExtensionFactory,
   type ExtensionError,
+  type ExtensionContext,
   type InputEvent,
   type InlineExtension,
   type ModelRuntime,
@@ -29,7 +30,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentState, PlanStep, TodoItem } from "@codepunk/protocol";
 import { redactOutputPreview } from "../../artifacts/index.ts";
-import { createUlid, sha256Text } from "../../platform/hash.ts";
+import { canonicalJson, createUlid, sha256Text } from "../../platform/hash.ts";
 import { normalizeAbsolute } from "../../platform/path.ts";
 import {
   loadContext,
@@ -1123,8 +1124,101 @@ export async function createPiHost(
         await eventAppendTail;
         lastWorkState = readWorkState(store.allEvents);
       };
-      pi.on("context", async (event: ContextEvent) => {
+      const recordContextRequest = async (
+        messages: ContextEvent["messages"],
+        extensionContext: ExtensionContext,
+      ): Promise<void> => {
+        if (store === null || session === null) {
+          return;
+        }
+        const entries = session.sessionManager.getEntries();
+        const messageEntries: {
+          id: string;
+          message: ContextEvent["messages"][number];
+        }[] = [];
+        let compactionId: string | null = null;
+        for (const entry of entries) {
+          if (entry.type === "message") {
+            const role = (entry.message as { role?: unknown }).role;
+            if (
+              role !== "user" &&
+              role !== "assistant" &&
+              role !== "toolResult"
+            ) {
+              continue;
+            }
+            messageEntries.push(
+              entry as unknown as {
+                id: string;
+                message: ContextEvent["messages"][number];
+              },
+            );
+          } else if (entry.type === "compaction") {
+            compactionId = entry.id;
+          }
+        }
+        const usedEntryIds = new Set<string>();
+        const messageIds: string[] = [];
+        for (const message of messages) {
+          const byObject = messageEntries.find(
+            (entry) => entry.message === message && !usedEntryIds.has(entry.id),
+          );
+          const byTimestamp =
+            byObject ??
+            messageEntries.find(
+              (entry) =>
+                !usedEntryIds.has(entry.id) &&
+                entry.message.role === message.role &&
+                entry.message.timestamp === message.timestamp,
+            );
+          if (byTimestamp !== undefined) {
+            usedEntryIds.add(byTimestamp.id);
+            messageIds.push(byTimestamp.id);
+            continue;
+          }
+          messageIds.push(
+            `msg-${sha256Text(canonicalJson(message)).slice(7, 23)}`,
+          );
+        }
+        const omittedIds: string[] = [];
+        const ranges: { start: number; end: number }[] = [];
+        let rangeStart: number | null = null;
+        messageEntries.forEach((entry, index) => {
+          if (usedEntryIds.has(entry.id)) {
+            if (rangeStart !== null) {
+              ranges.push({ start: rangeStart, end: index });
+              rangeStart = null;
+            }
+            return;
+          }
+          omittedIds.push(entry.id);
+          if (rangeStart === null) {
+            rangeStart = index;
+          }
+        });
+        if (rangeStart !== null) {
+          ranges.push({ start: rangeStart, end: messageEntries.length });
+        }
+        const omitted = { ids: omittedIds, ranges };
+        await appendEvent("context/request", {
+          run_id: currentRunId,
+          request_id: createUlid(),
+          message_ids: messageIds,
+          omitted,
+          truncation_sha256: sha256Text(
+            canonicalJson({ message_ids: messageIds, omitted }),
+          ),
+          provider: extensionContext.model?.provider ?? "unknown",
+          model: extensionContext.model?.id ?? "unknown",
+          token_estimate: Math.ceil(
+            Buffer.byteLength(JSON.stringify(messages), "utf8") / 4,
+          ),
+          compaction_id: compactionId,
+        });
+      };
+      pi.on("context", async (event: ContextEvent, extensionContext) => {
         productHookState.assertRegistry();
+        await recordContextRequest(event.messages, extensionContext);
         const memory = options.memory ?? null;
         const digest =
           memory === null || !memory.enabled ? null : await memory.digest();

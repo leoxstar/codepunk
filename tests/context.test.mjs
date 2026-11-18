@@ -632,3 +632,83 @@ test("the host wires turn-boundary truncation to the model budget", async () => 
     await fs.rm(setup.home, { recursive: true, force: true });
   }
 });
+
+test("context request records reconstruct each model input", async () => {
+  const setup = await workspace();
+  const context = await core.loadContext({
+    cwd: setup.repo,
+    deliveryRoot: setup.repo,
+    codepunkHome: setup.home,
+    appendText: "STATIC CONTEXT\n",
+  });
+  const ledger = await core.EvidenceLedger.open(
+    path.join(setup.root, "evidence.jsonl"),
+  );
+  const store = await core.SessionStore.create({
+    rootDir: setup.home,
+    cwd: setup.repo,
+    projectRoot: setup.repo,
+    projectId: "project-context-request",
+    sessionId: "session-context-request",
+    heartbeatMs: 60_000,
+  });
+  const host = await core.createPiHost({
+    cwd: setup.repo,
+    workspaceRoot: setup.repo,
+    deliveryRoot: setup.repo,
+    codepunkHome: setup.home,
+    sessionId: store.sessionId,
+    runId: "run-context-request",
+    writeSet: [setup.repo],
+    mode: "print",
+    approval: null,
+    ledger,
+    sandbox: null,
+    context,
+    sessionStore: store,
+    bindMode: "print",
+    model: TEST_MODEL,
+  });
+  try {
+    await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+    installScriptedStream(host.session, () => ({ type: "text", text: "ok" }));
+    await host.session.prompt("first request");
+    await host.session.prompt("second request");
+    const events = store.allEvents.filter(
+      (event) => event.kind === "context/request",
+    );
+    assert.equal(events.length, 2);
+    assert.notEqual(events[0].data.request_id, events[1].data.request_id);
+    assert.deepEqual(events[0].data.omitted, { ids: [], ranges: [] });
+    assert.equal(events[0].data.compaction_id, null);
+    assert.match(events[0].data.truncation_sha256, /^sha256:[0-9a-f]{64}$/u);
+    const entries = host.session.sessionManager
+      .getEntries()
+      .filter((entry) => entry.type === "message");
+    const known = new Set(entries.map((entry) => entry.id));
+    for (const id of events[1].data.message_ids) {
+      assert.ok(
+        known.has(id) || id.startsWith("msg-"),
+        `message id ${id} is not reconstructible`,
+      );
+    }
+    assert.ok(events[1].data.token_estimate > 0);
+
+    const last = entries.at(-1).message;
+    await host.session.agent.transformContext([last]);
+    const after = store.allEvents.filter(
+      (event) => event.kind === "context/request",
+    );
+    assert.equal(after.length, 3);
+    assert.ok(after[2].data.omitted.ids.length > 0);
+    assert.ok(after[2].data.omitted.ranges.length > 0);
+    const omitted = new Set(after[2].data.omitted.ids);
+    for (const id of after[2].data.message_ids) {
+      assert.equal(omitted.has(id), false);
+    }
+  } finally {
+    await host.dispose();
+    await fs.rm(setup.root, { recursive: true, force: true });
+    await fs.rm(setup.home, { recursive: true, force: true });
+  }
+});

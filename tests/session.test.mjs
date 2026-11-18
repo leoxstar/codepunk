@@ -611,6 +611,73 @@ test("a truncated session log is corrupt", async () => {
   });
 });
 
+test("context request and retention operation schemas are separate", () => {
+  const sha = `sha256:${"a".repeat(64)}`;
+  const event = {
+    type: "codepunk/event",
+    version: 1,
+    seq: 1,
+    at: "2026-11-18T00:00:00.000Z",
+    kind: "context/request",
+    data: {
+      run_id: "run-1",
+      request_id: "request-1",
+      message_ids: ["entry-1", "entry-2"],
+      omitted: { ids: ["entry-0"], ranges: [{ start: 0, end: 1 }] },
+      truncation_sha256: sha,
+      provider: "openai",
+      model: "gpt-test",
+      token_estimate: 42,
+      compaction_id: null,
+    },
+  };
+  assert.equal(
+    protocol.validateSchema(protocol.SessionEventSchema, event).ok,
+    true,
+  );
+  const missing = structuredClone(event);
+  delete missing.data.omitted;
+  assert.equal(
+    protocol.validateSchema(protocol.SessionEventSchema, missing).ok,
+    false,
+  );
+
+  const operation = {
+    type: "codepunk/retention-operation",
+    version: 1,
+    seq: 1,
+    prev_sha256: null,
+    at: "2026-11-18T00:00:00.000Z",
+    action: "gc",
+    mode: "dry-run",
+    paths: [
+      {
+        path: "artifacts/a.txt",
+        before_sha256: sha,
+        after_sha256: null,
+        bytes: 12,
+      },
+    ],
+    backup_id: "backup-1",
+    exit_code: 0,
+    failure: null,
+  };
+  assert.equal(
+    protocol.validateSchema(protocol.RetentionOperationSchema, operation).ok,
+    true,
+  );
+  assert.equal(
+    protocol.validateSchema(protocol.SessionEventSchema, operation).ok,
+    false,
+  );
+  const unknown = structuredClone(operation);
+  unknown.kind = "retention/operation";
+  assert.equal(
+    protocol.validateSchema(protocol.RetentionOperationSchema, unknown).ok,
+    false,
+  );
+});
+
 test("fork clones a settled session with an evidence-bound parent link", async () => {
   await withTempDirectory(async (rootDir) => {
     const projectId = core.projectIdFor("/workspace");

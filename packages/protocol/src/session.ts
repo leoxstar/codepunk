@@ -609,6 +609,42 @@ export const NetworkRejectedEventSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const ContextRequestEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("context/request"),
+    data: Type.Object(
+      {
+        run_id: NonEmptyStringSchema,
+        request_id: NonEmptyStringSchema,
+        message_ids: Type.Array(NonEmptyStringSchema),
+        omitted: Type.Object(
+          {
+            ids: Type.Array(NonEmptyStringSchema),
+            ranges: Type.Array(
+              Type.Object(
+                {
+                  start: Type.Integer({ minimum: 0 }),
+                  end: Type.Integer({ minimum: 0 }),
+                },
+                { additionalProperties: false },
+              ),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        truncation_sha256: Sha256Schema,
+        provider: NonEmptyStringSchema,
+        model: NonEmptyStringSchema,
+        token_estimate: Type.Integer({ minimum: 0 }),
+        compaction_id: Type.Union([NonEmptyStringSchema, Type.Null()]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const McpServerStartEventSchema = Type.Object(
   {
     ...EventBase,
@@ -903,6 +939,7 @@ export const SessionEventSchema = Type.Union([
   ContextLoadedEventSchema,
   TrustDecisionEventSchema,
   CompactionDecisionEventSchema,
+  ContextRequestEventSchema,
   RunEndEventSchema,
   SignOffEventSchema,
   MemoryWriteEventSchema,
@@ -945,6 +982,7 @@ export type ContextLoadedEvent = Static<typeof ContextLoadedEventSchema>;
 export type CompactionDecisionEvent = Static<
   typeof CompactionDecisionEventSchema
 >;
+export type ContextRequestEvent = Static<typeof ContextRequestEventSchema>;
 export type RunEndEvent = Static<typeof RunEndEventSchema>;
 export type SignOffEvent = Static<typeof SignOffEventSchema>;
 export type MemoryWriteEvent = Static<typeof MemoryWriteEventSchema>;

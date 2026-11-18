@@ -297,3 +297,25 @@ verification, and start time:
 `plugin/stopped` records the child PID, startup credential verification,
 reason, exit code, and stop time. If isolation is unavailable, the plugin is
 not loaded; there is no in-process fallback.
+
+## Context requests
+
+`context/request` is written before every model call, with or without
+compaction. It carries `run_id`, a unique `request_id`, the ordered
+`message_ids` sent to the model, `omitted` ids and contiguous ranges in the
+transcript order, `truncation_sha256`, `provider`, `model`,
+`token_estimate`, and the last `compaction_id` when one exists. Message bodies
+stay in the session and artifacts; the event stores ids and hashes only.
+
+`truncation_sha256` covers the canonical `{message_ids, omitted}` descriptor.
+An empty `omitted.ids` is valid and means the full context was sent.
+
+## Retention operations
+
+`gc`, `migrate`, and `backup` append `RetentionOperation` records to
+`CODEPUNK_HOME/retention/operations.jsonl`. This is an independent log with
+its own contiguous `seq` and `prev_sha256`; it is never written inside a
+session that the operation may delete. Each record names the action, mode,
+affected relative paths with before/after hashes and byte counts, the backup
+id, exit code, and failure reason. The schema lives in
+`packages/protocol/src/retention.ts` and is not part of `SessionEventSchema`.

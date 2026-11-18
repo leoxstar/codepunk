@@ -107,6 +107,7 @@ export {
   ContextLoadedEventSchema,
   ContextSourceSchema,
   CompactionDecisionEventSchema,
+  ContextRequestEventSchema,
   LoopGuardEventSchema,
   MemoryRetrieveEventSchema,
   MemoryWriteEventSchema,
@@ -152,6 +153,7 @@ export {
   type ContextLoadedEvent,
   type ContextSource,
   type CompactionDecisionEvent,
+  type ContextRequestEvent,
   type LoopGuardEvent,
   type MemoryRetrieveEvent,
   type MemoryWriteEvent,
@@ -204,6 +206,11 @@ export {
   type PluginRequest,
   type PluginResponse,
 } from "./plugin.ts";
+
+export {
+  RetentionOperationSchema,
+  type RetentionOperation,
+} from "./retention.ts";
 
 export {
   SignOffRequestSchema,
