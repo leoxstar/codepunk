@@ -76,6 +76,38 @@ test("checkpoints restore the exact before image and redo the after image", asyn
   });
 });
 
+test("checkpoint undo redo and conflict", async () => {
+  await withTempDirectory("codepunk-checkpoints-contract-", async (root) => {
+    const project = path.join(root, "project");
+    const file = path.join(project, "file.txt");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(file, "before\n");
+    const store = makeStore(root);
+    const before = await snapshot(file);
+    await fs.writeFile(file, "after\n");
+    const after = await snapshot(file);
+    await store.record({
+      tool: "write",
+      toolCallId: "call-1",
+      target: file,
+      before,
+      after,
+    });
+
+    await store.undo();
+    assert.equal(await fs.readFile(file, "utf8"), "before\n");
+    await store.redo();
+    assert.equal(await fs.readFile(file, "utf8"), "after\n");
+
+    await fs.writeFile(file, "external\n");
+    await assert.rejects(
+      store.undo(),
+      (error) => error instanceof core.CheckpointConflictError,
+    );
+    assert.equal(await fs.readFile(file, "utf8"), "external\n");
+  });
+});
+
 test("checkpoints accept provider tool call ids with separators", async () => {
   await withTempDirectory("codepunk-checkpoints-tool-id-", async (root) => {
     const project = path.join(root, "project");
