@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Provision the dependencies the test suite exercises: the sandbox runtime on
-# Linux and ripgrep on every runner.
+# Linux and the search binaries on every runner.
 #
 # Ubuntu runners ship without ripgrep and socat, which `srt` requires before it
 # will build a profile, so every sandbox-dependent test fails on a dependency
 # check instead of testing the sandbox. macOS sandboxes through the built-in
 # sandbox-exec and needs no sandbox packages, but the search tool resolves rg
-# from PATH and the runner image does not ship it.
+# and fd from PATH. Windows hosted runners need the same two search binaries
+# and do not provision the privileged srt runtime.
 set -euo pipefail
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
-  echo "sandbox dependency provisioning is skipped on Windows hosted runners"
+  echo "sandbox provisioning is skipped on Windows hosted runners"
+  if ! command -v choco >/dev/null 2>&1; then
+    echo "choco is required to provision ripgrep and fd on Windows" >&2
+    exit 1
+  fi
+  choco install ripgrep fd -y --no-progress --limit-output
+  rg --version | head -n 1
+  fd --version
   exit 0
 fi
 
@@ -25,7 +33,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
   if ! command -v rg >/dev/null 2>&1; then
     HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
   fi
+  if ! command -v fd >/dev/null 2>&1; then
+    HOMEBREW_NO_AUTO_UPDATE=1 brew install fd
+  fi
   rg --version | head -n 1
+  fd --version
   exit 0
 fi
 

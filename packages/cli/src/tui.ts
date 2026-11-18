@@ -1517,6 +1517,7 @@ async function forkCurrentSession(
     );
     return;
   }
+  await session.waitForIdle();
   const entryId = argument.trim();
   if (entryId.length > 0) {
     const entry = runtime.host.sessionManager.getEntry(entryId);
