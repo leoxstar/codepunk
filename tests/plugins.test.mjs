@@ -196,6 +196,230 @@ test("plugin IPC frames reject malformed requests and responses", () => {
   assert.ok(protocol.PLUGIN_MAX_FRAME_BYTES > 0);
 });
 
+const PLUGIN_ENTRY = [
+  'import { spawn } from "node:child_process";',
+  "export default function (pi) {",
+  "  pi.registerTool({",
+  '    name: "echo",',
+  '    label: "Echo",',
+  '    description: "echo text",',
+  '    parameters: { type: "object", properties: { text: { type: "string" } } },',
+  "    async execute(_id, params) {",
+  '      return { content: [{ type: "text", text: String(params.text ?? "") }], details: {} };',
+  "    },",
+  "  });",
+  "  pi.registerTool({",
+  '    name: "slow",',
+  '    label: "Slow",',
+  '    description: "wait",',
+  '    parameters: { type: "object", properties: { ms: { type: "number" } } },',
+  "    async execute(_id, params, signal) {",
+  "      await new Promise((resolve, reject) => {",
+  "        const timer = setTimeout(resolve, Number(params.ms ?? 1000));",
+  '        signal?.addEventListener("abort", () => {',
+  "          clearTimeout(timer);",
+  '          reject(new Error("cancelled"));',
+  "        });",
+  "      });",
+  '      return { content: [{ type: "text", text: "slow" }], details: {} };',
+  "    },",
+  "  });",
+  "  pi.registerTool({",
+  '    name: "grandchild",',
+  '    label: "Grandchild",',
+  '    description: "spawn a grandchild",',
+  '    parameters: { type: "object", properties: {} },',
+  "    async execute() {",
+  '      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });',
+  '      return { content: [{ type: "text", text: String(child.pid) }], details: {} };',
+  "    },",
+  "  });",
+  '  pi.registerCommand("hello", { description: "hello" });',
+  "}",
+  "",
+].join("\n");
+
+async function writePluginFixture(root, overrides = {}) {
+  const dir = path.join(root, "extensions", overrides.id ?? "hello");
+  await writeFile(
+    path.join(dir, "plugin.toml"),
+    overrides.manifest ??
+      [
+        'id = "hello"',
+        'version = "1.0.0"',
+        'entry = "index.mjs"',
+        'tools = ["echo", "slow", "grandchild"]',
+        'commands = ["hello"]',
+        'capabilities = ["tools", "commands"]',
+        "",
+      ].join("\n"),
+  );
+  await writeFile(path.join(dir, "index.mjs"), overrides.entry ?? PLUGIN_ENTRY);
+  return dir;
+}
+
+test("plugin manifest and capability validation", async () => {
+  await withTempDirectory("codepunk-plugin-manifest-", async (root) => {
+    const dir = await writePluginFixture(root);
+    const manifest = await core.loadPluginManifest(dir);
+    assert.equal(manifest.id, "hello");
+    assert.equal(manifest.entry, path.join(manifest.dir, "index.mjs"));
+    assert.match(manifest.manifestSha256, /^sha256:[0-9a-f]{64}$/u);
+    assert.deepEqual(manifest.tools, ["echo", "grandchild", "slow"]);
+    assert.deepEqual(manifest.commands, ["hello"]);
+
+    await assert.rejects(
+      core.loadPluginManifest(path.join(root, "missing")),
+      (error) => error.code === "plugin.manifest_missing",
+    );
+
+    const unknown = path.join(root, "unknown");
+    await writeFile(
+      path.join(unknown, "plugin.toml"),
+      'id = "bad"\nversion = "1.0.0"\nentry = "index.mjs"\nargv = ["/bin/sh"]\n',
+    );
+    await writeFile(
+      path.join(unknown, "index.mjs"),
+      "export default () => {};\n",
+    );
+    await assert.rejects(
+      core.loadPluginManifest(unknown),
+      (error) => error.code === "plugin.manifest_unknown_field",
+    );
+
+    const escape = path.join(root, "escape");
+    await writeFile(
+      path.join(escape, "plugin.toml"),
+      'id = "escape"\nversion = "1.0.0"\nentry = "../outside.mjs"\n',
+    );
+    await assert.rejects(
+      core.loadPluginManifest(escape),
+      (error) => error.code === "plugin.manifest_invalid",
+    );
+
+    const capability = path.join(root, "capability");
+    await writeFile(
+      path.join(capability, "plugin.toml"),
+      'id = "capability"\nversion = "1.0.0"\nentry = "index.mjs"\ncapabilities = ["shell"]\n',
+    );
+    await writeFile(
+      path.join(capability, "index.mjs"),
+      "export default () => {};\n",
+    );
+    await assert.rejects(
+      core.loadPluginManifest(capability),
+      (error) => error.code === "plugin.capability_unknown",
+    );
+
+    const undeclared = path.join(root, "undeclared");
+    await writeFile(
+      path.join(undeclared, "plugin.toml"),
+      'id = "undeclared"\nversion = "1.0.0"\nentry = "index.mjs"\ntools = ["echo"]\n',
+    );
+    await writeFile(
+      path.join(undeclared, "index.mjs"),
+      "export default () => {};\n",
+    );
+    await assert.rejects(
+      core.loadPluginManifest(undeclared),
+      (error) => error.code === "plugin.manifest_invalid",
+    );
+  });
+});
+
+test("plugin runs in a guarded child host", async () => {
+  await withTempDirectory("codepunk-plugin-host-", async (root) => {
+    const dir = await writePluginFixture(root);
+    const events = [];
+    const manifest = await core.loadPluginManifest(dir);
+    const host = await core.PluginHost.start({
+      manifest,
+      onEvent: (kind, data) => {
+        events.push({ kind, data });
+      },
+    });
+    try {
+      assert.notEqual(host.pid, process.pid);
+      assert.deepEqual(host.tools, ["echo", "grandchild", "slow"]);
+      assert.deepEqual(host.commands, ["hello"]);
+      const result = await host.callTool("echo", { text: "hello" });
+      assert.equal(result.content[0].text, "hello");
+      assert.equal(events[0].kind, "plugin/started");
+      assert.equal(events[0].data.pid, host.pid);
+      assert.equal(events[0].data.credential_verified, true);
+      assert.equal(events[0].data.plugin_id, "hello");
+    } finally {
+      await host.stop();
+    }
+    assert.equal(events.at(-1).kind, "plugin/stopped");
+    assert.equal(events.at(-1).data.credential_verified, true);
+  });
+});
+
+test("plugin IPC frame timeout cancel and duplicate call routing", async () => {
+  await withTempDirectory("codepunk-plugin-ipc-", async (root) => {
+    const dir = await writePluginFixture(root);
+    const manifest = await core.loadPluginManifest(dir);
+    const host = await core.PluginHost.start({ manifest });
+    try {
+      const first = host.callTool("slow", { ms: 500 }, { callId: "same" });
+      await assert.rejects(
+        host.callTool("slow", { ms: 500 }, { callId: "same" }),
+        (error) => error.code === "plugin.duplicate_call",
+      );
+      await host.cancel("same");
+      await assert.rejects(first, (error) => error.code === "plugin.cancelled");
+
+      await assert.rejects(
+        host.callTool("slow", { ms: 500 }, { timeoutMs: 20 }),
+        (error) => error.code === "plugin.timeout",
+      );
+      await assert.rejects(
+        host.callTool("echo", {
+          text: "x".repeat(protocol.PLUGIN_MAX_FRAME_BYTES),
+        }),
+        (error) => error.code === "plugin.frame_too_large",
+      );
+      await assert.rejects(
+        host.request("tools/spawn", {}),
+        (error) => error.code === "plugin.unknown_method",
+      );
+    } finally {
+      await host.stop();
+    }
+  });
+});
+
+test(
+  "plugin process tree is terminated on stop",
+  { skip: process.platform === "win32" },
+  async () => {
+    await withTempDirectory("codepunk-plugin-tree-", async (root) => {
+      const dir = await writePluginFixture(root);
+      const manifest = await core.loadPluginManifest(dir);
+      const host = await core.PluginHost.start({ manifest });
+      const result = await host.callTool("grandchild", {});
+      const grandchild = Number(result.content[0].text);
+      assert.ok(grandchild > 0);
+      await host.stop();
+      const deadline = Date.now() + 5_000;
+      let alive = true;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(grandchild, 0);
+        } catch (error) {
+          if (error.code === "ESRCH") {
+            alive = false;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(alive, false, "grandchild survived plugin shutdown");
+    });
+  },
+);
+
 test("a user command plugin loads through the guarded host", async () => {
   await withTempDirectory("codepunk-plugin-host-", async (root) => {
     const { paths } = await makeProject(root);

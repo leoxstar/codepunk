@@ -515,6 +515,13 @@ export {
   type PluginSummary,
 } from "./plugin/index.ts";
 export {
+  loadPluginManifest,
+  loadPluginManifests,
+  type PluginManifest,
+  type PluginManifestLoadResult,
+} from "./plugin/manifest.ts";
+export { PluginHost, type PluginHostOptions } from "./plugin/host.ts";
+export {
   createRuntime,
   signStandalone,
   type ConfigReloadResult,

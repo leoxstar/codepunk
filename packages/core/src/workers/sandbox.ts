@@ -122,6 +122,10 @@ export interface SpawnGuardedHostOptions {
   expectedToken?: string;
   env?: NodeJS.ProcessEnv;
   stdin?: string | Uint8Array;
+  /** Keep stdin open for a framed request/response channel. */
+  interactive?: boolean;
+  /** Put the host in its own process group so the tree can be terminated. */
+  detached?: boolean;
 }
 
 export function spawnGuardedHost(
@@ -140,8 +144,11 @@ export function spawnGuardedHost(
   const child = spawn(executable, options.argv.slice(1), {
     cwd: options.cwd,
     env: options.env ?? process.env,
+    detached: options.detached === true,
     stdio: [
-      options.stdin === undefined ? "ignore" : "pipe",
+      options.stdin === undefined && options.interactive !== true
+        ? "ignore"
+        : "pipe",
       "pipe",
       "pipe",
       "pipe",

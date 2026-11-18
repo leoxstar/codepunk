@@ -132,6 +132,32 @@ const REVIEWED_INSTALL_SCRIPTS = new Map([
 
 const REVIEWED_COMPUTED_IMPORTS = new Map([
   [
+    "packages/core/src/plugin/host-child.ts",
+    {
+      argument: /^entryUrl$/u,
+      anchors: [
+        /\bverifyLaunch\(\)/u,
+        /const entryPath = path\.resolve\(entry\);/u,
+        /const entryUrl = pathToFileURL\(entryPath\)\.href;/u,
+      ],
+      reason:
+        "loads the manifest-validated plugin entry inside the isolated child",
+    },
+  ],
+  [
+    "packages/core/dist/plugin/host-child.js",
+    {
+      argument: /^entryUrl$/u,
+      anchors: [
+        /\bverifyLaunch\(\)/u,
+        /const entryPath = path\.resolve\(entry\);/u,
+        /const entryUrl = pathToFileURL\(entryPath\)\.href;/u,
+      ],
+      reason:
+        "loads the manifest-validated plugin entry inside the isolated child",
+    },
+  ],
+  [
     "packages/cli/src/tui.ts",
     {
       argument: /^moduleUrl$/u,
