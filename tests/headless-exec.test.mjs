@@ -547,7 +547,7 @@ test("a headless policy inside the repository is refused", async () => {
         ["-p", "hello", "--headless-policy", policy],
         { cwd: project, home: path.join(root, "home") },
       );
-      assert.equal(result.code, 1);
+      assert.equal(result.code, 2);
       assert.match(result.stderr, /outside the repository/u);
     } finally {
       await new Promise((resolve) => modelServer.server.close(resolve));

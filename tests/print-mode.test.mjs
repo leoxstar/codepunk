@@ -413,7 +413,7 @@ test("a project policy cannot authorize writes", async () => {
       cwd: project,
       home,
     });
-    assert.equal(result.code, 1);
+    assert.equal(result.code, 2);
     assert.match(result.stderr, /project policy rules cannot grant allow/u);
   });
 });
