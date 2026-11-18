@@ -25,12 +25,27 @@ The repository pins pnpm through `packageManager` and
 | repository checks           | `pnpm run check`                                  |
 | typecheck                   | `pnpm run typecheck`                              |
 | tests and negative controls | `pnpm test`                                       |
+| deterministic eval          | `pnpm run eval`                                   |
 | build                       | `pnpm run build`                                  |
 | built entry points          | `node scripts/check-repo.mjs --require-built`     |
 | full local verification     | `pnpm run verify`                                 |
 
 `pnpm run verify` runs formatting, repository checks, type checking, tests, the
 build, and the built-entry-point check.
+
+## Deterministic eval
+
+`pnpm run eval` runs `eval/run.mjs`, the single entry point for deterministic
+behavior regression. It loads cases from `eval/cases.jsonl`, executes them
+against the committed code, and compares the pass/fail result to
+`eval/baseline.json`.
+
+The baseline is human-reviewed. The runner never rewrites it. Changing a case
+expectation or making the baseline threshold vacuous causes a non-zero exit.
+
+The eval proves deterministic regression, not model quality. It does not
+replace external benchmarks, and it does not prove that every platform passes:
+Windows 11 x64 acceptance is still unverified.
 
 ## Build identity and stale checkouts
 

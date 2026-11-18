@@ -29,6 +29,7 @@ const ROOT_ENTRIES = new Set([
   "README.md",
   "SECURITY.md",
   "docs",
+  "eval",
   "package.json",
   "packages",
   "pnpm-lock.yaml",
@@ -162,7 +163,7 @@ const EXPECTED_LOCKFILE_SHA256 =
   "a525e3148f8139c3b02189b39d350333c3fd8d99f08f810978196679497a5c32";
 
 const EXPECTED_CI_SHA256 =
-  "21c9daa3d98d65a4c7da8cd6149b6ecc892873a51d148e0fe366102cd9037922";
+  "174cced3fe6f69306045f7f8f8d326ad17fda39925adcffdb821f1d3e4c2f2fb";
 
 const EXPECTED_CI_RUNNERS = [
   "ubuntu-24.04",
@@ -184,12 +185,61 @@ const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_CI_RUNNERS.filter(
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "1a38a177dc016df21b2418d2073fe27bd5360e3c6ef0b285b292fb4ddd9ba66d";
+  "3581fae142bd21ac5aa7f08ca73e828a30c35ab9e264b380e28c9d22b1aa0d66";
+
+const EVAL_REQUIRED_FILES = [
+  "eval/cases.jsonl",
+  "eval/baseline.json",
+  "eval/run.mjs",
+];
+
+function checkEvalBaseline(root, add) {
+  const relativePath = "eval/baseline.json";
+  let baseline;
+  try {
+    baseline = JSON.parse(readFileSync(path.join(root, relativePath), "utf8"));
+  } catch (error) {
+    add(
+      "eval.baseline",
+      relativePath,
+      `cannot read baseline: ${error.message}`,
+    );
+    return;
+  }
+  if (
+    baseline === null ||
+    typeof baseline !== "object" ||
+    baseline.version !== 1 ||
+    baseline.cases === null ||
+    typeof baseline.cases !== "object" ||
+    Object.keys(baseline.cases).length === 0 ||
+    !Number.isInteger(baseline.min_passed) ||
+    baseline.min_passed < Object.keys(baseline.cases).length ||
+    !Number.isInteger(baseline.max_failed) ||
+    baseline.max_failed !== 0
+  ) {
+    add(
+      "eval.baseline",
+      relativePath,
+      "baseline must require every case to pass and allow zero failures",
+    );
+  }
+}
+
+function checkEvalContract(root, add) {
+  for (const relativePath of EVAL_REQUIRED_FILES) {
+    if (!existsSync(path.join(root, relativePath))) {
+      add("eval.contract", relativePath, "required eval file is missing");
+    }
+  }
+  checkEvalBaseline(root, add);
+}
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
     "pnpm --filter @codepunk/protocol build && pnpm --filter @codepunk/core build && pnpm --filter @codepunk/cli build",
   check: "node scripts/check-repo.mjs",
+  eval: "node eval/run.mjs",
   format: "prettier --write . --ignore-path .gitignore",
   "format:check": "prettier --check . --ignore-path .gitignore",
   test: "node --test tests/*.test.mjs",
@@ -222,6 +272,7 @@ const CI_RUN_COMMANDS = [
   "pnpm run check",
   "pnpm run typecheck",
   "pnpm test",
+  "pnpm run eval",
   "pnpm run build",
   "node scripts/check-repo.mjs --require-built",
 ];
@@ -2459,6 +2510,7 @@ export async function checkRepository({
   await checkDocumentationContract(normalizedRoot, add);
   await checkPlatformDocumentation(normalizedRoot, add);
   await checkControlCorpus(normalizedRoot, add);
+  checkEvalContract(normalizedRoot, add);
   // A pack started after the first root scan can still disappear before this
   // point. Ignore it during the scans above, but require it to be gone here;
   // a persistent entry is reported by both root checks.

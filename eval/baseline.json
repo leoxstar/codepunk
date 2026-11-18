@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "description": "Human-reviewed deterministic regression baseline. The runner never rewrites this file.",
+  "cases": {
+    "write_once": "pass",
+    "write_repeat": "pass",
+    "loop_guard": "pass",
+    "tool_call_budget": "pass",
+    "wall_clock_budget": "pass",
+    "verify_retry_once": "pass",
+    "verify_retry_twice_fails": "pass",
+    "network_allowlist": "pass",
+    "network_denied_domain": "pass",
+    "network_redirect_denied": "pass",
+    "network_request_budget": "pass",
+    "schema_compatibility": "pass"
+  },
+  "min_passed": 12,
+  "max_failed": 0
+}
