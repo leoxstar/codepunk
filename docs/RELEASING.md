@@ -231,6 +231,87 @@ error, including a missing sandbox dependency, fails the smoke test.
 )
 ```
 
+## Windows release smoke
+
+Run this section only on a real Windows 11 x64 machine with Node.js
+`22.19.0`, npm from that Node.js installation, and one administrator-run srt-win
+provisioning completed. `windows-latest` is Windows Server 2025 hosted CI; it
+is not Windows 11 evidence and cannot replace this smoke test. If the machine,
+the provisioning step, or an independent acceptance reviewer is missing, record
+the Windows result as `unverified` and do not claim Windows support in the
+release notes.
+
+The three local tarballs must be installed by one `npm install` command so npm
+does not resolve `@codepunk/*` from the registry. Keep the `--loglevel=http`
+output with the release evidence and confirm it contains no registry request
+for an `@codepunk/` package.
+
+```powershell
+$ErrorActionPreference = "Stop"
+$pack = Join-Path $env:TEMP "codepunk-pack"
+$prefix = Join-Path $env:TEMP "codepunk-prefix"
+$cpHome = Join-Path $env:TEMP "codepunk-home"
+Remove-Item -Recurse -Force $pack, $prefix, $cpHome -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $pack, $prefix, $cpHome | Out-Null
+$env:CODEPUNK_HOME = $cpHome
+$env:USERPROFILE = $cpHome
+
+npm pack --pack-destination $pack .\packages\protocol
+npm pack --pack-destination $pack .\packages\core
+npm pack --pack-destination $pack .\packages\cli
+npm install -g --prefix $prefix --no-audit --no-fund --loglevel=http `
+  (Join-Path $pack "codepunk-protocol-0.1.0.tgz") `
+  (Join-Path $pack "codepunk-core-0.1.0.tgz") `
+  (Join-Path $pack "codepunk-cli-0.1.0.tgz")
+
+$bin = Join-Path $prefix "codepunk.cmd"
+if (-not (Test-Path $bin)) { throw "codepunk shim missing: $bin" }
+& $bin --version
+if ($LASTEXITCODE -ne 0) { throw "--version exited $LASTEXITCODE" }
+```
+
+On the provisioned snapshot, `doctor` must exit `1` with `platform` and `srt`
+both `[ok]`, and the only error must be the missing model:
+
+```powershell
+$doctor = & $bin doctor 2>&1 | Out-String
+$doctorCode = $LASTEXITCODE
+$doctor
+if ($doctorCode -ne 1) { throw "doctor exited $doctorCode" }
+$errors = [regex]::Matches($doctor, '(?m)^\[error\] ([a-z-]+):') |
+  ForEach-Object { $_.Groups[1].Value } | Sort-Object
+if (($errors -join ",") -ne "model") { throw "unexpected errors: $($errors -join ",")" }
+if ($doctor -notmatch '(?m)^\[ok\] platform: win32 x64$') { throw "platform is not ok" }
+if ($doctor -notmatch '(?m)^\[ok\] srt:') { throw "srt is not ok" }
+```
+
+On an unprovisioned Windows 11 x64 snapshot, `platform` must stay `[ok]` while
+`srt` and `model` are `[error]`, and the srt hint must print the one-time
+`npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install` instruction
+without elevating automatically.
+
+Check the local install, upgrade, and uninstall command semantics, then remove
+the local install. Registry upgrade remains part of spec 0004 and is not
+covered here.
+
+```powershell
+& $bin install --package-version 0.1.0 --dry-run
+if ($LASTEXITCODE -ne 0) { throw "install dry-run exited $LASTEXITCODE" }
+& $bin upgrade --dry-run
+if ($LASTEXITCODE -ne 0) { throw "upgrade dry-run exited $LASTEXITCODE" }
+& $bin uninstall --prefix $prefix --dry-run
+if ($LASTEXITCODE -ne 0) { throw "uninstall dry-run exited $LASTEXITCODE" }
+& $bin uninstall --prefix $prefix
+if ($LASTEXITCODE -ne 0) { throw "uninstall exited $LASTEXITCODE" }
+if (Test-Path $bin) { throw "codepunk shim remains after uninstall" }
+```
+
+Record the Windows version and build, architecture, Node/npm versions, srt-win
+version, provisioning exit code, `icacls` output for the private files, ConPTY
+exit code, and every command exit code in the release evidence. The Windows
+release claim stays blocked until the spec 0007 acceptance records exist for
+all of these checks.
+
 ## Tag the release
 
 Create an annotated tag on the release commit, then push the tag and verify the

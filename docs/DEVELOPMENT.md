@@ -126,16 +126,18 @@ false positives.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` defines six CI targets; the complete six-target CI
-run is not yet verified:
+`.github/workflows/ci.yml` defines seven CI targets. The six Unix targets
+passed in run `44264867998`; `windows-latest` covers non-privileged Windows
+checks and is not a Windows 11 support claim:
 
-CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.
+CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
 Each target is configured to run the same install, formatting, repository,
 typecheck, test, build, and built-entry checks. The workflow uses
 `pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64 is manual-smoke only
 and is not CI-covered. Windows is not claimed; native Windows support is
-handled by 0007 and remains fail-closed until real evidence exists.
+still fail-closed while 0007 work is incomplete and real Windows 11 x64
+evidence is missing.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without
