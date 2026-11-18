@@ -372,6 +372,111 @@ test("gc plans before deleting and preserves protected state", async () => {
   });
 });
 
+test("gc skips project artifacts while a session writer is live", async () => {
+  await withTempDirectory("codepunk-gc-writer-", async (root) => {
+    const { paths } = await makeProject(root);
+    const artifact = path.join(paths.artifactsDir, "old.txt");
+    await writeFile(artifact, "artifact bytes");
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(artifact, old, old);
+    const session = await createSession(paths, new Date().toISOString());
+    const writer = await session.acquireWriter();
+    try {
+      const blocked = await core.applyGc(paths.home, {
+        dryRun: false,
+        now: new Date(),
+      });
+      assert.deepEqual(blocked.deleted, []);
+      assert.equal(blocked.backup_id, null);
+      assert.equal(blocked.skipped.length, 1);
+      assert.match(
+        blocked.skipped[0].reason,
+        /^active_writer_project:0123456789abcdef$/u,
+      );
+      assert.equal(await fs.readFile(artifact, "utf8"), "artifact bytes");
+      const operations = await core.readRetentionOperations(paths.home);
+      assert.equal(operations.at(-1).exit_code, 1);
+      assert.match(operations.at(-1).failure, /skipped 1 candidate/u);
+    } finally {
+      await writer.release();
+    }
+
+    const applied = await core.applyGc(paths.home, {
+      dryRun: false,
+      now: new Date(),
+    });
+    assert.deepEqual(applied.skipped, []);
+    assert.deepEqual(applied.deleted, [
+      path.relative(paths.home, artifact).split(path.sep).join("/"),
+    ]);
+    await assert.rejects(fs.readFile(artifact), { code: "ENOENT" });
+  });
+});
+
+test("gc ignores a stale session lock", async () => {
+  await withTempDirectory("codepunk-gc-stale-lock-", async (root) => {
+    const { paths } = await makeProject(root);
+    const artifact = path.join(paths.artifactsDir, "old.txt");
+    await writeFile(artifact, "artifact bytes");
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(artifact, old, old);
+    const session = await createSession(paths, "2026-01-01T00:00:00.000Z");
+    await writeFile(
+      session.paths.lockPath,
+      `${JSON.stringify({
+        pid: 999_999,
+        host: os.hostname(),
+        started_at: "2026-01-01T00:00:00.000Z",
+        heartbeat_at: "2026-01-01T00:00:00.000Z",
+        nonce: "stale-lock",
+      })}\n`,
+    );
+
+    const applied = await core.applyGc(paths.home, {
+      dryRun: false,
+      now: new Date("2026-11-18T00:00:00.000Z"),
+    });
+    assert.deepEqual(applied.skipped, []);
+    assert.deepEqual(applied.deleted, [
+      path.relative(paths.home, artifact).split(path.sep).join("/"),
+    ]);
+    await assert.rejects(fs.readFile(artifact), { code: "ENOENT" });
+  });
+});
+
+test("backup and restore refuse while a session writer is live", async () => {
+  await withTempDirectory("codepunk-backup-writer-", async (root) => {
+    const { paths } = await makeProject(root);
+    const artifact = path.join(paths.artifactsDir, "file.txt");
+    await writeFile(artifact, "original");
+    const relative = path
+      .relative(paths.home, artifact)
+      .split(path.sep)
+      .join("/");
+    const backup = await core.createBackup(paths.home, {
+      files: [relative],
+    });
+    await writeFile(artifact, "changed");
+    const session = await createSession(paths, new Date().toISOString());
+    const writer = await session.acquireWriter();
+    try {
+      await assert.rejects(
+        core.createBackup(paths.home, {}),
+        (error) => error.code === "retention.active_writer",
+      );
+      await assert.rejects(
+        core.restoreBackup(paths.home, backup.id),
+        (error) => error.code === "retention.active_writer",
+      );
+      assert.equal(await fs.readFile(artifact, "utf8"), "changed");
+    } finally {
+      await writer.release();
+    }
+    await core.restoreBackup(paths.home, backup.id);
+    assert.equal(await fs.readFile(artifact, "utf8"), "original");
+  });
+});
+
 test("restore rejects a corrupted backup before touching targets", async () => {
   await withTempDirectory("codepunk-restore-corrupt-", async (root) => {
     const { paths } = await makeProject(root);
