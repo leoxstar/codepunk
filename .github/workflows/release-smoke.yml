@@ -1,0 +1,62 @@
+name: release-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published @codepunk/cli version, for example 0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-smoke:
+    name: release-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - macos-15
+          - macos-15-intel
+          - macos-26
+    steps:
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            printf 'invalid version: %s\n' "$VERSION" >&2
+            exit 2
+          fi
+
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      - name: Install sandbox dependencies
+        run: bash scripts/ci-install-sandbox-deps.sh
+
+      - name: Run published-package smoke
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash scripts/release-smoke.sh "$VERSION"

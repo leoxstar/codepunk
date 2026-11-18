@@ -1548,3 +1548,110 @@ test("skills and plugins commands manage persisted capability state", async () =
     assert.deepEqual(JSON.parse(empty.stdout).skills, []);
   });
 });
+
+async function createReleaseSmokeToolchain(root) {
+  const bin = path.join(root, "bin");
+  await fs.mkdir(bin, { recursive: true });
+  const nodePath = path.join(bin, "node");
+  await fs.writeFile(nodePath, "#!/bin/sh\nprintf 'v22.19.0\\n'\n");
+  const npmPath = path.join(bin, "npm");
+  await fs.writeFile(
+    npmPath,
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then',
+      "  printf '10.9.0\\n'",
+      "  exit 0",
+      "fi",
+      'prefix=""',
+      'while [ "$#" -gt 0 ]; do',
+      '  if [ "$1" = "--prefix" ]; then',
+      '    prefix="$2"',
+      "    shift 2",
+      "    continue",
+      "  fi",
+      "  shift",
+      "done",
+      'mkdir -p "$prefix/bin"',
+      "cat > \"$prefix/bin/codepunk\" <<'CODEPUNK'",
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then',
+      '  if [ "${FAKE_VERSION_MODE:-ok}" = "stale" ]; then',
+      "    printf 'codepunk 0.1.0\\nentry: /tmp/codepunk\\nbuilt: 2026-11-18T00:00:00.000Z\\nsource: STALE (newest source 2026-11-18T00:00:00.000Z; run pnpm build)\\n'",
+      "  else",
+      "    printf 'codepunk 0.1.0\\nentry: /tmp/codepunk\\nbuilt: 2026-11-18T00:00:00.000Z\\nsource: not installed (cannot compare)\\n'",
+      "  fi",
+      "  exit 0",
+      "fi",
+      'if [ "$1" = "doctor" ]; then',
+      "  printf '[ok] node: Node.js 22.19.0\\n'",
+      "  printf '[ok] platform: linux x64\\n'",
+      "  printf '[ok] distribution: package version 0.1.0\\n'",
+      '  if [ "${FAKE_SRT_ERROR:-}" = "1" ]; then',
+      "    printf '[error] srt: synthetic\\n'",
+      "  else",
+      "    printf '[ok] srt: srt sandbox is available\\n'",
+      "  fi",
+      "  printf '[error] model: no model configured\\n'",
+      '  exit "${FAKE_DOCTOR_EXIT:-1}"',
+      "fi",
+      "exit 2",
+      "CODEPUNK",
+      'chmod +x "$prefix/bin/codepunk"',
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  await fs.chmod(nodePath, 0o755);
+  await fs.chmod(npmPath, 0o755);
+  return bin;
+}
+
+test(
+  "release-smoke rejects a missing model, sandbox error, or stale build",
+  {
+    skip:
+      process.platform === "win32" ? "release-smoke is a Unix workflow" : false,
+  },
+  async () => {
+    await withTempDirectory("codepunk-release-smoke-", async (root) => {
+      const bin = await createReleaseSmokeToolchain(root);
+      const script = path.join(REPO_ROOT, "scripts/release-smoke.sh");
+      const run = (environment = {}) =>
+        execFileAsync("bash", [script, "0.1.0"], {
+          cwd: root,
+          env: {
+            ...process.env,
+            HOME: path.join(root, "home"),
+            PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+            ...environment,
+          },
+        });
+
+      const accepted = await run();
+      assert.match(accepted.stdout, /release-smoke: doctor=1 errors=1/u);
+
+      await assert.rejects(
+        () => run({ FAKE_DOCTOR_EXIT: "0" }),
+        (error) => {
+          assert.match(error.stderr, /doctor exited 0, expected 1/u);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => run({ FAKE_SRT_ERROR: "1" }),
+        (error) => {
+          assert.match(error.stderr, /doctor output is missing: \[ok\] srt:/u);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => run({ FAKE_VERSION_MODE: "stale" }),
+        (error) => {
+          assert.match(error.stderr, /stale build/u);
+          return true;
+        },
+      );
+    });
+  },
+);
