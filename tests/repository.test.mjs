@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   cp,
@@ -161,6 +162,68 @@ async function copyRepositoryToTemporaryDirectory() {
     cleanup: async () => {
       await rm(temporaryRoot, { recursive: true, force: true });
     },
+  };
+}
+
+const CI_RUNNER_DOCUMENTATION_LINE =
+  "CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.";
+
+async function createExecutableFixtureChecker(fixture) {
+  const script = path.join(fixture.temporaryRoot, "check-repo.mjs");
+  const content = await readFile(
+    path.join(fixture.root, "scripts/check-repo.mjs"),
+    "utf8",
+  );
+  await writeFile(
+    script,
+    content.replace(
+      '"typescript/unstable/ast"',
+      JSON.stringify(import.meta.resolve("typescript/unstable/ast")),
+    ),
+  );
+  return script;
+}
+
+async function runFixtureCheck(fixture, options = {}) {
+  return runCheck(fixture.root, {
+    ...options,
+    script: await createExecutableFixtureChecker(fixture),
+  });
+}
+
+async function replaceExpectedDigest(root, constantName, digest) {
+  return replaceFile(root, "scripts/check-repo.mjs", (content) =>
+    content.replace(
+      new RegExp(`(const ${constantName} =\\s*")[a-f0-9]{64}(";)`, "u"),
+      `$1${digest}$2`,
+    ),
+  );
+}
+
+async function refreshFixtureWorkflowDigest(root) {
+  const digest = createHash("sha256")
+    .update(await readFile(path.join(root, ".github/workflows/ci.yml")))
+    .digest("hex");
+  return replaceExpectedDigest(root, "EXPECTED_CI_SHA256", digest);
+}
+
+async function refreshFixtureControlCorpusDigest(root) {
+  const digest = createHash("sha256")
+    .update(await readFile(path.join(root, "tests/repository.test.mjs")))
+    .digest("hex");
+  return replaceExpectedDigest(root, "EXPECTED_CONTROL_CORPUS_SHA256", digest);
+}
+
+async function mutateWorkflowAndRefreshDigest(root, transform) {
+  const restoreWorkflow = await replaceFile(
+    root,
+    ".github/workflows/ci.yml",
+    transform,
+  );
+  const restoreDigest = await refreshFixtureWorkflowDigest(root);
+  return async () => {
+    await restoreDigest();
+    await restoreWorkflow();
   };
 }
 
@@ -1136,6 +1199,220 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     },
   },
 ];
+
+test("0003 checker negative controls are isolated and reversible", async (t) => {
+  const fixture = await copyRepositoryToTemporaryDirectory();
+  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
+    fixture.root,
+  );
+  const assertRestored = async (label) => {
+    assertClean(await runFixtureCheck(fixture), label);
+  };
+  const assertMatrixFailure = (result) => {
+    assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
+    assert.match(
+      outputOf(result),
+      /CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26/u,
+    );
+    assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
+    assert.doesNotMatch(
+      outputOf(result),
+      /Windows is not a supported CI runner/u,
+    );
+  };
+
+  try {
+    await assertRestored("0003 fixture before planting violations");
+
+    for (const matrixCase of [
+      {
+        name: "ordered matrix rejects an omitted runner without a digest error",
+        transform: (content) =>
+          content.replace("          - ubuntu-24.04-arm\n", ""),
+      },
+      {
+        name: "ordered matrix rejects an unreviewed Windows runner without a permanent Windows rule",
+        transform: (content) =>
+          content.replace(
+            "          - macos-15-intel\n",
+            "          - macos-15-intel\n          - windows-latest\n",
+          ),
+      },
+      {
+        name: "ordered matrix rejects reordered runners without a digest error",
+        transform: (content) =>
+          content.replace(
+            "          - ubuntu-24.04\n          - ubuntu-24.04-arm\n",
+            "          - ubuntu-24.04-arm\n          - ubuntu-24.04\n",
+          ),
+      },
+    ]) {
+      await t.test(matrixCase.name, async () => {
+        const restore = await mutateWorkflowAndRefreshDigest(
+          fixture.root,
+          matrixCase.transform,
+        );
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertMatrixFailure(result);
+        } finally {
+          await restore();
+        }
+        await assertRestored(`restored ${matrixCase.name}`);
+      });
+    }
+
+    await t.test("platform table rejects a changed runner", async () => {
+      const relativePath = "docs/PLATFORMS.md";
+      const restore = await replaceFile(
+        fixture.root,
+        relativePath,
+        (content) => {
+          const mutated = content.replace(
+            /`macos-15-intel`(?=\s+\|)/u,
+            "`macos-14-intel`",
+          );
+          assert.notEqual(
+            mutated,
+            content,
+            "table mutation must change a runner",
+          );
+          return mutated;
+        },
+      );
+      try {
+        const result = await runFixtureCheck(fixture);
+        assertRuleFailure(result, "docs.platforms", relativePath);
+        assert.match(outputOf(result), /CI runner table must require/u);
+        assert.doesNotMatch(outputOf(result), /missing exact CI runner line/u);
+      } finally {
+        await restore();
+      }
+      await assertRestored("restored platform table runner");
+    });
+
+    for (const relativePath of [
+      "README.md",
+      "docs/DEVELOPMENT.md",
+      "docs/PLATFORMS.md",
+    ]) {
+      await t.test(`fixed runner line identifies ${relativePath}`, async () => {
+        const restore = await replaceFile(
+          fixture.root,
+          relativePath,
+          (content) =>
+            content.replace(
+              CI_RUNNER_DOCUMENTATION_LINE,
+              CI_RUNNER_DOCUMENTATION_LINE.replace(
+                "macos-15-intel",
+                "macos-14-intel",
+              ),
+            ),
+        );
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertRuleFailure(result, "docs.platforms", relativePath);
+          assert.match(
+            outputOf(result),
+            /expected exactly one CI runner line, found 0/u,
+          );
+        } finally {
+          await restore();
+        }
+        await assertRestored(`restored fixed runner line in ${relativePath}`);
+      });
+    }
+
+    await t.test("fixed runner line rejects a duplicate", async () => {
+      const relativePath = "README.md";
+      const restore = await replaceFile(
+        fixture.root,
+        relativePath,
+        (content) => {
+          const mutated = content.replace(
+            CI_RUNNER_DOCUMENTATION_LINE,
+            `${CI_RUNNER_DOCUMENTATION_LINE}\n${CI_RUNNER_DOCUMENTATION_LINE}`,
+          );
+          assert.notEqual(
+            mutated,
+            content,
+            "line duplication must change the document",
+          );
+          return mutated;
+        },
+      );
+      try {
+        const result = await runFixtureCheck(fixture);
+        assertRuleFailure(result, "docs.platforms", relativePath);
+        assert.match(
+          outputOf(result),
+          /expected exactly one CI runner line, found 2/u,
+        );
+      } finally {
+        await restore();
+      }
+      await assertRestored("restored duplicate fixed runner line");
+    });
+
+    for (const digestCase of [
+      {
+        name: "wrong workflow digest constant fails independently",
+        constantName: "EXPECTED_CI_SHA256",
+        rule: "ci.contract",
+        expectedPath: ".github/workflows/ci.yml",
+        message: /workflow digest differs/u,
+      },
+      {
+        name: "wrong control-corpus digest constant fails independently",
+        constantName: "EXPECTED_CONTROL_CORPUS_SHA256",
+        rule: "repo.controls",
+        expectedPath: "tests/repository.test.mjs",
+        message: /negative-control corpus differs/u,
+      },
+    ]) {
+      await t.test(digestCase.name, async () => {
+        const restore = await replaceExpectedDigest(
+          fixture.root,
+          digestCase.constantName,
+          "0".repeat(64),
+        );
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertRuleFailure(result, digestCase.rule, digestCase.expectedPath);
+          assert.match(outputOf(result), digestCase.message);
+        } finally {
+          await restore();
+        }
+        await assertRestored(`restored ${digestCase.name}`);
+      });
+    }
+
+    await t.test(
+      "whitespace-padded LF policy is not the exact policy",
+      async () => {
+        const restore = await replaceFile(
+          fixture.root,
+          ".gitattributes",
+          (content) =>
+            content.replace("* text=auto eol=lf", "  * text=auto eol=lf  "),
+        );
+        try {
+          assertRuleFailure(
+            await runFixtureCheck(fixture),
+            "repo.lineEndings",
+            ".gitattributes",
+          );
+        } finally {
+          await restore();
+        }
+        await assertRestored("restored exact LF policy");
+      },
+    );
+  } finally {
+    await restoreControlDigest();
+    await fixture.cleanup();
+  }
+});
 
 test("clean repository passes the repository checks", async () => {
   const result = await checkRepository({ root: REPO_ROOT });

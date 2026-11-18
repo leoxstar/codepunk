@@ -72,11 +72,16 @@ Install the published CLI with npm:
 npm install --global @codepunk/cli@0.1.0
 ```
 
-The CI matrix runs the full repository gate on Ubuntu 24.04 x64 and arm64, and
-on macOS 15 Intel x64 and macOS 26 arm64. macOS 13-14, other Linux
-distributions, and WSL2 are not separately verified. Windows is not a
-supported platform. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact
-support boundary.
+The workflow defines six CI targets; a complete six-target CI run is not yet
+verified:
+
+CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`.
+
+WSL2 Ubuntu x64 is manual-smoke only and is not CI-covered. Windows is not
+claimed; native Windows support is handled by 0007 and remains fail-closed
+until real evidence exists. macOS 13-14 and other Linux distributions are not
+CI targets. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact support
+boundary.
 
 ## Quick start
 
