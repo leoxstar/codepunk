@@ -207,6 +207,13 @@ async function refreshFixtureWorkflowDigest(root) {
   return replaceExpectedDigest(root, "EXPECTED_CI_SHA256", digest);
 }
 
+async function refreshFixtureFullCiDigest(root) {
+  const digest = createHash("sha256")
+    .update(await readFile(path.join(root, ".github/workflows/full-ci.yml")))
+    .digest("hex");
+  return replaceExpectedDigest(root, "EXPECTED_FULL_CI_SHA256", digest);
+}
+
 async function refreshFixtureControlCorpusDigest(root) {
   const digest = createHash("sha256")
     .update(await readFile(path.join(root, "tests/repository.test.mjs")))
@@ -243,6 +250,19 @@ async function mutateWorkflowAndRefreshDigest(root, transform) {
     transform,
   );
   const restoreDigest = await refreshFixtureWorkflowDigest(root);
+  return async () => {
+    await restoreDigest();
+    await restoreWorkflow();
+  };
+}
+
+async function mutateFullCiAndRefreshDigest(root, transform) {
+  const restoreWorkflow = await replaceFile(
+    root,
+    ".github/workflows/full-ci.yml",
+    transform,
+  );
+  const restoreDigest = await refreshFixtureFullCiDigest(root);
   return async () => {
     await restoreDigest();
     await restoreWorkflow();
@@ -1033,14 +1053,14 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     },
   },
   {
-    name: "CI quality job disabled",
+    name: "CI job disabled",
     rule: "ci.contract",
     path: ".github/workflows/ci.yml",
     async apply(root) {
       return replaceFile(root, ".github/workflows/ci.yml", (content) =>
         content.replace(
-          "    timeout-minutes: 45\n",
-          "    timeout-minutes: 45\n    if: false\n",
+          "    timeout-minutes: 10\n",
+          "    timeout-minutes: 10\n    if: false\n",
         ),
       );
     },
@@ -1052,8 +1072,8 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     async apply(root) {
       return replaceFile(root, ".github/workflows/ci.yml", (content) =>
         content.replace(
-          "on:\n  push:\n  pull_request:",
-          "on:\n  workflow_dispatch:",
+          "on:\n  push:\n",
+          "on:\n  workflow_dispatch:\n  push:\n",
         ),
       );
     },
@@ -1072,12 +1092,15 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     },
   },
   {
-    name: "CI matrix without Linux arm64",
+    name: "fast CI matrix without Windows",
     rule: "ci.contract",
     path: ".github/workflows/ci.yml",
     async apply(root) {
       return replaceFile(root, ".github/workflows/ci.yml", (content) =>
-        content.replace("          - ubuntu-24.04-arm\n", ""),
+        content.replace(
+          "        os:\n          - macos-15\n          - windows-latest\n",
+          "        os:\n          - macos-15\n",
+        ),
       );
     },
   },
@@ -1235,13 +1258,21 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
     assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
     assert.match(
       outputOf(result),
-      /CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26, windows-latest/u,
+      /CI matrix must require macos-15, windows-latest/u,
     );
     assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
     assert.doesNotMatch(
       outputOf(result),
       /Windows is not a supported CI runner/u,
     );
+  };
+  const assertFullMatrixFailure = (result) => {
+    assertRuleFailure(result, "ci.contract", ".github/workflows/full-ci.yml");
+    assert.match(
+      outputOf(result),
+      /full CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26, windows-latest/u,
+    );
+    assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
   };
 
   try {
@@ -1251,7 +1282,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       {
         name: "ordered matrix rejects an omitted runner without a digest error",
         transform: (content) =>
-          content.replace("          - ubuntu-24.04-arm\n", ""),
+          content.replace("          - windows-latest\n", ""),
       },
       {
         name: "ordered matrix rejects an unreviewed Windows runner without a permanent Windows rule",
@@ -1265,8 +1296,8 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         name: "ordered matrix rejects reordered runners without a digest error",
         transform: (content) =>
           content.replace(
-            "          - ubuntu-24.04\n          - ubuntu-24.04-arm\n",
-            "          - ubuntu-24.04-arm\n          - ubuntu-24.04\n",
+            "          - macos-15\n          - windows-latest\n",
+            "          - windows-latest\n          - macos-15\n",
           ),
       },
     ]) {
@@ -1284,6 +1315,52 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         await assertRestored(`restored ${matrixCase.name}`);
       });
     }
+
+    await t.test(
+      "full matrix rejects an omitted runner without a digest error",
+      async () => {
+        const restore = await mutateFullCiAndRefreshDigest(
+          fixture.root,
+          (content) => content.replace("          - macos-15-intel\n", ""),
+        );
+        try {
+          assertFullMatrixFailure(await runFixtureCheck(fixture));
+        } finally {
+          await restore();
+        }
+        await assertRestored("restored full matrix runner");
+      },
+    );
+
+    await t.test(
+      "full CI rejects a scheduled trigger without a digest error",
+      async () => {
+        const restore = await mutateFullCiAndRefreshDigest(
+          fixture.root,
+          (content) =>
+            content.replace(
+              "on:\n  workflow_dispatch:\n",
+              'on:\n  workflow_dispatch:\n  schedule:\n    - cron: "0 3 * * 1"\n',
+            ),
+        );
+        try {
+          const result = await runFixtureCheck(fixture);
+          assertRuleFailure(
+            result,
+            "ci.contract",
+            ".github/workflows/full-ci.yml",
+          );
+          assert.match(
+            outputOf(result),
+            /full CI contains a condition, shell override, environment block, branch trigger, pull request trigger, or schedule/u,
+          );
+          assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
+        } finally {
+          await restore();
+        }
+        await assertRestored("restored full CI trigger");
+      },
+    );
 
     await t.test("platform table rejects a changed runner", async () => {
       const relativePath = "docs/PLATFORMS.md";

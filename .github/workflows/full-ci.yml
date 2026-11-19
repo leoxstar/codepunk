@@ -1,0 +1,71 @@
+name: full-ci
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - macos-15
+          - macos-15-intel
+          - macos-26
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install sandbox dependencies
+        run: bash scripts/ci-install-sandbox-deps.sh
+
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Check repository
+        run: pnpm run check
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Run tests and negative controls
+        run: pnpm test
+
+      - name: Run deterministic eval regression
+        run: pnpm run eval
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Check built entry points
+        run: node scripts/check-repo.mjs --require-built
