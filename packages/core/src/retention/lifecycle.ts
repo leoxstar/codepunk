@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import {
   RetentionOperationSchema,
@@ -15,6 +15,18 @@ export const STATE_VERSION = 1;
 const BACKUP_DIR = "backups";
 const RETENTION_DIR = "retention";
 const DEFAULT_ROOTS = ["projects", "artifacts"];
+const LEGACY_STATE_ENTRIES = [
+  "projects",
+  "config.toml",
+  "trust.json",
+  "workspace-trust.json",
+  "models.json",
+  "auth.json",
+  "mcp-auth.json",
+  "backups",
+  "retention",
+  "run",
+];
 
 export class RetentionLifecycleError extends Error {
   readonly code: string;
@@ -727,9 +739,35 @@ async function stateVersion(home: string): Promise<number> {
       await fs.readFile(path.join(home, "state-version.json"), "utf8"),
     ) as { version?: unknown };
     return typeof parsed.version === "number" ? parsed.version : 0;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      for (const entry of LEGACY_STATE_ENTRIES) {
+        if (existsSync(path.join(home, entry))) {
+          return 0;
+        }
+      }
+      return STATE_VERSION;
+    }
     return 0;
   }
+}
+
+export async function initializeStateVersion(homeInput: string) {
+  const home = normalizeAbsolute(homeInput);
+  const statePath = path.join(home, "state-version.json");
+  try {
+    await fs.access(statePath);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await atomicWriteFile(
+    statePath,
+    `${JSON.stringify({ version: STATE_VERSION }, null, 2)}\n`,
+    0o600,
+  );
 }
 
 export async function checkMigration(
