@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
@@ -1113,7 +1113,6 @@ async function resolveProject(options: CliOptions): Promise<{
   }
   const project = await findDeliveryRoot(process.cwd());
   const initialPaths = projectPaths(project);
-  const homeExisted = existsSync(initialPaths.home);
   const additionalRoots = await resolveAdditionalWorkspaceRoots({
     cwd: project.cwd,
     primaryRoot: project.deliveryRoot,
@@ -1121,10 +1120,8 @@ async function resolveProject(options: CliOptions): Promise<{
     directories: options.additionalDirs,
   });
   const paths = projectPaths(project, initialPaths.home, additionalRoots);
+  await initializeStateVersion(paths.home);
   await ensureProjectRegistration(project, paths);
-  if (!homeExisted) {
-    await initializeStateVersion(paths.home);
-  }
   const workspaceTrust = await resolveWorkspaceTrust({
     cwd: project.cwd,
     root: project.deliveryRoot,
