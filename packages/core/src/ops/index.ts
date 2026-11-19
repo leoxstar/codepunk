@@ -338,7 +338,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           : `package version ${options.packageVersion}`,
     hint:
       options.packageVersion === undefined || options.packageVersion === "0.0.0"
-        ? "publish @codepunk/cli or install from the repository checkout"
+        ? "publish codepunk-cli or install from the repository checkout"
         : null,
   });
   return {

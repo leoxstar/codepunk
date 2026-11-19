@@ -75,7 +75,7 @@ start `codepunk` again; a running process does not hot-swap modules after
 The dependency direction is:
 
 ```text
-@codepunk/protocol <- @codepunk/core <- @codepunk/cli
+codepunk-protocol <- codepunk-core <- codepunk-cli
 ```
 
 Cross-package imports use the public `exports` entry points. Internal packages

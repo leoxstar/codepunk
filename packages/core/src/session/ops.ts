@@ -6,7 +6,7 @@ import type {
   SessionEvent,
   SessionHeader,
   SessionMeta,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { recordHash, sha256Text } from "../platform/hash.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
 import { redactOutputPreview } from "../artifacts/index.ts";

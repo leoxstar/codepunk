@@ -1,9 +1,5 @@
 import path from "node:path";
-import type {
-  AutonomyProfile,
-  Decision,
-  PolicyLayer,
-} from "@codepunk/protocol";
+import type { AutonomyProfile, Decision, PolicyLayer } from "codepunk-protocol";
 import type { ApprovalMode, FilesystemMode } from "../config/index.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 

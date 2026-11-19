@@ -28,7 +28,7 @@ import {
   type UserBashEvent,
   type UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentState, PlanStep, TodoItem } from "@codepunk/protocol";
+import type { AgentState, PlanStep, TodoItem } from "codepunk-protocol";
 import { redactOutputPreview } from "../../artifacts/index.ts";
 import { canonicalJson, createUlid, sha256Text } from "../../platform/hash.ts";
 import { normalizeAbsolute } from "../../platform/path.ts";

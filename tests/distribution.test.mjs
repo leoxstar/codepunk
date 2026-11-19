@@ -25,9 +25,9 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
   await withTempDirectory("codepunk-distribution-", async (root) => {
     const packed = [];
     for (const workspace of [
-      "@codepunk/protocol",
-      "@codepunk/core",
-      "@codepunk/cli",
+      "codepunk-protocol",
+      "codepunk-core",
+      "codepunk-cli",
     ]) {
       const { stdout } = await execFilePortable(
         "pnpm",
@@ -78,14 +78,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
     const version = await execFileAsync(
       process.execPath,
       [
-        path.join(
-          install,
-          "node_modules",
-          "@codepunk",
-          "cli",
-          "dist",
-          "index.js",
-        ),
+        path.join(install, "node_modules", "codepunk-cli", "dist", "index.js"),
         "--version",
       ],
       { cwd: install },
@@ -98,7 +91,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
       ),
     );
     const installed = await fs.readdir(
-      path.join(install, "node_modules", "@codepunk", "cli"),
+      path.join(install, "node_modules", "codepunk-cli"),
     );
     assert.deepEqual(installed.sort(), [
       "LICENSE",

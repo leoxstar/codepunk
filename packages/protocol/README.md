@@ -1,4 +1,4 @@
-# @codepunk/protocol
+# codepunk-protocol
 
 Owns schemas, record shapes, version constants, and the public types that cross
 package boundaries.
@@ -10,7 +10,7 @@ local read-only daemon protocol in `src/daemon.ts`.
 
 ## Invariants
 
-- No dependency on `@codepunk/core` or `@codepunk/cli`.
+- No dependency on `codepunk-core` or `codepunk-cli`.
 - Only the reviewed TypeBox dependency is permitted at runtime.
 - Consumers import the package entry point, never an internal file.
 

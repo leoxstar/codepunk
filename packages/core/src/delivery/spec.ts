@@ -1,4 +1,4 @@
-import type { TaskSpec } from "@codepunk/protocol";
+import type { TaskSpec } from "codepunk-protocol";
 import { sha256Value } from "../platform/hash.ts";
 import { PI_INSTRUCTION_FILE_NAMES } from "../platform/path.ts";
 

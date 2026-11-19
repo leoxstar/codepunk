@@ -9,7 +9,7 @@ import {
   type MemoryRecord,
   type MemoryScope,
   type MemorySource,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   appendFileSynced,

@@ -67,7 +67,7 @@ explicit policy boundary around file and shell actions.
 ## Install
 
 Codepunk `0.1.0` is a release candidate, not a completed npm release. At
-the release candidate `c0383fa`, all three `@codepunk/*` packages are unpublished (`npm view`
+the release candidate `c0383fa`, all three `codepunk-*` packages are unpublished (`npm view`
 returns `E404`), there is no `v0.1.0` tag, and `npm whoami` returns
 `ENEEDAUTH`. All three `npm publish --dry-run --access public` checks passed;
 the remaining release blocker is registry authentication, not package
@@ -749,13 +749,13 @@ fetch otherwise.
 
 ## Packages
 
-| Package              | Responsibility                                                |
-| -------------------- | ------------------------------------------------------------- |
-| `@codepunk/protocol` | Boundary schemas, record shapes, and version constants        |
-| `@codepunk/core`     | Engine, host adapter, policy, sandbox, evidence, and sessions |
-| `@codepunk/cli`      | Terminal surface, approvals, arguments, and exit codes        |
+| Package             | Responsibility                                                |
+| ------------------- | ------------------------------------------------------------- |
+| `codepunk-protocol` | Boundary schemas, record shapes, and version constants        |
+| `codepunk-core`     | Engine, host adapter, policy, sandbox, evidence, and sessions |
+| `codepunk-cli`      | Terminal surface, approvals, arguments, and exit codes        |
 
-The dependency direction is `@codepunk/protocol <- @codepunk/core <- @codepunk/cli`.
+The dependency direction is `codepunk-protocol <- codepunk-core <- codepunk-cli`.
 
 ## Documentation
 

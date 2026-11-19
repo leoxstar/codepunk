@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { AutonomyProfile, PolicyDecision } from "@codepunk/protocol";
+import type { AutonomyProfile, PolicyDecision } from "codepunk-protocol";
 import { atomicWriteFile } from "../platform/fs.ts";
 import {
   assertProjectConfigFileSafe,

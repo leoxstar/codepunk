@@ -4,7 +4,7 @@ import type {
   ApprovalEvidence,
   ApprovalRequest,
   ApprovalScope,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { sha256Text } from "../platform/hash.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
 

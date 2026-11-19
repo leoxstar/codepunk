@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the published @codepunk/cli package into an empty prefix and verify
+# Install the published codepunk-cli package into an empty prefix and verify
 # the package identity, doctor contract, and absence of a silent fallback.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ unset CODEPUNK_HOME
 
 npm_bin="${CODEPUNK_RELEASE_SMOKE_NPM:-npm}"
 "$npm_bin" install -g --prefix "$temp/prefix" --no-audit --no-fund \
-  "@codepunk/cli@$version" >"$temp/install.log" 2>&1
+  "codepunk-cli@$version" >"$temp/install.log" 2>&1
 
 bin="$temp/prefix/bin/codepunk"
 if [ ! -x "$bin" ]; then

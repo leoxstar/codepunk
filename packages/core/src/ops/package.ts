@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const CLI_PACKAGE_NAME = "@codepunk/cli";
+export const CLI_PACKAGE_NAME = "codepunk-cli";
 
 export interface NpmInvocation {
   command: string;

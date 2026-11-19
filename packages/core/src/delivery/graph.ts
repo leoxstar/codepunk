@@ -1,4 +1,4 @@
-import type { TaskSpec } from "@codepunk/protocol";
+import type { TaskSpec } from "codepunk-protocol";
 
 export const TASK_STATES = [
   "queued",

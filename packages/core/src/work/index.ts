@@ -6,7 +6,7 @@ import {
   type PlanStep,
   type SessionEvent,
   type TodoItem,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { recordHash } from "../platform/hash.ts";
 
 export interface WorkState {

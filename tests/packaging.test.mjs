@@ -35,7 +35,7 @@ test("package commands delegate to npm with exact prefixes", async () => {
       prefix,
       "--no-audit",
       "--no-fund",
-      "@codepunk/cli@1.2.3",
+      "codepunk-cli@1.2.3",
     ]);
     const uninstall = await core.uninstallPackage({ prefix, dryRun: true });
     assert.deepEqual(uninstall.command.args, [
@@ -43,7 +43,7 @@ test("package commands delegate to npm with exact prefixes", async () => {
       "--global",
       "--prefix",
       prefix,
-      "@codepunk/cli",
+      "codepunk-cli",
     ]);
     await assert.rejects(
       () => core.installPackage({ prefix: "relative", dryRun: true }),
@@ -60,14 +60,14 @@ test("upgrade rolls back to the previous version when npm fails", async () => {
       return {
         code: 0,
         stdout: JSON.stringify({
-          dependencies: { "@codepunk/cli": { version: "0.0.0" } },
+          dependencies: { "codepunk-cli": { version: "0.0.0" } },
         }),
         stderr: "",
       };
     }
     if (
       invocation.args[0] === "install" &&
-      invocation.args.at(-1) === "@codepunk/cli@latest"
+      invocation.args.at(-1) === "codepunk-cli@latest"
     ) {
       return { code: 1, stdout: "", stderr: "registry unavailable" };
     }
@@ -87,8 +87,8 @@ test("upgrade rolls back to the previous version when npm fails", async () => {
   );
   assert.equal(calls.length, 3);
   assert.equal(calls[0].args[0], "list");
-  assert.equal(calls[1].args.at(-1), "@codepunk/cli@latest");
-  assert.equal(calls[2].args.at(-1), "@codepunk/cli@0.0.0");
+  assert.equal(calls[1].args.at(-1), "codepunk-cli@latest");
+  assert.equal(calls[2].args.at(-1), "codepunk-cli@0.0.0");
 });
 
 test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", async () => {
@@ -96,9 +96,9 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
   await withTempDirectory("codepunk-clean-install-", async (root) => {
     const packed = [];
     for (const workspace of [
-      "@codepunk/protocol",
-      "@codepunk/core",
-      "@codepunk/cli",
+      "codepunk-protocol",
+      "codepunk-core",
+      "codepunk-cli",
     ]) {
       const { stdout } = await execFilePortable(
         "pnpm",
@@ -181,7 +181,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
         prefix,
         "--no-audit",
         "--no-fund",
-        "@codepunk/cli",
+        "codepunk-cli",
       ],
       { timeout: 120_000 },
     );

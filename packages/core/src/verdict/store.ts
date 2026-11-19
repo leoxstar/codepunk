@@ -4,7 +4,7 @@ import type {
   EvidenceRecord,
   SignOffRequest,
   Verdict,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import {
   appendFileSynced,

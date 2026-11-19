@@ -4,7 +4,7 @@ import type {
   AutonomyProfile,
   AutonomyRule,
   AutonomyEvidence,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { recordHash, sha256Bytes } from "../platform/hash.ts";
 import { normalizeAbsolute, resolveRealPath } from "../platform/path.ts";
 import { isShellLauncher } from "../platform/shell.ts";

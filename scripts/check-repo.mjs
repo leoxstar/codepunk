@@ -68,7 +68,7 @@ const REQUIRED_PRODUCT_FILES = [
 const PACKAGE_SPECS = [
   {
     dir: "packages/protocol",
-    name: "@codepunk/protocol",
+    name: "codepunk-protocol",
     layer: 0,
     typecheckPaths: {},
     external: {
@@ -78,10 +78,10 @@ const PACKAGE_SPECS = [
   },
   {
     dir: "packages/core",
-    name: "@codepunk/core",
+    name: "codepunk-core",
     layer: 1,
     typecheckPaths: {
-      "@codepunk/protocol": ["../protocol/src/index.ts"],
+      "codepunk-protocol": ["../protocol/src/index.ts"],
     },
     external: {
       "@anthropic-ai/sandbox-runtime": "0.0.82",
@@ -89,21 +89,21 @@ const PACKAGE_SPECS = [
       "@earendil-works/pi-coding-agent": "1.5.2",
       "@earendil-works/pi-mcp": "1.5.2",
     },
-    internal: ["@codepunk/protocol"],
+    internal: ["codepunk-protocol"],
   },
   {
     dir: "packages/cli",
-    name: "@codepunk/cli",
+    name: "codepunk-cli",
     layer: 2,
     typecheckPaths: {
-      "@codepunk/protocol": ["../protocol/src/index.ts"],
-      "@codepunk/core": ["../core/src/index.ts"],
+      "codepunk-protocol": ["../protocol/src/index.ts"],
+      "codepunk-core": ["../core/src/index.ts"],
     },
     external: {
       "@earendil-works/pi-coding-agent": "1.5.2",
       "@earendil-works/pi-tui": "1.5.2",
     },
-    internal: ["@codepunk/core", "@codepunk/protocol"],
+    internal: ["codepunk-core", "codepunk-protocol"],
   },
 ];
 
@@ -186,7 +186,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "a525e3148f8139c3b02189b39d350333c3fd8d99f08f810978196679497a5c32";
+  "b2843e9f8af164aa1e534b601b766878a1e8f29ee8064ebb2afde09ce8986b27";
 
 const EXPECTED_CI_SHA256 =
   "c99f39055445cadcddebab6d8518edd4dfd49d758fa9ec8cf5be20a2b3ad70dc";
@@ -211,14 +211,14 @@ const EXPECTED_FULL_CI_RUNNERS = [
 const RELEASE_SMOKE_PATH = ".github/workflows/release-smoke.yml";
 
 const EXPECTED_RELEASE_SMOKE_SHA256 =
-  "413ede79bf04146aa1571a616eb3888e0c2b5c5da6065f9869213e6742ec0552";
+  "2c770e4b4ed95d69d709da05d325055b09422582c50d548ee3381af325098b0d";
 
 const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
   (runner) => runner !== "windows-latest",
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "6c51576609a9d310d3307d333cf0e9170f5758a41b36f373b16508f2e4078730";
+  "80bbe5d4ea62091f2b10482ac49c14f36604e17fb7c103b117f23a6b24a91864";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -270,14 +270,14 @@ function checkEvalContract(root, add) {
 
 const EXPECTED_ROOT_SCRIPTS = {
   build:
-    "pnpm --filter @codepunk/protocol build && pnpm --filter @codepunk/core build && pnpm --filter @codepunk/cli build",
+    "pnpm --filter codepunk-protocol build && pnpm --filter codepunk-core build && pnpm --filter codepunk-cli build",
   check: "node scripts/check-repo.mjs",
   eval: "node eval/run.mjs",
   format: "prettier --write . --ignore-path .gitignore",
   "format:check": "prettier --check . --ignore-path .gitignore",
   test: "node --test tests/*.test.mjs",
   typecheck:
-    "pnpm --filter @codepunk/protocol typecheck && pnpm --filter @codepunk/core typecheck && pnpm --filter @codepunk/cli typecheck",
+    "pnpm --filter codepunk-protocol typecheck && pnpm --filter codepunk-core typecheck && pnpm --filter codepunk-cli typecheck",
   verify:
     "pnpm run format:check && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built",
 };
@@ -1653,7 +1653,7 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   const expectedNames = Object.keys(expectedDependencies);
   const actualNames = Object.keys(dependencies);
   const internalNames = spec.internal;
-  const internalPrefix = "@codepunk/";
+  const internalPrefix = "codepunk-";
 
   for (const name of actualNames) {
     if (!(name in expectedDependencies)) {
@@ -1940,12 +1940,10 @@ async function checkSourceImports(root, files, add) {
         }
 
         const packageName = packageNameForSpecifier(specifier);
-        if (packageName?.startsWith("@codepunk/")) {
-          const packageSegments =
-            packageName.startsWith("@") && packageName.includes("/")
-              ? specifier.split("/").length
-              : 1;
-          if (packageSegments > 2) {
+        if (packageName?.startsWith("codepunk-")) {
+          const allowedSegments = packageName.startsWith("@") ? 2 : 1;
+          const packageSegments = specifier.split("/").length;
+          if (packageSegments > allowedSegments) {
             add(
               "source.import",
               relativePath,

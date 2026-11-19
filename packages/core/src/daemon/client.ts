@@ -18,7 +18,7 @@ import {
   type DaemonSessionListResult,
   type DaemonSessionPinResult,
   type DaemonSessionReadResult,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 
 export interface DaemonClientOptions {
   socketPath: string;

@@ -18,7 +18,7 @@ import {
   type SessionEvent,
   type SessionHeader,
   type SessionMeta,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import {
   appendFileSynced,
   atomicWriteFile,

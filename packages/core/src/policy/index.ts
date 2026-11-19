@@ -6,7 +6,7 @@ import type {
   Effects,
   PolicyDecision,
   PolicyLayer,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import {
   effectiveApprovalDecision,
   type ApprovalClass,

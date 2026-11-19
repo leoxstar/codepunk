@@ -132,11 +132,11 @@ import {
   WORKSPACE_TRUST_RESOURCE_KINDS,
   workspaceTrustGrantsFromKinds,
   workspaceTrustMode,
-} from "@codepunk/core";
+} from "codepunk-core";
 import type {
   DaemonSessionListResult,
   DaemonSessionReadResult,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import {
   applyReplacedRuntime,
   TuiApprovalChannel,
@@ -4194,7 +4194,7 @@ async function commandPackage(
   const targetVersion = options.packageVersion ?? (await readCliVersion());
   if (verb === "install" && targetVersion === UNPUBLISHED_VERSION) {
     throw new Error(
-      "0.0.0 is the unpublished placeholder version and @codepunk/cli is not published at it; install from the repository checkout or pass --package-version <published-version>",
+      "0.0.0 is the unpublished placeholder version and codepunk-cli is not published at it; install from the repository checkout or pass --package-version <published-version>",
     );
   }
   const base = {

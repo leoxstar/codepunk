@@ -4,8 +4,8 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
-      "@codepunk/protocol": ["../protocol/src/index.ts"],
-      "@codepunk/core": ["../core/src/index.ts"]
+      "codepunk-protocol": ["../protocol/src/index.ts"],
+      "codepunk-core": ["../core/src/index.ts"]
     }
   }
 }

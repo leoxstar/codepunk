@@ -20,7 +20,7 @@ import {
   type DaemonSessionListResult,
   type DaemonSessionPinResult,
   type DaemonSessionReadResult,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import type { ProjectPaths } from "../platform/paths.ts";
 import { posixMetadataIsReliable } from "../platform/fs.ts";
 import { readSessionSnapshot, SessionNotFoundError } from "../session/index.ts";

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DoctorCheck, DoctorReport } from "@codepunk/core";
+import type { DoctorCheck, DoctorReport } from "codepunk-core";
 
 const BUILD_PACKAGES = ["protocol", "core", "cli"] as const;
 const MTIME_TOLERANCE_MS = 1_000;

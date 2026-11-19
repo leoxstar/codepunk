@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { estimateTokens as estimateMessageTokens } from "@earendil-works/pi-coding-agent";
-import type { ContextSource } from "@codepunk/protocol";
+import type { ContextSource } from "codepunk-protocol";
 import { sha256Bytes, sha256Text } from "../platform/hash.ts";
 import {
   isInsidePath,

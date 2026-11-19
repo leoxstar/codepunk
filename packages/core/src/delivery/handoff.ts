@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { TaskHandoff, TaskSpec, Verdict } from "@codepunk/protocol";
+import type { TaskHandoff, TaskSpec, Verdict } from "codepunk-protocol";
 import { EvidenceError, readEvidenceFile } from "../evidence/index.ts";
 import { atomicWriteFile } from "../platform/fs.ts";
 import { sha256Bytes } from "../platform/hash.ts";
