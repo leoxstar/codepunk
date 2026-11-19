@@ -755,12 +755,12 @@ async function stateVersion(home: string): Promise<number> {
 export async function initializeStateVersion(homeInput: string) {
   const home = normalizeAbsolute(homeInput);
   const statePath = path.join(home, "state-version.json");
-  try {
-    await fs.access(statePath);
+  if (existsSync(statePath)) {
     return;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
+  }
+  for (const entry of LEGACY_STATE_ENTRIES) {
+    if (existsSync(path.join(home, entry))) {
+      return;
     }
   }
   await atomicWriteFile(

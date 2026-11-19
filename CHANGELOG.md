@@ -18,8 +18,9 @@ No changes have been recorded yet.
 
 ### Fixed
 
-- Fresh `CODEPUNK_HOME` installs initialize the current state version instead
-  of reporting a pending migration.
+- Fresh or empty `CODEPUNK_HOME` directories, including symlinks to empty
+  directories, initialize the current state version instead of reporting a
+  pending migration.
 - CLI help lists the implemented reviewer show/timeout commands and the trust
   resource-grant flag.
 - The published CLI shim resolves from `dist/index.js` under npm 11.

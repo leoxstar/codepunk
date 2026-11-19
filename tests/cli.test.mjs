@@ -908,8 +908,56 @@ test("fresh homes initialize state version without reporting migration", async (
         .stdout,
     );
     assert.equal(rechecked.required, false);
+
+    const emptyHome = path.join(root, "empty-home");
+    await fs.mkdir(emptyHome);
+    await runCli(["permissions"], { cwd: project, home: emptyHome });
+    assertPrivateFile(path.join(emptyHome, "state-version.json"));
+    assert.equal(
+      await fs.readFile(path.join(emptyHome, "state-version.json"), "utf8"),
+      '{\n  "version": 1\n}\n',
+    );
+    const emptyRechecked = JSON.parse(
+      (
+        await runCli(["migrate", "--check", "--json"], {
+          cwd: project,
+          home: emptyHome,
+        })
+      ).stdout,
+    );
+    assert.equal(emptyRechecked.required, false);
   });
 });
+
+test(
+  "symlinked empty homes initialize state version",
+  {
+    skip: process.platform === "win32" ? "POSIX-only symlink home" : false,
+  },
+  async () => {
+    const cli = await ensureBuilt();
+    await withTempDirectory("codepunk-symlink-home-", async (root) => {
+      const project = path.join(root, "project");
+      await fs.mkdir(project);
+      const homeTarget = path.join(root, "home-target");
+      const home = path.join(root, "home");
+      await fs.mkdir(homeTarget);
+      await fs.symlink(homeTarget, home);
+
+      await runCli(["permissions"], { cwd: project, home });
+      assertPrivateFile(path.join(homeTarget, "state-version.json"));
+      assert.equal(
+        await fs.readFile(path.join(homeTarget, "state-version.json"), "utf8"),
+        '{\n  "version": 1\n}\n',
+      );
+      const checked = JSON.parse(
+        (await runCli(["migrate", "--check", "--json"], { cwd: project, home }))
+          .stdout,
+      );
+      assert.equal(checked.required, false);
+    });
+  },
+);
 
 test("permission commands show effective modes, explain commands, and persist profiles", async () => {
   await withTempDirectory("codepunk-cli-permissions-", async (root) => {
