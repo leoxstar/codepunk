@@ -15,7 +15,7 @@
     "access": "public"
   },
   "bin": {
-    "codepunk": "./dist/index.js"
+    "codepunk": "dist/index.js"
   },
   "exports": {
     ".": {
