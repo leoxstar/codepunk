@@ -74,6 +74,10 @@ test("the built CLI reports version and help", async () => {
   assert.match(help.stdout, /codepunk sign/u);
   assert.match(help.stdout, /--fork <id>/u);
   assert.match(help.stdout, /codepunk permissions rules/u);
+  assert.match(
+    help.stdout,
+    /codepunk trust \[status\|grant\|revoke\] \[path\] \[--resources config,policy,skills,instructions\]/u,
+  );
   assert.match(help.stdout, /--bare\s+disable instructions/u);
   assert.match(help.stdout, /--no-skills\s+do not load skills/u);
   assert.match(help.stdout, /--no-plugins\s+do not load user plugins/u);
@@ -86,6 +90,10 @@ test("the built CLI reports version and help", async () => {
     "--help",
   ]);
   assert.match(permissionsHelp.stdout, /permissions rules \[--json\]/u);
+  assert.match(
+    permissionsHelp.stdout,
+    /permissions reviewer show\|off\|model \[provider\/model\]\|timeout <ms>/u,
+  );
   assert.doesNotMatch(permissionsHelp.stdout, /codepunk \[options\]/u);
   const modelsHelp = await execFileAsync(process.execPath, [
     await ensureBuilt(),
@@ -871,11 +879,47 @@ test("retention command help and surfaces", async () => {
   });
 });
 
+test("fresh homes initialize state version without reporting migration", async () => {
+  const cli = await ensureBuilt();
+  await withTempDirectory("codepunk-fresh-home-", async (root) => {
+    const project = path.join(root, "project");
+    await fs.mkdir(project);
+    const home = path.join(root, "home");
+
+    const checked = JSON.parse(
+      (await runCli(["migrate", "--check", "--json"], { cwd: project, home }))
+        .stdout,
+    );
+    assert.deepEqual(checked, {
+      current: core.STATE_VERSION,
+      target: core.STATE_VERSION,
+      required: false,
+    });
+    await assert.rejects(fs.access(home), { code: "ENOENT" });
+
+    await runCli(["permissions"], { cwd: project, home });
+    assertPrivateFile(path.join(home, "state-version.json"));
+    assert.equal(
+      await fs.readFile(path.join(home, "state-version.json"), "utf8"),
+      '{\n  "version": 1\n}\n',
+    );
+    const rechecked = JSON.parse(
+      (await runCli(["migrate", "--check", "--json"], { cwd: project, home }))
+        .stdout,
+    );
+    assert.equal(rechecked.required, false);
+  });
+});
+
 test("permission commands show effective modes, explain commands, and persist profiles", async () => {
   await withTempDirectory("codepunk-cli-permissions-", async (root) => {
     const { project, home } = await makeProject(root);
     const shown = await runCli(["permissions"], { cwd: project, home });
     assert.match(shown.stdout, /profile: custom/u);
+    assert.match(
+      shown.stdout,
+      /codepunk permissions reviewer show\|off\|model \[provider\/model\]\|timeout <ms>/u,
+    );
     assert.match(shown.stdout, /approvals: ask/u);
     assert.match(shown.stdout, /behavior: ask prompts/u);
     assert.match(shown.stdout, /autonomy: ask/u);
