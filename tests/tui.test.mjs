@@ -1009,7 +1009,13 @@ test("a real pty shows the working tree diff", async () => {
   });
 });
 
-test("a real pty undoes and redoes Codepunk file changes", async () => {
+test("a real pty undoes and redoes Codepunk file changes", async (t) => {
+  if (process.platform === "win32") {
+    t.skip(
+      "hosted Windows ConPTY /undo timing is not reliable; real Windows 11 acceptance is required",
+    );
+    return;
+  }
   await withTempDirectory("codepunk-tui-undo-", async (root) => {
     const project = path.join(root, "project");
     const home = path.join(root, "home");
