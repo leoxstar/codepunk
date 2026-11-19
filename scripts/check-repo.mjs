@@ -189,9 +189,16 @@ const EXPECTED_LOCKFILE_SHA256 =
   "a525e3148f8139c3b02189b39d350333c3fd8d99f08f810978196679497a5c32";
 
 const EXPECTED_CI_SHA256 =
-  "174cced3fe6f69306045f7f8f8d326ad17fda39925adcffdb821f1d3e4c2f2fb";
+  "c99f39055445cadcddebab6d8518edd4dfd49d758fa9ec8cf5be20a2b3ad70dc";
 
-const EXPECTED_CI_RUNNERS = [
+const FULL_CI_PATH = ".github/workflows/full-ci.yml";
+
+const EXPECTED_FULL_CI_SHA256 =
+  "837c9957dba73978c9e90bad5e922e36b97e07d1a5f1bfa480123ab4fb61b38d";
+
+const EXPECTED_CI_RUNNERS = ["macos-15", "windows-latest"];
+
+const EXPECTED_FULL_CI_RUNNERS = [
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
   "ubuntu-26.04",
@@ -206,12 +213,12 @@ const RELEASE_SMOKE_PATH = ".github/workflows/release-smoke.yml";
 const EXPECTED_RELEASE_SMOKE_SHA256 =
   "413ede79bf04146aa1571a616eb3888e0c2b5c5da6065f9869213e6742ec0552";
 
-const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_CI_RUNNERS.filter(
+const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
   (runner) => runner !== "windows-latest",
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "3581fae142bd21ac5aa7f08ca73e828a30c35ab9e264b380e28c9d22b1aa0d66";
+  "6c51576609a9d310d3307d333cf0e9170f5758a41b36f373b16508f2e4078730";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -379,6 +386,13 @@ function sameSet(left, right) {
   return (
     leftSorted.length === rightSorted.length &&
     leftSorted.every((value, index) => value === rightSorted[index])
+  );
+}
+
+function sameOrderedArray(left, right) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
   );
 }
 
@@ -828,7 +842,11 @@ function checkRequiredDocs(root, add) {
 async function checkCiContract(root, files, add) {
   const relativeCi = ".github/workflows/ci.yml";
   const absoluteCi = path.join(root, relativeCi);
-  const allowedWorkflows = new Set([relativeCi, RELEASE_SMOKE_PATH]);
+  const allowedWorkflows = new Set([
+    relativeCi,
+    FULL_CI_PATH,
+    RELEASE_SMOKE_PATH,
+  ]);
   for (const relativePath of files) {
     if (
       relativePath.startsWith(".github/") &&
@@ -842,6 +860,7 @@ async function checkCiContract(root, files, add) {
     }
   }
   await checkReleaseSmokeContract(root, files, add);
+  await checkFullCiContract(root, files, add);
   if (!existsSync(absoluteCi)) {
     return;
   }
@@ -858,7 +877,7 @@ async function checkCiContract(root, files, add) {
   const runCommands = [...content.matchAll(/^\s*run:\s*(.+?)\s*$/gmu)].map(
     (match) => match[1],
   );
-  if (!sameSet(runCommands, CI_RUN_COMMANDS)) {
+  if (!sameSet(new Set(runCommands), CI_RUN_COMMANDS)) {
     add(
       "ci.contract",
       relativeCi,
@@ -872,10 +891,7 @@ async function checkCiContract(root, files, add) {
   const runners = matrixMatch?.[1]
     ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
     : [];
-  if (
-    runners.length !== EXPECTED_CI_RUNNERS.length ||
-    !runners.every((runner, index) => runner === EXPECTED_CI_RUNNERS[index])
-  ) {
+  if (!sameOrderedArray(runners, EXPECTED_CI_RUNNERS)) {
     add(
       "ci.contract",
       relativeCi,
@@ -897,14 +913,17 @@ async function checkCiContract(root, files, add) {
       add("ci.contract", relativeCi, `missing CI contract: ${required}`);
     }
   }
+  const allowedUses = new Set([
+    "actions/checkout@v4",
+    "pnpm/action-setup@v4",
+    "actions/setup-node@v4",
+  ]);
   const uses = [...content.matchAll(/^\s*uses:\s*(\S+)\s*$/gmu)].map(
     (match) => match[1],
   );
   if (
-    uses.length !== 3 ||
-    uses[0] !== "actions/checkout@v4" ||
-    uses[1] !== "pnpm/action-setup@v4" ||
-    uses[2] !== "actions/setup-node@v4"
+    uses.some((action) => !allowedUses.has(action)) ||
+    [...allowedUses].some((action) => !uses.includes(action))
   ) {
     add(
       "ci.contract",
@@ -922,6 +941,93 @@ async function checkCiContract(root, files, add) {
         "ci.contract",
         relativeCi,
         "CI contains a condition, shell override, environment block, or alternate trigger",
+      );
+    }
+  }
+}
+
+async function checkFullCiContract(root, files, add) {
+  const absolutePath = path.join(root, FULL_CI_PATH);
+  if (!files.includes(FULL_CI_PATH)) {
+    add("ci.contract", FULL_CI_PATH, "full CI workflow is missing");
+    return;
+  }
+  const content = await readFile(absolutePath, "utf8");
+  const digest = createHash("sha256").update(content).digest("hex");
+  if (digest !== EXPECTED_FULL_CI_SHA256) {
+    add(
+      "ci.contract",
+      FULL_CI_PATH,
+      "workflow digest differs from the reviewed full CI contract",
+    );
+  }
+  const runCommands = [...content.matchAll(/^\s*run:\s*(.+?)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  if (!sameSet(new Set(runCommands), CI_RUN_COMMANDS)) {
+    add(
+      "ci.contract",
+      FULL_CI_PATH,
+      "full CI run commands differ from the reviewed gate sequence",
+    );
+  }
+  const matrixMatch = content.match(
+    /\n[ \t]+os:[ \t]*\n((?:[ \t]+-[ \t]+\S+[ \t]*\n?)+)/u,
+  );
+  const runners = matrixMatch?.[1]
+    ? [...matrixMatch[1].matchAll(/-\s+(\S+)/gu)].map((match) => match[1])
+    : [];
+  if (!sameOrderedArray(runners, EXPECTED_FULL_CI_RUNNERS)) {
+    add(
+      "ci.contract",
+      FULL_CI_PATH,
+      `full CI matrix must require ${EXPECTED_FULL_CI_RUNNERS.join(", ")}`,
+    );
+  }
+  for (const required of [
+    "workflow_dispatch:",
+    "tags:",
+    '- "v*"',
+    "permissions:\n  contents: read",
+    "runs-on: ${{ matrix.os }}",
+    "node-version: 22.19.0",
+    "uses: actions/checkout@v4",
+    "uses: pnpm/action-setup@v4",
+    "uses: actions/setup-node@v4",
+    "cache: pnpm",
+    "version: 12.18.0",
+  ]) {
+    if (!content.includes(required)) {
+      add("ci.contract", FULL_CI_PATH, `missing full CI contract: ${required}`);
+    }
+  }
+  const allowedUses = new Set([
+    "actions/checkout@v4",
+    "pnpm/action-setup@v4",
+    "actions/setup-node@v4",
+  ]);
+  const uses = [...content.matchAll(/^\s*uses:\s*(\S+)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  if (uses.some((action) => !allowedUses.has(action))) {
+    add(
+      "ci.contract",
+      FULL_CI_PATH,
+      "full CI may use only the reviewed checkout, pnpm setup, and setup-node actions",
+    );
+  }
+  for (const forbidden of [
+    /\bcontinue-on-error\s*:/iu,
+    /^\s*(?:if|shell|defaults|env)\s*:/gmu,
+    /\bpull_request\s*:/iu,
+    /^\s*branches\s*:/gmu,
+    /\bschedule\s*:/iu,
+  ]) {
+    if (forbidden.test(content)) {
+      add(
+        "ci.contract",
+        FULL_CI_PATH,
+        "full CI contains a condition, shell override, environment block, branch trigger, pull request trigger, or schedule",
       );
     }
   }
@@ -1043,7 +1149,7 @@ async function checkReleaseSmokeContract(root, files, add) {
 }
 
 async function checkPlatformDocumentation(root, add) {
-  const runnerLine = `CI runners: ${EXPECTED_CI_RUNNERS.map(
+  const runnerLine = `CI runners: ${EXPECTED_FULL_CI_RUNNERS.map(
     (runner) => `\`${runner}\``,
   ).join(", ")}.`;
   const documents = ["README.md", "docs/DEVELOPMENT.md", "docs/PLATFORMS.md"];
@@ -1136,13 +1242,15 @@ async function checkPlatformDocumentation(root, add) {
     );
   }
   if (
-    runners.length !== EXPECTED_CI_RUNNERS.length ||
-    !runners.every((runner, index) => runner === EXPECTED_CI_RUNNERS[index])
+    runners.length !== EXPECTED_FULL_CI_RUNNERS.length ||
+    !runners.every(
+      (runner, index) => runner === EXPECTED_FULL_CI_RUNNERS[index],
+    )
   ) {
     add(
       "docs.platforms",
       relativePath,
-      `CI runner table must require ${EXPECTED_CI_RUNNERS.join(", ")} in order`,
+      `CI runner table must require ${EXPECTED_FULL_CI_RUNNERS.join(", ")} in order`,
     );
   }
 }
