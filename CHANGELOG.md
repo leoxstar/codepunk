@@ -13,8 +13,9 @@ No changes have been recorded yet.
 
 ### Added
 
-- Release candidate for the Codepunk protocol, core, and CLI packages. The
-  candidate is not published to npm until the release runbook completes.
+- First public npm release of the Codepunk protocol, core, and CLI packages,
+  published as `codepunk-protocol`, `codepunk-core`, and `codepunk-cli` at
+  `0.1.0`.
 
 ### Fixed
 

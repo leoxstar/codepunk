@@ -74,7 +74,7 @@ WSL2 smoke test.
 Windows 11 x64 support is still not claimed as verified. The 0007 code path
 and the hosted `windows-latest` job are implemented. Run `44352649879` does
 not provide Windows gate evidence; its unprovisioned-`srt` failure is fixed
-for the release candidate. Full CI run `44473437813` passed the hosted gate
+for the release. Full CI run `44473437813` passed the hosted gate
 at `818 tests / 774 pass / 0 fail / 44 skipped`. That hosted gate includes
 explicit skips for 10 daemon/view
 tests because the daemon requires a Unix socket and Windows is fail-closed,
