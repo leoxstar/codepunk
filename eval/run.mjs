@@ -139,6 +139,67 @@ function fakeSandbox(onExec) {
   };
 }
 
+async function wallClockSandbox(paths) {
+  const input = {
+    cwd: paths.workspace,
+    workspaceRoot: paths.workspace,
+    deliveryRoot: paths.workspace,
+    codepunkHome: paths.home,
+    writeSet: [paths.workspace],
+    networkAllow: [],
+  };
+  if (process.platform === "win32") {
+    // Hosted Windows cannot provision the privileged srt sandbox. Keep the
+    // wall-budget contract under test with a deterministic provider; Unix
+    // still exercises the real srt path below.
+    const issue = await core.probeSrtSandbox(input);
+    if (issue !== null) {
+      return fakeWallClockSandbox();
+    }
+  }
+  try {
+    return await core.SrtSandbox.create(input);
+  } catch (error) {
+    if (
+      process.platform === "win32" &&
+      error instanceof Error &&
+      error.name === "SandboxUnavailableError"
+    ) {
+      return fakeWallClockSandbox();
+    }
+    throw error;
+  }
+}
+
+function fakeWallClockSandbox() {
+  let sandbox;
+  sandbox = fakeSandbox((_command, _cwd, options = {}) => {
+    return new Promise((resolve) => {
+      const timer = setTimeout(
+        () => resolve(successfulShellResult(sandbox.descriptor)),
+        10_000,
+      );
+      const abort = () => {
+        clearTimeout(timer);
+        resolve({
+          output: "",
+          exitCode: null,
+          cancelled: true,
+          timedOut: false,
+          executor: "srt",
+          descriptor: sandbox.descriptor,
+        });
+      };
+      if (options.signal?.aborted === true) {
+        abort();
+        return;
+      }
+      options.signal?.addEventListener("abort", abort, { once: true });
+    });
+  });
+  return sandbox;
+}
+
 function successfulShellResult(descriptor, output = "ok\n") {
   return {
     output,
@@ -272,14 +333,7 @@ async function runToolCallBudget(paths, ledger) {
 }
 
 async function runWallClockBudget(paths, ledger) {
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.workspace,
-    workspaceRoot: paths.workspace,
-    deliveryRoot: paths.workspace,
-    codepunkHome: paths.home,
-    writeSet: [paths.workspace],
-    networkAllow: [],
-  });
+  const sandbox = await wallClockSandbox(paths);
   try {
     const store = await core.SessionStore.create({
       rootDir: paths.home,
@@ -335,12 +389,15 @@ async function runWallClockBudget(paths, ledger) {
         (message) => message.role === "toolResult",
       );
       assert.ok(toolResult);
-      assert.match(JSON.stringify(toolResult.content), /Command aborted/u);
+      assert.match(
+        JSON.stringify(toolResult.content),
+        /Command aborted|Operation aborted/u,
+      );
     } finally {
       await host.dispose();
     }
   } finally {
-    await sandbox.close();
+    await sandbox.close?.();
   }
 }
 
