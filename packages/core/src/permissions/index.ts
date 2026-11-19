@@ -1,4 +1,4 @@
-import type { Decision, PolicyDecision } from "@codepunk/protocol";
+import type { Decision, PolicyDecision } from "codepunk-protocol";
 import type { AutonomyController, ScopedRule } from "../autonomy/index.ts";
 import {
   effectiveApprovalDecision,

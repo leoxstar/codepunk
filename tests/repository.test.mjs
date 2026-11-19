@@ -549,7 +549,7 @@ const NEGATIVE_CASES = [
     path: "packages/protocol/package.json",
     async apply(root) {
       return mutateJson(root, "packages/protocol/package.json", (manifest) => {
-        manifest.dependencies["@codepunk/core"] = "0.0.0";
+        manifest.dependencies["codepunk-core"] = "0.0.0";
       });
     },
   },
@@ -569,7 +569,7 @@ const NEGATIVE_CASES = [
     path: "packages/cli/package.json",
     async apply(root) {
       return mutateJson(root, "packages/cli/package.json", (manifest) => {
-        manifest.dependencies["@codepunk/protocol"] = "0.0.0";
+        manifest.dependencies["codepunk-protocol"] = "0.0.0";
       });
     },
   },
@@ -746,7 +746,7 @@ const NEGATIVE_CASES = [
     async apply(root) {
       return replaceFile(root, "packages/core/src/index.ts", () => {
         return [
-          'import type { ProtocolFixture } from "@codepunk/protocol/dist/index.js";',
+          'import type { ProtocolFixture } from "codepunk-protocol/dist/index.js";',
           "export type CoreFixture = ProtocolFixture;",
           "",
         ].join("\n");
@@ -760,7 +760,7 @@ const NEGATIVE_CASES = [
     async apply(root) {
       return replaceFile(root, "packages/core/src/index.ts", () => {
         return [
-          'const moduleName = "@codepunk/protocol/dist/index.js";',
+          'const moduleName = "codepunk-protocol/dist/index.js";',
           "export const load = () => import(moduleName);",
           "",
         ].join("\n");
@@ -774,7 +774,7 @@ const NEGATIVE_CASES = [
     async apply(root) {
       return replaceFile(root, "packages/cli/src/tui.ts", (content) => {
         return `${content}
-const extraModuleSpecifier = "@codepunk/protocol";
+const extraModuleSpecifier = "codepunk-protocol";
 export const loadExtraModule = () => import(extraModuleSpecifier);
 `;
       });
@@ -1631,7 +1631,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         name: "release-smoke rejects a push trigger",
         transform: (content) =>
           content.replace(
-            "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Published @codepunk/cli version, for example 0.1.0\n        required: true\n        type: string\n",
+            "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Published codepunk-cli version, for example 0.1.0\n        required: true\n        type: string\n",
             "on:\n  push:\n",
           ),
         message: /only workflow_dispatch may trigger the release smoke/u,

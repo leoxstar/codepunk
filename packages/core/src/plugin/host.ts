@@ -7,13 +7,13 @@ import type {
   PluginErrorCode,
   PluginMethod,
   PluginResponse,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import {
   PLUGIN_MAX_FRAME_BYTES,
   PLUGIN_PROTOCOL_VERSION,
   validateSchema,
   PluginResponseSchema,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { spawnGuardedHost } from "../workers/sandbox.ts";
 import { PluginError } from "./index.ts";
 import type { PluginManifest } from "./manifest.ts";

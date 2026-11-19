@@ -1,4 +1,4 @@
-import type { TaskSpec } from "@codepunk/protocol";
+import type { TaskSpec } from "codepunk-protocol";
 import { pathCoveredBySet } from "../delivery/merge.ts";
 
 export interface WorkerBudget {

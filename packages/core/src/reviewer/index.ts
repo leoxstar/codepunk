@@ -1,5 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ReviewerEvidence } from "@codepunk/protocol";
+import type { ReviewerEvidence } from "codepunk-protocol";
 import { redactOutputPreview } from "../artifacts/index.ts";
 import { canonicalJson, sha256Text } from "../platform/hash.ts";
 

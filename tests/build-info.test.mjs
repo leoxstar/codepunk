@@ -18,7 +18,7 @@ async function writeFixturePackage(root, name) {
   await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
   await fs.writeFile(
     path.join(packageRoot, "package.json"),
-    `${JSON.stringify({ name: `@codepunk/${name}`, version: "0.0.0" })}\n`,
+    `${JSON.stringify({ name: `codepunk-${name}`, version: "0.0.0" })}\n`,
   );
   await fs.writeFile(
     path.join(packageRoot, "src", "index.ts"),

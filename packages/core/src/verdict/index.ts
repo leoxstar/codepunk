@@ -6,7 +6,7 @@ import type {
   SignOffRequest,
   Verdict,
   VerdictValue,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import {
   evidenceRecordHash,
   validateEvidenceChain,

@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { type SessionEvent, type SignOffRequest } from "@codepunk/protocol";
+import { type SessionEvent, type SignOffRequest } from "codepunk-protocol";
 import type {
   AgentSession,
   AgentSessionServices,
@@ -162,7 +162,7 @@ export interface RuntimeOptions {
 }
 
 export interface RuntimeSignResult {
-  verdict: import("@codepunk/protocol").Verdict;
+  verdict: import("codepunk-protocol").Verdict;
   artifactPath: string;
   issues: string[];
 }
@@ -193,7 +193,7 @@ export class RunLedger {
     return this.currentPath;
   }
 
-  get all(): readonly import("@codepunk/protocol").EvidenceRecord[] {
+  get all(): readonly import("codepunk-protocol").EvidenceRecord[] {
     return this.current?.all ?? [];
   }
 
@@ -207,7 +207,7 @@ export class RunLedger {
 
   async append(
     input: EvidenceAppendInput,
-  ): Promise<import("@codepunk/protocol").EvidenceRecord> {
+  ): Promise<import("codepunk-protocol").EvidenceRecord> {
     if (this.current === null) {
       throw new Error("run ledger is not initialized");
     }

@@ -114,7 +114,7 @@ import {
   type WorkspaceTrust,
   WORKSPACE_TRUST_RESOURCE_KINDS,
   type WorkspaceTrustResourceKind,
-} from "@codepunk/core";
+} from "codepunk-core";
 import type {
   ApprovalAnswer,
   ApprovalRequest,
@@ -123,7 +123,7 @@ import type {
   MergeRecord,
   TaskHandoff,
   Verdict,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { appendBuildDoctorCheck, inspectCliBuild } from "./build-info.ts";
 import {
   nextRecentModel,

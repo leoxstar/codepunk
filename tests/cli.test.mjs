@@ -1389,7 +1389,7 @@ test("install refuses the unpublished placeholder version", async () => {
     });
     assert.match(
       ownVersion.stdout,
-      new RegExp(`@codepunk/cli@${escapeRegExp(PRODUCT_VERSION)}`, "u"),
+      new RegExp(`codepunk-cli@${escapeRegExp(PRODUCT_VERSION)}`, "u"),
     );
 
     const dryRun = await runCli(
@@ -1397,7 +1397,7 @@ test("install refuses the unpublished placeholder version", async () => {
       { cwd: project, home },
     );
     assert.match(dryRun.stdout, /npm install/u);
-    assert.match(dryRun.stdout, /@codepunk\/cli@9\.9\.9/u);
+    assert.match(dryRun.stdout, /codepunk-cli@9\.9\.9/u);
   });
 });
 

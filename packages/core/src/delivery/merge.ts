@@ -5,8 +5,8 @@ import type {
   TaskHandoff,
   TaskSpec,
   Verdict,
-} from "@codepunk/protocol";
-import { MergeRecordSchema, validateSchema } from "@codepunk/protocol";
+} from "codepunk-protocol";
+import { MergeRecordSchema, validateSchema } from "codepunk-protocol";
 import { evidenceRecordHash, readEvidenceFile } from "../evidence/index.ts";
 import { atomicWriteFile } from "../platform/fs.ts";
 import { createUlid, recordHash, sha256Bytes } from "../platform/hash.ts";

@@ -8,7 +8,7 @@ import {
   validateSchema,
   type Notification,
   type WorkItem,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { appendFileSynced } from "../platform/fs.ts";
 import { atomicWriteFile } from "../platform/fs.ts";
 import { createUlid } from "../platform/hash.ts";

@@ -228,10 +228,10 @@ importers:
 
   packages/cli:
     dependencies:
-      "@codepunk/core":
+      codepunk-core:
         specifier: 0.1.0
         version: link:../core
-      "@codepunk/protocol":
+      codepunk-protocol:
         specifier: 0.1.0
         version: link:../protocol
       "@earendil-works/pi-coding-agent":
@@ -246,7 +246,7 @@ importers:
       "@anthropic-ai/sandbox-runtime":
         specifier: 0.0.82
         version: 0.0.82
-      "@codepunk/protocol":
+      codepunk-protocol:
         specifier: 0.1.0
         version: link:../protocol
       "@earendil-works/pi-ai":

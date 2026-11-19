@@ -1,4 +1,4 @@
-import type { TaskSpec } from "@codepunk/protocol";
+import type { TaskSpec } from "codepunk-protocol";
 import { ApprovalBroker, type ApprovalChannel } from "../approval/index.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 

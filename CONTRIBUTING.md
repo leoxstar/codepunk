@@ -20,14 +20,14 @@ TypeScript strict mode. `pnpm-lock.yaml` is committed; CI installs with
 The required dependency direction is:
 
 ```text
-@codepunk/protocol <- @codepunk/core <- @codepunk/cli
+codepunk-protocol <- codepunk-core <- codepunk-cli
 ```
 
-- `@codepunk/protocol` owns boundary schemas, record shapes, and version
+- `codepunk-protocol` owns boundary schemas, record shapes, and version
   constants. It does not import `core` or `cli`.
-- `@codepunk/core` owns the engine and host integration. It imports
-  `@codepunk/protocol` only.
-- `@codepunk/cli` owns terminal and headless surfaces. It imports `core` and
+- `codepunk-core` owns the engine and host integration. It imports
+  `codepunk-protocol` only.
+- `codepunk-cli` owns terminal and headless surfaces. It imports `core` and
   `protocol`, and does not own policy or tool execution.
 
 Cross-package imports must use public `exports` entry points. A boundary change

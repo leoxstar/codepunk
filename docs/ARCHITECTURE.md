@@ -9,10 +9,10 @@ points, runtime ownership, and excluded surfaces.
 
 ```text
 packages/cli
-  imports -> @codepunk/core, @codepunk/protocol
+  imports -> codepunk-core, codepunk-protocol
 
 packages/core
-  imports -> @codepunk/protocol
+  imports -> codepunk-protocol
 
 packages/protocol
   imports -> no Codepunk package
@@ -24,11 +24,11 @@ subpath imports into another package are rejected.
 
 ## Ownership
 
-| Package              | Owns                                                                                                             | Must not own                                                     |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `@codepunk/protocol` | Boundary schemas, record shapes, daemon envelopes, version constants                                             | Engine behavior, terminal behavior, host adapters                |
-| `@codepunk/core`     | Runtime, policy boundary, approvals, sandbox, tools, evidence, sessions, delivery, workers, daemon server/client | Terminal rendering, command-line parsing, product surface policy |
-| `@codepunk/cli`      | TUI, print/JSON output, daemon/view surfaces, approvals channel, arguments, exit codes                           | Policy decisions, direct tool execution, hidden business rules   |
+| Package             | Owns                                                                                                             | Must not own                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `codepunk-protocol` | Boundary schemas, record shapes, daemon envelopes, version constants                                             | Engine behavior, terminal behavior, host adapters                |
+| `codepunk-core`     | Runtime, policy boundary, approvals, sandbox, tools, evidence, sessions, delivery, workers, daemon server/client | Terminal rendering, command-line parsing, product surface policy |
+| `codepunk-cli`      | TUI, print/JSON output, daemon/view surfaces, approvals channel, arguments, exit codes                           | Policy decisions, direct tool execution, hidden business rules   |
 
 ## Public entry points
 

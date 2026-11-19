@@ -1,4 +1,4 @@
-import type { TaskSpec } from "@codepunk/protocol";
+import type { TaskSpec } from "codepunk-protocol";
 import { createTaskSpec, type TaskSpecInput } from "./spec.ts";
 
 export const REQUIREMENT_ANGLES = [

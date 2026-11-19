@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Published @codepunk/cli version, for example 0.1.0
+        description: Published codepunk-cli version, for example 0.1.0
         required: true
         type: string
 

@@ -6,7 +6,7 @@ import {
   resolveModelScopeWithDiagnostics,
   type MessageEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { SessionEvent } from "@codepunk/protocol";
+import type { SessionEvent } from "codepunk-protocol";
 import {
   writeUserModelSelection,
   type CodepunkConfig,

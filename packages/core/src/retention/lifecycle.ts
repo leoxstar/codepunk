@@ -5,7 +5,7 @@ import {
   RetentionOperationSchema,
   type RetentionOperation,
   validateSchema,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { ensurePrivateDir, atomicWriteFile } from "../platform/fs.ts";
 import { canonicalJson, sha256Text } from "../platform/hash.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";

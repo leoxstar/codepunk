@@ -14,8 +14,8 @@ import type {
   EvidenceRecord,
   PolicyDecision,
   SandboxDescriptor,
-} from "@codepunk/protocol";
-import { validateSchema } from "@codepunk/protocol";
+} from "codepunk-protocol";
+import { validateSchema } from "codepunk-protocol";
 import type { ApprovalBroker } from "../approval/index.ts";
 import type { ApprovalResult } from "../approval/index.ts";
 import type { CheckpointStore } from "../checkpoints/index.ts";

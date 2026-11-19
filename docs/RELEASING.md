@@ -16,7 +16,8 @@ platform statement in `docs/PLATFORMS.md` agrees with the matrix in
 - On Linux, install the sandbox dependencies required by
   `scripts/ci-install-sandbox-deps.sh`; macOS uses the built-in Seatbelt
   sandbox.
-- Confirm npm authentication and `@codepunk` publish access:
+- Confirm npm authentication and publish access for `codepunk-protocol`,
+  `codepunk-core`, and `codepunk-cli`:
 
   ```text
   npm whoami
@@ -101,8 +102,8 @@ It never repeats `npm publish`.
 
   require_absent() {
     local package="$1" output status=0
-    output="$(npm view "@codepunk/$package@0.1.0" version 2>&1)" || status=$?
-    printf '%s: exit %s\n%s\n' "@codepunk/$package@0.1.0" "$status" "$output"
+    output="$(npm view "codepunk-$package@0.1.0" version 2>&1)" || status=$?
+    printf '%s: exit %s\n%s\n' "codepunk-$package@0.1.0" "$status" "$output"
     if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
       return 1
     fi
@@ -110,8 +111,8 @@ It never repeats `npm publish`.
 
   require_visible() {
     local package="$1" output status=0
-    output="$(npm view "@codepunk/$package@0.1.0" version 2>&1)" || status=$?
-    printf '%s: exit %s\n%s\n' "@codepunk/$package@0.1.0" "$status" "$output"
+    output="$(npm view "codepunk-$package@0.1.0" version 2>&1)" || status=$?
+    printf '%s: exit %s\n%s\n' "codepunk-$package@0.1.0" "$status" "$output"
     test "$status" -eq 0 && test "$output" = '0.1.0'
   }
 
@@ -127,10 +128,10 @@ It never repeats `npm publish`.
       attempt_start="$SECONDS"
       attempt=$((attempt + 1))
       status=0
-      output="$(npm view "@codepunk/$package@0.1.0" version \
+      output="$(npm view "codepunk-$package@0.1.0" version \
         --fetch-retries=0 --fetch-timeout="$timeout" 2>&1)" || status=$?
       printf '%s attempt %s: exit %s\n%s\n' \
-        "@codepunk/$package@0.1.0" "$attempt" "$status" "$output"
+        "codepunk-$package@0.1.0" "$attempt" "$status" "$output"
       if [ "$status" -eq 0 ] && [ "$output" = '0.1.0' ]; then return 0; fi
       if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
         return 1
@@ -170,14 +171,14 @@ Verify versions, internal dependencies, and the registry tarballs:
   set -euo pipefail
   temp_dir="$(mktemp -d)"
   trap 'rm -rf -- "$temp_dir"' EXIT
-  test "$(npm view @codepunk/cli@0.1.0 version)" = "0.1.0"
-  npm view @codepunk/core@0.1.0 dependencies --json | jq -e \
-    '.["@codepunk/protocol"] == "0.1.0"'
-  npm view @codepunk/cli@0.1.0 dependencies --json | jq -e \
-    '.["@codepunk/core"] == "0.1.0" and .["@codepunk/protocol"] == "0.1.0"'
+  test "$(npm view codepunk-cli@0.1.0 version)" = "0.1.0"
+  npm view codepunk-core@0.1.0 dependencies --json | jq -e \
+    '.["codepunk-protocol"] == "0.1.0"'
+  npm view codepunk-cli@0.1.0 dependencies --json | jq -e \
+    '.["codepunk-core"] == "0.1.0" and .["codepunk-protocol"] == "0.1.0"'
 
   for package in protocol core cli; do
-    tarball="$(npm view "@codepunk/$package@0.1.0" dist.tarball)"
+    tarball="$(npm view "codepunk-$package@0.1.0" dist.tarball)"
     curl -fsSL "$tarball" -o "$temp_dir/$package.tgz"
     tar -tzf "$temp_dir/$package.tgz" > "$temp_dir/$package.entries"
     for entry in package/LICENSE package/README.md package/package.json package/dist/index.js; do
@@ -202,7 +203,7 @@ error, including a missing sandbox dependency, fails the smoke test.
   cd "$temp_dir"
 
   install_status=0
-  HOME="$temp_dir/home" npm install -g --prefix "$temp_dir/prefix" @codepunk/cli@0.1.0 || install_status=$?
+  HOME="$temp_dir/home" npm install -g --prefix "$temp_dir/prefix" codepunk-cli@0.1.0 || install_status=$?
   printf 'npm install exit: %s\n' "$install_status"
   test "$install_status" -eq 0
 
@@ -227,7 +228,7 @@ error, including a missing sandbox dependency, fails the smoke test.
     --package-version 0.1.0 --dry-run 2>&1)" || self_install_status=$?
   printf '%s\nself-install exit: %s\n' "$self_install_output" "$self_install_status"
   test "$self_install_status" -eq 0
-  grep -Fq 'npm install --global --no-audit --no-fund @codepunk/cli@0.1.0' <<< "$self_install_output"
+  grep -Fq 'npm install --global --no-audit --no-fund codepunk-cli@0.1.0' <<< "$self_install_output"
 )
 ```
 
@@ -242,9 +243,9 @@ the Windows result as `unverified` and do not claim Windows support in the
 release notes.
 
 The three local tarballs must be installed by one `npm install` command so npm
-does not resolve `@codepunk/*` from the registry. Keep the `--loglevel=http`
+does not resolve `codepunk-*` from the registry. Keep the `--loglevel=http`
 output with the release evidence and confirm it contains no registry request
-for an `@codepunk/` package.
+for a `codepunk-` package.
 
 ```powershell
 $ErrorActionPreference = "Stop"
@@ -350,7 +351,7 @@ failure; do not silently retry:
   version and publish a patch. For example:
 
   ```text
-  npm deprecate @codepunk/protocol@0.1.0 "Use the corrected release instead."
+  npm deprecate codepunk-protocol@0.1.0 "Use the corrected release instead."
   ```
 
   Repeat for each affected package.

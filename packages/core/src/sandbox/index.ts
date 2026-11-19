@@ -15,7 +15,7 @@ import {
   type WrapWithSandboxOptions,
 } from "@anthropic-ai/sandbox-runtime";
 export type { WindowsBinShell } from "@anthropic-ai/sandbox-runtime";
-import type { SandboxDescriptor } from "@codepunk/protocol";
+import type { SandboxDescriptor } from "codepunk-protocol";
 import { ConfigError } from "../config/index.ts";
 import { NetworkGuard, type NetworkEventSink } from "../network/index.ts";
 import { sha256Value } from "../platform/hash.ts";

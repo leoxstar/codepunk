@@ -9,7 +9,7 @@ import {
   type SessionLockRecord,
 } from "../session/index.ts";
 import { readEvidenceFile } from "../evidence/index.ts";
-import type { EvidenceRecord } from "@codepunk/protocol";
+import type { EvidenceRecord } from "codepunk-protocol";
 
 export interface RetentionConfig {
   sessionDays: number;

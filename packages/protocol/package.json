@@ -1,5 +1,5 @@
 {
-  "name": "@codepunk/protocol",
+  "name": "codepunk-protocol",
   "version": "0.1.0",
   "description": "Boundary schemas, record shapes, and version constants.",
   "license": "MIT",

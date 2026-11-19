@@ -7,11 +7,11 @@ export const REPO_ROOT = path.resolve(TESTS_DIR, "..", "..");
 
 const SOURCE_PACKAGES = new Map([
   [
-    "@codepunk/protocol",
+    "codepunk-protocol",
     path.join(REPO_ROOT, "packages", "protocol", "src", "index.ts"),
   ],
   [
-    "@codepunk/core",
+    "codepunk-core",
     path.join(REPO_ROOT, "packages", "core", "src", "index.ts"),
   ],
 ]);
@@ -36,12 +36,12 @@ function ensureHooks() {
 
 export async function importCore() {
   ensureHooks();
-  return import(pathToFileURL(SOURCE_PACKAGES.get("@codepunk/core")).href);
+  return import(pathToFileURL(SOURCE_PACKAGES.get("codepunk-core")).href);
 }
 
 export async function importProtocol() {
   ensureHooks();
-  return import(pathToFileURL(SOURCE_PACKAGES.get("@codepunk/protocol")).href);
+  return import(pathToFileURL(SOURCE_PACKAGES.get("codepunk-protocol")).href);
 }
 
 export async function importSource(relativePath) {

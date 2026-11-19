@@ -5,7 +5,7 @@ import {
   EvidenceRecordSchema,
   validateSchema,
   type EvidenceRecord,
-} from "@codepunk/protocol";
+} from "codepunk-protocol";
 import { appendFileSynced, ensurePrivateDir } from "../platform/fs.ts";
 import { canonicalJson, recordHash, sha256Text } from "../platform/hash.ts";
 
