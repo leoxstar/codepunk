@@ -2,11 +2,12 @@
 
 ## CI targets
 
-These are configured CI targets. Latest run `44352649879` had five Unix jobs
-successful, `macos-15` cancelled, and `windows-latest` failed before the
-unprovisioned-`srt` readiness fix. The release commit must pass all seven
-jobs. `windows-latest` is hosted-CI evidence only and is not a Windows 11
-support claim:
+These are the seven targets in the full release matrix. Full CI run
+`44473437813` passed all seven jobs, including the hosted Windows suite.
+The routine push gate runs the full test gate only on Ubuntu 24.04 and
+build-checks macOS 15 and Windows Server 2025; the seven-target matrix runs
+only from manual dispatch or a `v*` tag. `windows-latest` is hosted-CI
+evidence only and is not a Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
@@ -24,15 +25,18 @@ CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `mac
 
 <!-- ci-targets:end -->
 
-The CI matrix is configured to run the full repository gate on each target:
-install, formatting, repository checks, typecheck, tests, build, and
-built-entry checks. The current local baseline at commit `def0646` is
-`# tests 815 / # pass 806 / # fail 0 / # skipped 9`; run `44352649879` is not
-release evidence because it did not complete all seven jobs. `windows-latest`
-is Windows Server 2025 (`10.0.26100`, image `windows-2025-vs2026`), not
-Windows 11, and does not replace the real-machine acceptance in spec 0007.
-The release runbook additionally requires a clean global install and
-`codepunk doctor` smoke test on each release target.
+The full matrix runs install, formatting, repository checks, typecheck,
+tests, eval, build, and built-entry checks on each target. The current local
+baseline at `main` (`2ca8739`) is
+`# tests 820 / # pass 811 / # fail 0 / # skipped 9`; `pnpm run eval` passes
+12/12 cases. Fast run `44480731591` passed all four routine jobs. The release
+candidate `c0383fa` reports 818 tests, 809 passing, 0 failing, and 9 skipped,
+and run `44473437813` passed all seven full-matrix jobs.
+`windows-latest` is Windows Server 2025 (`10.0.26100`, image
+`windows-2025-vs2026`), not Windows 11, and does not replace the
+real-machine acceptance in spec 0007. The release runbook additionally
+requires a clean global install and `codepunk doctor` smoke test on each
+release target.
 
 Node.js `>=22.19.0` is required. Linux needs the dependencies required by the
 pinned `srt` release, including bubblewrap, socat, and ripgrep. Run as a
@@ -70,8 +74,9 @@ WSL2 smoke test.
 Windows 11 x64 support is still not claimed as verified. The 0007 code path
 and the hosted `windows-latest` job are implemented. Run `44352649879` does
 not provide Windows gate evidence; its unprovisioned-`srt` failure is fixed
-for the release candidate and the release commit must pass the hosted gate.
-That hosted gate is expected to include explicit skips for 10 daemon/view
+for the release candidate. Full CI run `44473437813` passed the hosted gate
+at `818 tests / 774 pass / 0 fail / 44 skipped`. That hosted gate includes
+explicit skips for 10 daemon/view
 tests because the daemon requires a Unix socket and Windows is fail-closed,
 23 tests that use POSIX executables, shell syntax, permission bits, or mount
 types, and tests that require the one-time elevated `srt-win` provisioning.

@@ -141,20 +141,28 @@ false positives.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` defines seven CI targets. The current local
-baseline at commit `def0646` reports 815 tests, 806 passing, 0 failing, and
-9 skipped; latest run `44352649879` is not release evidence because it had
-five Unix jobs successful, `macos-15` cancelled, and `windows-latest` failed
-before the unprovisioned-`srt` readiness fix. `windows-latest` covers
-non-privileged Windows checks and is not a Windows 11 support claim:
+`.github/workflows/ci.yml` is the routine push and pull-request gate. It
+ignores docs-only changes, runs the full repository gate on Ubuntu 24.04, and
+build-checks the macOS 15 and Windows Server 2025 runners. The full
+seven-target matrix is in `.github/workflows/full-ci.yml` and runs only from
+manual dispatch or a `v*` tag. It is not scheduled, so routine pushes do not
+repeat the Windows test suite. Fast run `44480731591` passed all four jobs:
+lint 29 s, Ubuntu test 5m46s, macOS build 37 s, and Windows build 54 s. The
+current local baseline at `main` (`2ca8739`) reports 820 tests, 811 passing,
+0 failing, and 9 skipped; `pnpm run eval` passes 12/12 cases. The release
+candidate `c0383fa` reports 818 tests, 809 passing, 0 failing, and 9 skipped,
+and full CI run `44473437813` passed all seven targets. `windows-latest`
+covers non-privileged Windows checks and is not a Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
-Each target is configured to run the same install, formatting, repository,
-typecheck, test, build, and built-entry checks. The workflow uses
-`pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64 is manual-smoke only
-and is not CI-covered. Windows is not claimed; the 0007 code and hosted gate
-are complete, but real Windows 11 x64 acceptance evidence is still missing.
+Each full-matrix target runs install, formatting, repository, typecheck,
+test, eval, build, and built-entry checks. The routine build jobs install and
+check only the built entry points; the Ubuntu test job still runs the full
+gate. The workflows use `pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64
+is manual-smoke only and is not CI-covered. Windows is not claimed; the 0007
+code and hosted gate are complete, but real Windows 11 x64 acceptance
+evidence is still missing.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without
@@ -170,32 +178,32 @@ from pinned GitHub release archives and skips privileged `srt` provisioning.
 
 `scripts/check-repo.mjs` reports stable rule identifiers:
 
-| Rule                       | Guards                                                                  |
-| -------------------------- | ----------------------------------------------------------------------- |
-| `repo.root`                | Only reviewed root entries are present                                  |
-| `repo.docs`                | Required product documentation exists                                   |
-| `repo.lineEndings`         | LF policy and no carriage returns in repository text files              |
-| `docs.link`                | Local Markdown links resolve inside the repository                      |
-| `docs.absolute`            | Markdown does not link to an absolute path                              |
-| `docs.contract`            | Documentation records reviewed commands, pins, and dependency risk      |
-| `docs.platforms`           | Exact runner line in three docs and the ordered six-row CI target table |
-| `pkg.layout`               | Exactly the three product packages exist                                |
-| `pkg.manifest`             | Identity, module type, license, Node engine, and exact script commands  |
-| `pkg.exports`              | One public entry point with import/type targets and no deep exports     |
-| `pkg.built`                | Built entry points exist and are newer than source                      |
-| `deps.direction`           | Internal dependencies follow the package direction                      |
-| `deps.pin`                 | Direct dependency versions are exact and match the reviewed set         |
-| `deps.review`              | No unreviewed dependency, override, or lifecycle hook                   |
-| `deps.lock`                | Reviewed digest, workspace links, resolved versions, and integrity      |
-| `source.import`            | No upward, deep, escaping, computed, or research import                 |
-| `ci.contract`              | Exact workflow digest, triggers, actions, runners, and blocking steps   |
-| `repo.controls`            | The reviewed negative-control corpus is present and unchanged           |
-| `hygiene.forbidden`        | No research, runtime, generated, log, or editor artifact                |
-| `hygiene.env`              | No local environment or credential file; templates remain allowed       |
-| `hygiene.binary`           | No binary or NUL-containing file in the product tree                    |
-| `security.absolute-path`   | No local personal absolute path                                         |
-| `security.credential`      | No obvious credential-shaped value                                      |
-| `security.research-import` | No import from verification or research material                        |
+| Rule                       | Guards                                                                    |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `repo.root`                | Only reviewed root entries are present                                    |
+| `repo.docs`                | Required product documentation exists                                     |
+| `repo.lineEndings`         | LF policy and no carriage returns in repository text files                |
+| `docs.link`                | Local Markdown links resolve inside the repository                        |
+| `docs.absolute`            | Markdown does not link to an absolute path                                |
+| `docs.contract`            | Documentation records reviewed commands, pins, and dependency risk        |
+| `docs.platforms`           | Exact runner line in three docs and the ordered seven-row CI target table |
+| `pkg.layout`               | Exactly the three product packages exist                                  |
+| `pkg.manifest`             | Identity, module type, license, Node engine, and exact script commands    |
+| `pkg.exports`              | One public entry point with import/type targets and no deep exports       |
+| `pkg.built`                | Built entry points exist and are newer than source                        |
+| `deps.direction`           | Internal dependencies follow the package direction                        |
+| `deps.pin`                 | Direct dependency versions are exact and match the reviewed set           |
+| `deps.review`              | No unreviewed dependency, override, or lifecycle hook                     |
+| `deps.lock`                | Reviewed digest, workspace links, resolved versions, and integrity        |
+| `source.import`            | No upward, deep, escaping, computed, or research import                   |
+| `ci.contract`              | Exact workflow digest, triggers, actions, runners, and blocking steps     |
+| `repo.controls`            | The reviewed negative-control corpus is present and unchanged             |
+| `hygiene.forbidden`        | No research, runtime, generated, log, or editor artifact                  |
+| `hygiene.env`              | No local environment or credential file; templates remain allowed         |
+| `hygiene.binary`           | No binary or NUL-containing file in the product tree                      |
+| `security.absolute-path`   | No local personal absolute path                                           |
+| `security.credential`      | No obvious credential-shaped value                                        |
+| `security.research-import` | No import from verification or research material                          |
 
 ## Release checklist
 
