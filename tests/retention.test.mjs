@@ -6,6 +6,7 @@ import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import { chainRecords, readRecord } from "./support/fixtures.mjs";
 import {
+  assertPrivateFile,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -548,5 +549,36 @@ test("migrate backs up and restores on failure", async () => {
     const migrated = await core.checkMigration(paths.home);
     assert.equal(migrated.required, false);
     assert.equal(migrated.current, core.STATE_VERSION);
+  });
+});
+
+test("fresh homes are current and legacy homes still require migration", async () => {
+  await withTempDirectory("codepunk-state-version-", async (root) => {
+    const missingHome = path.join(root, "missing-home");
+    const missingCheck = await core.checkMigration(missingHome);
+    assert.deepEqual(missingCheck, {
+      current: core.STATE_VERSION,
+      target: core.STATE_VERSION,
+      required: false,
+    });
+    await assert.rejects(fs.access(missingHome), { code: "ENOENT" });
+
+    const emptyHome = path.join(root, "empty-home");
+    await fs.mkdir(emptyHome);
+    const emptyCheck = await core.checkMigration(emptyHome);
+    assert.deepEqual(emptyCheck, {
+      current: core.STATE_VERSION,
+      target: core.STATE_VERSION,
+      required: false,
+    });
+
+    const legacyHome = path.join(root, "legacy-home");
+    await fs.mkdir(path.join(legacyHome, "projects"), { recursive: true });
+    const legacyCheck = await core.checkMigration(legacyHome);
+    assert.deepEqual(legacyCheck, {
+      current: 0,
+      target: core.STATE_VERSION,
+      required: true,
+    });
   });
 });

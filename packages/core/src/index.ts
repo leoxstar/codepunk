@@ -420,6 +420,7 @@ export {
   checkMigration,
   createBackup,
   hasLiveWriter,
+  initializeStateVersion,
   listBackups,
   loadBackup,
   planGc,

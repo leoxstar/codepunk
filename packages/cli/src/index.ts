@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
@@ -55,6 +55,7 @@ import {
   formatSessionTree,
   importProviderModels,
   inspectSavedWorkspaceTrust,
+  initializeStateVersion,
   installSkill,
   installPackage,
   installUserPlugin,
@@ -91,6 +92,7 @@ import {
   removeModelsProvider,
   removeSkill,
   removeUserPlugin,
+  resolveCodepunkHome,
   resolveAdditionalWorkspaceRoots,
   resolveModelSelection,
   resolveWorkspaceTrust,
@@ -1111,6 +1113,7 @@ async function resolveProject(options: CliOptions): Promise<{
   }
   const project = await findDeliveryRoot(process.cwd());
   const initialPaths = projectPaths(project);
+  const homeExisted = existsSync(initialPaths.home);
   const additionalRoots = await resolveAdditionalWorkspaceRoots({
     cwd: project.cwd,
     primaryRoot: project.deliveryRoot,
@@ -1119,6 +1122,9 @@ async function resolveProject(options: CliOptions): Promise<{
   });
   const paths = projectPaths(project, initialPaths.home, additionalRoots);
   await ensureProjectRegistration(project, paths);
+  if (!homeExisted) {
+    await initializeStateVersion(paths.home);
+  }
   const workspaceTrust = await resolveWorkspaceTrust({
     cwd: project.cwd,
     root: project.deliveryRoot,
@@ -2087,12 +2093,12 @@ async function commandGc(options: CliOptions): Promise<number> {
 }
 
 async function commandMigrate(options: CliOptions): Promise<number> {
-  const { paths } = await resolveProject(options);
+  const home = resolveCodepunkHome(process.env);
   if (options.apply && options.check) {
     throw new Error("migrate accepts --check or --apply, not both");
   }
   if (options.apply) {
-    const result = await applyMigration(paths.home);
+    const result = await applyMigration(home);
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } else {
@@ -2105,7 +2111,7 @@ async function commandMigrate(options: CliOptions): Promise<number> {
     }
     return 0;
   }
-  const status = await checkMigration(paths.home);
+  const status = await checkMigration(home);
   if (options.json) {
     process.stdout.write(`${JSON.stringify(status)}\n`);
   } else {
