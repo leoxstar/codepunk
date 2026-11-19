@@ -48,13 +48,16 @@ async function createHost(setupPaths, runId) {
 }
 
 async function waitFor(predicate, message = "condition was not reached") {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  // Durable event appends are an order of magnitude slower on hosted Windows
+  // runners, so poll against a wall-clock deadline instead of a fixed count.
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
     if (predicate()) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(message);
+  throw new Error(`${message} within 30000ms`);
 }
 
 function containsText(messages, marker) {
