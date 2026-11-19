@@ -66,16 +66,23 @@ explicit policy boundary around file and shell actions.
 
 ## Install
 
-Install the published CLI with npm:
+Codepunk `0.1.0` is a release candidate, not a completed npm release. As of
+commit `def0646`, all three `@codepunk/*` packages are unpublished (`npm view`
+returns `E404`), there is no `v0.1.0` tag, and `npm whoami` returns
+`ENEEDAUTH`. Build this repository and run the CLI locally with:
 
 ```text
-npm install --global @codepunk/cli@0.1.0
+pnpm run build
+node packages/cli/dist/index.js
 ```
 
-The workflow defines seven CI targets. Run `44297264124` passed all seven
-jobs. The six Unix jobs reported 747 tests, 738 passing, 0 failing, and 9
-skipped; `windows-latest` reported 747 tests, 707 passing, 0 failing, and 40
-skipped. Hosted Windows evidence is not a Windows 11 support claim:
+The workflow defines seven CI targets. At that baseline, `pnpm run verify`
+reports `# tests 815 / # pass 806 / # fail 0 / # skipped 9` and `pnpm run
+eval` reports 12/12 cases. Latest CI run `44352649879` had five Unix jobs
+successful, `macos-15` cancelled, and `windows-latest` failed before this
+readiness fix because hosted Windows was not provisioned for one `srt` test.
+The release commit must pass all seven CI jobs. Hosted Windows evidence is
+not a Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 

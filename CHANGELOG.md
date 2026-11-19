@@ -13,7 +13,8 @@ No changes have been recorded yet.
 
 ### Added
 
-- Initial npm release of the Codepunk protocol, core, and CLI packages.
+- Release candidate for the Codepunk protocol, core, and CLI packages. The
+  candidate is not published to npm until the release runbook completes.
 
 ### Security
 

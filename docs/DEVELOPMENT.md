@@ -141,20 +141,20 @@ false positives.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` defines seven CI targets. Run `44297264124` passed
-all seven jobs; `windows-latest` covers non-privileged Windows checks and is
-not a Windows 11 support claim:
+`.github/workflows/ci.yml` defines seven CI targets. The current local
+baseline at commit `def0646` reports 815 tests, 806 passing, 0 failing, and
+9 skipped; latest run `44352649879` is not release evidence because it had
+five Unix jobs successful, `macos-15` cancelled, and `windows-latest` failed
+before the unprovisioned-`srt` readiness fix. `windows-latest` covers
+non-privileged Windows checks and is not a Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
 Each target is configured to run the same install, formatting, repository,
 typecheck, test, build, and built-entry checks. The workflow uses
-`pnpm/action-setup` and a frozen lockfile. The six Unix jobs each reported
-`# tests 747 / # pass 738 / # fail 0 / # skipped 9`; `windows-latest`
-reported `# tests 747 / # pass 707 / # fail 0 / # skipped 40`. WSL2 Ubuntu
-x64 is manual-smoke only and is not CI-covered. Windows is not claimed; the
-0007 code and hosted gate are complete, but real Windows 11 x64 acceptance
-evidence is still missing.
+`pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64 is manual-smoke only
+and is not CI-covered. Windows is not claimed; the 0007 code and hosted gate
+are complete, but real Windows 11 x64 acceptance evidence is still missing.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without

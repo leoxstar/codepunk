@@ -8,7 +8,7 @@ Observed on 2026-11-15 and 2026-11-16 from the binaries installed on this machin
 
 | Product      | Version   | Basis                                                                          |
 | ------------ | --------- | ------------------------------------------------------------------------------ |
-| Codepunk     | `0.0.0`   | `--help`, full `pnpm run verify`, real gateway request, real PTY               |
+| Codepunk     | `0.1.0`   | `--help`, full `pnpm run verify`, real gateway request, real PTY               |
 | Codex CLI    | `0.169.0` | `--help`, `--version`, `codex sandbox -P :read-only`; docs for rules/approvals |
 | Gemini CLI   | `0.68.0`  | `--help`                                                                       |
 | OpenCode     | `2.3.0`   | `--help`; source at tag `v2.3.0`                                               |
@@ -134,8 +134,8 @@ read-only live-switch directions, live `/resume`/`/new`/`/tree`/`/fork` and
 streaming steering, and repository negative controls. The TUI also covers
 `/init` guard and model-prompt injection, `/status`, skill hot reload, and the
 Pi-native trust selector.
-On 2026-11-16, the local suite reported 615 tests and the repository check
-reported 540 files across 3 packages.
+The current local baseline at commit `def0646` reports 815 tests, 806
+passing, 0 failing, and 9 skipped.
 
 The real PTY also covers the model semantics directly: `/model oth` opens
 Pi's fuzzy selector with no usage warning, an exact `provider/id` selection
@@ -426,5 +426,6 @@ Ordered by expected value for the next iteration:
 - No other agent's real model request, approval prompt, sandbox escape
   resistance, MCP runtime, plugin isolation, or Windows behavior was exercised
   here except the Codex read-only sandbox and Claude manual-permission probes.
-- Codepunk's macOS/Linux behavior is covered by the local suite; Linux CI is
-  configured but was not re-run from this macOS session.
+- Codepunk's macOS/Linux behavior is covered by the local suite. Latest CI run
+  `44352649879` had five Unix jobs successful, `macos-15` cancelled, and
+  `windows-latest` failed before the unprovisioned-`srt` readiness fix.

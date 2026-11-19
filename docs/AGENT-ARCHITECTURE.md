@@ -961,8 +961,7 @@ The current iteration was checked with:
 
 ```text
 pnpm run verify
-# 615 tests, 615 pass
-# repository check: 540 files, 3 packages
+# tests 815 / # pass 806 / # fail 0 / # skipped 9
 ```
 
 The permission boundary has execution-level coverage rather than only
