@@ -16,6 +16,14 @@ No changes have been recorded yet.
 - Release candidate for the Codepunk protocol, core, and CLI packages. The
   candidate is not published to npm until the release runbook completes.
 
+### Fixed
+
+- Fresh `CODEPUNK_HOME` installs initialize the current state version instead
+  of reporting a pending migration.
+- CLI help lists the implemented reviewer show/timeout commands and the trust
+  resource-grant flag.
+- The published CLI shim resolves from `dist/index.js` under npm 11.
+
 ### Security
 
 - Documented the accepted risk for `GHSA-mrhx-c7xc-m3w5`, which affects
