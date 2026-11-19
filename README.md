@@ -66,23 +66,30 @@ explicit policy boundary around file and shell actions.
 
 ## Install
 
-Codepunk `0.1.0` is a release candidate, not a completed npm release. As of
-commit `def0646`, all three `@codepunk/*` packages are unpublished (`npm view`
+Codepunk `0.1.0` is a release candidate, not a completed npm release. At
+the release candidate `c0383fa`, all three `@codepunk/*` packages are unpublished (`npm view`
 returns `E404`), there is no `v0.1.0` tag, and `npm whoami` returns
-`ENEEDAUTH`. Build this repository and run the CLI locally with:
+`ENEEDAUTH`. All three `npm publish --dry-run --access public` checks passed;
+the remaining release blocker is registry authentication, not package
+contents. Build this repository and run the CLI locally with:
 
 ```text
 pnpm run build
 node packages/cli/dist/index.js
 ```
 
-The workflow defines seven CI targets. At that baseline, `pnpm run verify`
-reports `# tests 815 / # pass 806 / # fail 0 / # skipped 9` and `pnpm run
-eval` reports 12/12 cases. Latest CI run `44352649879` had five Unix jobs
-successful, `macos-15` cancelled, and `windows-latest` failed before this
-readiness fix because hosted Windows was not provisioned for one `srt` test.
-The release commit must pass all seven CI jobs. Hosted Windows evidence is
-not a Windows 11 support claim:
+The routine workflow runs on pushes and pull requests and ignores docs-only
+changes. Ubuntu 24.04 runs the full repository gate: formatting, repository
+checks, typecheck, tests, eval, build, and built-entry checks. macOS 15 and
+Windows Server 2025 run build and built-entry checks. The full seven-target
+matrix is reserved for manual dispatch and `v*` tags, so routine pushes do
+not repeat the Windows test suite. Fast run `44480731591` passed all four
+jobs: lint 29 s, Ubuntu test 5m46s, macOS build 37 s, and Windows build 54 s.
+At the release candidate `c0383fa`, `pnpm run verify` reports
+`# tests 818 / # pass 809 / # fail 0 / # skipped 9`, `pnpm run eval` reports
+12/12 cases, and full CI run `44473437813` passed all seven targets. Current
+`main` (`2ca8739`) reports `# tests 820 / # pass 811 / # fail 0 / # skipped
+9` locally. Hosted Windows evidence is not a Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
