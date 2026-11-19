@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { windowsSrtSkipReason } from "./support/helpers.mjs";
 import { importCore } from "./support/core.mjs";
 import { installScriptedStream, TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
+const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 
 async function setup() {
   const root = await fs.realpath(
@@ -98,78 +100,84 @@ test("tool call budget blocks before execution on the runtime host path", async 
   }
 });
 
-test("wall budget aborts an in-flight host command with abort_run", async () => {
-  const paths = await setup();
-  const sandbox = await core.SrtSandbox.create({
-    cwd: paths.project,
-    workspaceRoot: paths.project,
-    deliveryRoot: paths.project,
-    codepunkHome: paths.home,
-    writeSet: [paths.project],
-    networkAllow: [],
-  });
-  try {
-    const store = await core.SessionStore.create({
-      rootDir: paths.home,
-      cwd: paths.project,
-      sessionId: "session-runtime-wall",
-      heartbeatMs: 60_000,
-    });
-    const host = await core.createPiHost({
+test(
+  "wall budget aborts an in-flight host command with abort_run",
+  {
+    skip: process.platform === "win32" ? WINDOWS_SRT_SKIP : false,
+  },
+  async () => {
+    const paths = await setup();
+    const sandbox = await core.SrtSandbox.create({
       cwd: paths.project,
       workspaceRoot: paths.project,
       deliveryRoot: paths.project,
       codepunkHome: paths.home,
-      sessionId: store.sessionId,
-      runId: "run-runtime-wall",
       writeSet: [paths.project],
-      mode: "interactive",
-      approvalMode: "allow",
-      approval: null,
-      ledger: paths.ledger,
-      sandbox,
-      sessionStore: store,
-      model: TEST_MODEL,
-      budget: { maxWallMs: 500 },
+      networkAllow: [],
     });
     try {
-      await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
-      installScriptedStream(host.session, (index) => {
-        if (index === 0) {
-          return {
-            type: "toolCall",
-            id: "runtime-wall-1",
-            name: "bash",
-            args: { command: "sleep 10" },
-          };
-        }
-        return { type: "text", text: "done" };
+      const store = await core.SessionStore.create({
+        rootDir: paths.home,
+        cwd: paths.project,
+        sessionId: "session-runtime-wall",
+        heartbeatMs: 60_000,
       });
+      const host = await core.createPiHost({
+        cwd: paths.project,
+        workspaceRoot: paths.project,
+        deliveryRoot: paths.project,
+        codepunkHome: paths.home,
+        sessionId: store.sessionId,
+        runId: "run-runtime-wall",
+        writeSet: [paths.project],
+        mode: "interactive",
+        approvalMode: "allow",
+        approval: null,
+        ledger: paths.ledger,
+        sandbox,
+        sessionStore: store,
+        model: TEST_MODEL,
+        budget: { maxWallMs: 500 },
+      });
+      try {
+        await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+        installScriptedStream(host.session, (index) => {
+          if (index === 0) {
+            return {
+              type: "toolCall",
+              id: "runtime-wall-1",
+              name: "bash",
+              args: { command: "sleep 10" },
+            };
+          }
+          return { type: "text", text: "done" };
+        });
 
-      const startedAt = performance.now();
-      await host.session.prompt("sleep for ten seconds");
-      const elapsed = performance.now() - startedAt;
-      assert.ok(
-        elapsed < 8_000,
-        `wall budget did not interrupt the command (${elapsed} ms)`,
-      );
-      const budgetEvent = store.allEvents.find(
-        (event) => event.kind === "budget/exceeded",
-      );
-      assert.ok(budgetEvent);
-      assert.equal(budgetEvent.data.limit_kind, "wall_ms");
-      assert.equal(budgetEvent.data.limit, 500);
-      assert.equal(budgetEvent.data.action, "abort_run");
-      const toolResult = host.session.messages.find(
-        (message) => message.role === "toolResult",
-      );
-      assert.ok(toolResult);
-      assert.match(JSON.stringify(toolResult.content), /Command aborted/u);
+        const startedAt = performance.now();
+        await host.session.prompt("sleep for ten seconds");
+        const elapsed = performance.now() - startedAt;
+        assert.ok(
+          elapsed < 8_000,
+          `wall budget did not interrupt the command (${elapsed} ms)`,
+        );
+        const budgetEvent = store.allEvents.find(
+          (event) => event.kind === "budget/exceeded",
+        );
+        assert.ok(budgetEvent);
+        assert.equal(budgetEvent.data.limit_kind, "wall_ms");
+        assert.equal(budgetEvent.data.limit, 500);
+        assert.equal(budgetEvent.data.action, "abort_run");
+        const toolResult = host.session.messages.find(
+          (message) => message.role === "toolResult",
+        );
+        assert.ok(toolResult);
+        assert.match(JSON.stringify(toolResult.content), /Command aborted/u);
+      } finally {
+        await host.dispose();
+      }
     } finally {
-      await host.dispose();
+      await sandbox.close();
+      await fs.rm(paths.root, { recursive: true, force: true });
     }
-  } finally {
-    await sandbox.close();
-    await fs.rm(paths.root, { recursive: true, force: true });
-  }
-});
+  },
+);
