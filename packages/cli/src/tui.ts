@@ -85,6 +85,7 @@ import {
   setConfiguredModel,
   writeHandoff,
   outputSha,
+  planContentHash,
   recordHash,
   redactOutputPreview,
   sha256Text,
@@ -104,11 +105,13 @@ import {
   type McpServerConfig,
   type McpServerInput,
   type PermissionProfile,
+  type PlanModeState,
   type PluginReloadResult,
   type SkillReloadResult,
   type SubagentHostResult,
   type SubagentStreamEvent,
   type SessionSearchHit,
+  type WorkState,
   type WorkspaceCommitPreview,
   type WorkspaceDiff,
   type WorkspaceTrust,
@@ -430,6 +433,8 @@ export function codepunkHelp(): string {
     "                             list profiles or manage child sessions",
     "                             transcript opens a full-screen live tool-output view",
     "  /plan                      show the current plan",
+    "  /plan-mode [status|on|approve|off]",
+    "                             show, enter, approve, or exit plan mode",
     "  /todos                     show the current todo list",
     "",
     "Project",
@@ -506,6 +511,30 @@ export function filterInterceptedAutocomplete<T extends { value: string }>(
   items: readonly T[],
 ): T[] {
   return items.filter((item) => !INTERCEPTED_PI_COMMANDS.has(item.value));
+}
+
+export function formatPlanModeStatus(
+  state: PlanModeState | null,
+  plan: WorkState | null,
+): string {
+  const planHash = planContentHash(plan);
+  const approvedHash = state?.plan_sha256 ?? null;
+  const lines = [`Plan mode: ${state?.mode ?? "off"}`];
+  lines.push(
+    planHash === null
+      ? "No plan is recorded."
+      : `Plan is recorded: ${planHash}`,
+  );
+  if (state?.mode === "executing") {
+    lines.push(
+      approvedHash === null
+        ? "No plan hash is bound."
+        : planHash === approvedHash
+          ? "The recorded plan matches the approved hash."
+          : "The recorded plan does not match the approved hash.",
+    );
+  }
+  return lines.join("\n");
 }
 
 const PERSIST_APPROVAL = "Save exact rule and allow";
@@ -5434,6 +5463,67 @@ export function createTuiExtension(
         handler: commandContext(state, async (runtime, context) => {
           const work = readWorkState(runtime.session.allEvents);
           await notify(context, formatPlan(work.plan));
+        }),
+      });
+      pi.registerCommand("plan-mode", {
+        description: "Show, enter, approve, or exit plan mode",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const subcommand = args.trim();
+          try {
+            if (subcommand === "" || subcommand === "status") {
+              await notify(
+                context,
+                formatPlanModeStatus(
+                  runtime.planMode.state(),
+                  readWorkState(runtime.session.allEvents).plan,
+                ),
+              );
+              return;
+            }
+            if (subcommand === "on") {
+              const state = await runtime.planMode.enter();
+              await notify(
+                context,
+                [
+                  `Plan mode: ${state.mode}`,
+                  "Only read-only tools are available. Record a plan, then run /plan-mode approve.",
+                ].join("\n"),
+              );
+              return;
+            }
+            if (subcommand === "approve") {
+              const state = await runtime.planMode.approve();
+              const planHash =
+                state.plan_sha256 ??
+                planContentHash(readWorkState(runtime.session.allEvents).plan);
+              await notify(
+                context,
+                [
+                  `Plan mode: ${state.mode}`,
+                  planHash === null
+                    ? "No plan hash is bound."
+                    : `Approved plan hash: ${planHash}`,
+                ].join("\n"),
+              );
+              return;
+            }
+            if (subcommand === "off") {
+              const state = await runtime.planMode.exit();
+              await notify(context, `Plan mode: ${state.mode}`);
+              return;
+            }
+            context.ui.notify(
+              "usage: /plan-mode [status|on|approve|off]",
+              "warning",
+            );
+          } catch (error) {
+            context.ui.notify(
+              `/plan-mode failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
         }),
       });
       pi.registerCommand("todos", {
