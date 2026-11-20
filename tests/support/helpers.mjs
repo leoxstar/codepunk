@@ -15,6 +15,16 @@ export const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const execFileAsync = promisify(execFile);
 
 /**
+ * Resolve a Windows system tool without searching `PATH`. Git for Windows and
+ * MSYS2 ship a `whoami` that rejects the Windows `/user` argument.
+ */
+function windowsSystemExecutable(name) {
+  const systemRoot =
+    process.env["SystemRoot"] ?? process.env["windir"] ?? "C:\\Windows";
+  return path.win32.join(systemRoot, "System32", name);
+}
+
+/**
  * Windows principals that always mean "other local users". A named local
  * group is an environment fact that the product does not create, so it is
  * reported as detail instead of failing the check.
@@ -65,9 +75,11 @@ async function currentWindowsIdentity() {
     ["/groups", "/fo", "csv", "/nh"],
   ]) {
     try {
-      const { stdout } = await execFileAsync("whoami", args, {
-        windowsHide: true,
-      });
+      const { stdout } = await execFileAsync(
+        windowsSystemExecutable("whoami.exe"),
+        args,
+        { windowsHide: true },
+      );
       for (const line of stdout.split(/\r?\n/u)) {
         const match = /^"([^"]*)","([^"]+)"/u.exec(line.trim());
         if (match !== null) {
@@ -106,9 +118,13 @@ export async function privateFileStatus(filePath) {
       explicitForeign: [],
     };
   }
-  const { stdout } = await execFileAsync("icacls", [filePath], {
-    windowsHide: true,
-  });
+  const { stdout } = await execFileAsync(
+    windowsSystemExecutable("icacls.exe"),
+    [filePath],
+    {
+      windowsHide: true,
+    },
+  );
   const entries = [];
   const lines = stdout.split(/\r?\n/u);
   for (const [index, rawLine] of lines.entries()) {

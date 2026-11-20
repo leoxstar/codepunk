@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -154,21 +154,31 @@ export async function ensurePrivateDir(directory: string): Promise<void> {
   } catch {
     // The directory may live on a filesystem without POSIX mode support.
   }
+  stampedPrivateDirs.add(directory);
 }
 
 export async function ensurePrivateFile(
   filePath: string,
   mode = 0o600,
 ): Promise<void> {
+  const key = `${filePath}\0${mode}`;
   if (process.platform !== "win32") {
+    if (stampedPrivateFiles.has(key)) {
+      return;
+    }
     try {
       await fs.chmod(filePath, mode);
     } catch {
       // The file may live on a filesystem without POSIX mode support.
     }
+    stampedPrivateFiles.add(key);
+    return;
+  }
+  if (stampedPrivateFiles.has(key)) {
     return;
   }
   await ensureWindowsPrivateAcl(filePath, { directory: false });
+  stampedPrivateFiles.add(key);
 }
 
 const V9FS_SUPER_MAGIC = 0x01021997;
