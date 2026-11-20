@@ -371,6 +371,223 @@ test("the TUI treats an active session model as selected", async () => {
   assert.equal(unconfigured.modelSelected, true);
 });
 
+test("image input records failure instead of completion when dispatch fails", async () => {
+  const { createTuiExtension } = await importSource("packages/cli/src/tui.ts");
+  await withTempDirectory("codepunk-tui-image-failure-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await fs.writeFile(
+      path.join(project, "pixel.png"),
+      Buffer.from(IMAGE_PNG_BASE64, "base64"),
+    );
+    const records = [];
+    const runtime = {
+      paths: {
+        cwd: project,
+        deliveryRoot: project,
+        home,
+        projectDir: path.join(home, "projects", "project"),
+        projectConfigDir: path.join(project, ".codepunk"),
+      },
+      session: { sessionId: "session-image-failure" },
+      ledger: {
+        activeRunId: "run-image-failure",
+        async append(record) {
+          records.push(record);
+          return record;
+        },
+      },
+      config: {
+        approval: { mode: "allow" },
+        model: { enabled: [] },
+        filesystem: { mode: "workspace" },
+        tui: { keymap: { model_cycle: "off", background: "off" } },
+      },
+      autonomy: { profile: "standard" },
+      policy: { writeSet: [], userRules: [], projectRules: [], layers: [] },
+      approval: {
+        async request() {
+          return {
+            approved: true,
+            reason: "test approval",
+            evidence: null,
+          };
+        },
+      },
+      host: {
+        session: {
+          async sendUserMessage() {
+            sends += 1;
+            throw new Error("test dispatch rejected");
+          },
+        },
+      },
+    };
+    const commands = new Map();
+    const notifications = [];
+    let sends = 0;
+    const pi = {
+      on() {
+        return () => {};
+      },
+      registerCommand(name, command) {
+        commands.set(name, command);
+      },
+      registerShortcut() {},
+      getCommands() {
+        return [];
+      },
+    };
+    const state = {
+      runtime,
+      context: null,
+      channel: { attach() {} },
+      lastRunId: null,
+      lastEvidence: 0,
+      warningsShown: false,
+      modelSelected: true,
+    };
+    const extension = createTuiExtension(state, {
+      attach() {},
+    });
+    extension.factory(pi);
+    const image = commands.get("image");
+    assert.ok(image, "image command is not registered");
+    await image.handler("pixel.png rejected prompt", {
+      model: {
+        provider: "local",
+        id: "local-test",
+        input: ["text", "image"],
+      },
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    });
+    assert.equal(sends, 1);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].tool, "image_input");
+    assert.equal(records[0].outcome, "failed");
+    assert.equal(records[0].rule, "product.image.input_failed");
+    assert.equal(records[0].decision, "allow");
+    assert.equal(records[0].exit_code, 1);
+    assert.match(records[0].output_preview, /test dispatch rejected/u);
+    assert.match(
+      notifications.at(-1).message,
+      /\/image failed: test dispatch rejected/u,
+    );
+  });
+});
+
+test("image input reports evidence failure after a successful dispatch", async () => {
+  const { createTuiExtension } = await importSource("packages/cli/src/tui.ts");
+  await withTempDirectory("codepunk-tui-image-evidence-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await fs.writeFile(
+      path.join(project, "pixel.png"),
+      Buffer.from(IMAGE_PNG_BASE64, "base64"),
+    );
+    let sends = 0;
+    let appends = 0;
+    const runtime = {
+      paths: {
+        cwd: project,
+        deliveryRoot: project,
+        home,
+        projectDir: path.join(home, "projects", "project"),
+        projectConfigDir: path.join(project, ".codepunk"),
+      },
+      session: { sessionId: "session-image-evidence" },
+      ledger: {
+        activeRunId: "run-image-evidence",
+        async append() {
+          appends += 1;
+          throw new Error("test evidence rejected");
+        },
+      },
+      config: {
+        approval: { mode: "allow" },
+        model: { enabled: [] },
+        filesystem: { mode: "workspace" },
+        tui: { keymap: { model_cycle: "off", background: "off" } },
+      },
+      autonomy: { profile: "standard" },
+      policy: { writeSet: [], userRules: [], projectRules: [], layers: [] },
+      approval: {
+        async request() {
+          return {
+            approved: true,
+            reason: "test approval",
+            evidence: null,
+          };
+        },
+      },
+      host: {
+        session: {
+          async sendUserMessage() {
+            sends += 1;
+          },
+        },
+      },
+    };
+    const commands = new Map();
+    const notifications = [];
+    const pi = {
+      on() {
+        return () => {};
+      },
+      registerCommand(name, command) {
+        commands.set(name, command);
+      },
+      registerShortcut() {},
+      getCommands() {
+        return [];
+      },
+    };
+    const state = {
+      runtime,
+      context: null,
+      channel: { attach() {} },
+      lastRunId: null,
+      lastEvidence: 0,
+      warningsShown: false,
+      modelSelected: true,
+    };
+    const extension = createTuiExtension(state, {
+      attach() {},
+    });
+    extension.factory(pi);
+    const image = commands.get("image");
+    assert.ok(image, "image command is not registered");
+    await image.handler("pixel.png evidence prompt", {
+      model: {
+        provider: "local",
+        id: "local-test",
+        input: ["text", "image"],
+      },
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    });
+    assert.equal(sends, 1);
+    assert.equal(appends, 1);
+    assert.equal(notifications.at(-1).level, "warning");
+    assert.match(
+      notifications.at(-1).message,
+      /image sent, but evidence could not be written: test evidence rejected/u,
+    );
+    assert.doesNotMatch(notifications.at(-1).message, /\/image failed/u);
+  });
+});
+
 test("no-model onboarding treats the Pi unknown sentinel as absent", async () => {
   const { modelOnboardingMessage } = await importSource(
     "packages/cli/src/tui.ts",
@@ -1536,6 +1753,28 @@ test("a real pty lists presets and roles and applies a preset", async () => {
         /bytes: 687\nsha256: sha256:[0-9a-f]{64}\nredactions: path/u,
       );
       await waitForQuiet(session, 500);
+      const requestsBeforeMissingImage = model.requests.length;
+      await runCommandAfter(
+        session,
+        "/image missing.png",
+        "image input was not found",
+      );
+      const failedImageRecord = await waitFor(
+        async () =>
+          (await readEvidence(home)).find(
+            (record) =>
+              record.tool === "image_input" &&
+              record.outcome === "failed" &&
+              record.rule === "product.image.input_failed" &&
+              record.path_check.target === "missing.png",
+          ) ?? null,
+        "failed image input evidence",
+      );
+      assert.equal(failedImageRecord.decision, "allow");
+      assert.equal(failedImageRecord.exit_code, 1);
+      assert.equal(failedImageRecord.effects.fs, "none");
+      assert.equal(failedImageRecord.effects.network, false);
+      assert.equal(model.requests.length, requestsBeforeMissingImage);
       await runCommandAfter(
         session,
         "/image-gen a red fox in snow",
@@ -1705,11 +1944,281 @@ test("a real pty generates an image through a configured image model", async () 
         ),
       ]);
       assert.deepEqual(result, { code: 0, signal: null });
+
+      const imageRequestsBeforeScope = model.requests.filter(
+        (request) =>
+          Array.isArray(request.modalities) &&
+          request.modalities.includes("image"),
+      ).length;
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        [
+          "[sandbox]",
+          'mode = "uncovered"',
+          "",
+          "[model]",
+          'enabled = ["local/local-test"]',
+          "",
+        ].join("\n"),
+      );
+      const scoped = startPty(
+        process.execPath,
+        [cli, "--model", "local/local-test"],
+        {
+          cwd: project,
+          env: {
+            ...BASE_ENV,
+            CODEPUNK_HOME: home,
+            PI_OFFLINE: "1",
+            TERM: "xterm-256color",
+            NO_COLOR: "1",
+          },
+        },
+      );
+      try {
+        await waitForOutput(
+          scoped,
+          "codepunk · local/local-test",
+          "scoped startup",
+        );
+        await runCommandAfter(
+          scoped,
+          "/image-gen --model openrouter/black-forest-labs/flux.2-pro a blocked fox",
+          "model.enabled",
+        );
+        const denied = await waitFor(
+          async () =>
+            (await readEvidence(home)).find(
+              (entry) =>
+                entry.tool === "image_generate" &&
+                entry.decision === "deny" &&
+                entry.rule === "product.image.generate_denied" &&
+                entry.command ===
+                  "image-generate openrouter/black-forest-labs/flux.2-pro",
+            ) ?? null,
+          "image generation scope denial",
+        );
+        assert.equal(denied.outcome, "denied");
+        assert.match(denied.output_preview, /model\.enabled/u);
+        assert.equal(
+          model.requests.filter(
+            (request) =>
+              Array.isArray(request.modalities) &&
+              request.modalities.includes("image"),
+          ).length,
+          imageRequestsBeforeScope,
+        );
+        scoped.child.stdin.write("/quit\r");
+        const scopedResult = await Promise.race([
+          scoped.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(scopedResult, { code: 0, signal: null });
+      } finally {
+        await stopPty(scoped);
+      }
+
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        [
+          "[sandbox]",
+          'mode = "uncovered"',
+          "",
+          "[model]",
+          'enabled = ["local/local-test", "openrouter/**"]',
+          "",
+        ].join("\n"),
+      );
+      const wildcard = startPty(
+        process.execPath,
+        [cli, "--model", "local/local-test"],
+        {
+          cwd: project,
+          env: {
+            ...BASE_ENV,
+            CODEPUNK_HOME: home,
+            PI_OFFLINE: "1",
+            TERM: "xterm-256color",
+            NO_COLOR: "1",
+          },
+        },
+      );
+      try {
+        await waitForOutput(
+          wildcard,
+          "codepunk · local/local-test",
+          "wildcard scoped startup",
+        );
+        const evidenceBefore = (await readEvidence(home)).filter(
+          (entry) =>
+            entry.tool === "image_generate" &&
+            entry.outcome === "completed" &&
+            entry.command ===
+              "image-generate openrouter/black-forest-labs/flux.2-pro",
+        ).length;
+        const mark = wildcard.output().length;
+        wildcard.child.stdin.write(
+          "/image-gen --model openrouter/black-forest-labs/flux.2-pro a wildcard fox\r",
+        );
+        await waitForOutputAfter(
+          wildcard,
+          mark,
+          "Approval required",
+          "wildcard-scoped image generation approval prompt",
+        );
+        wildcard.child.stdin.write("\r");
+        await waitForOutputAfter(
+          wildcard,
+          mark,
+          "image generated:",
+          "wildcard-scoped image generation result",
+        );
+        await waitFor(
+          async () =>
+            (await readEvidence(home)).filter(
+              (entry) =>
+                entry.tool === "image_generate" &&
+                entry.outcome === "completed" &&
+                entry.command ===
+                  "image-generate openrouter/black-forest-labs/flux.2-pro",
+            ).length > evidenceBefore,
+          "wildcard-scoped image generation evidence",
+        );
+        wildcard.child.stdin.write("/quit\r");
+        const wildcardResult = await Promise.race([
+          wildcard.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(wildcardResult, { code: 0, signal: null });
+      } finally {
+        await stopPty(wildcard);
+      }
     } finally {
       await stopPty(session);
       model.server.close();
     }
   });
+});
+
+test("a real pty records a failed image input when dispatch is rejected", async () => {
+  await withTempDirectory(
+    "codepunk-tui-image-dispatch-failure-",
+    async (root) => {
+      const project = path.join(root, "project");
+      const home = path.join(root, "home");
+      await fs.mkdir(project);
+      await fs.mkdir(home);
+      await execFileAsync("git", ["init", "-q"], { cwd: project });
+      let requestSeen;
+      const firstRequest = new Promise((resolve) => {
+        requestSeen = resolve;
+      });
+      const server = http.createServer((request, response) => {
+        request.resume();
+        request.on("end", () => {
+          requestSeen();
+        });
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      assert.ok(address);
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        '[sandbox]\nmode = "uncovered"\n',
+      );
+      await fs.writeFile(
+        path.join(home, "models.json"),
+        JSON.stringify({
+          providers: {
+            local: {
+              name: "Local",
+              baseUrl: `http://127.0.0.1:${address.port}/v1`,
+              api: "openai-completions",
+              apiKey: "test",
+              models: [
+                {
+                  id: "local-test",
+                  name: "Local Test",
+                  api: "openai-completions",
+                  contextWindow: 128000,
+                  maxTokens: 1024,
+                  input: ["text", "image"],
+                },
+              ],
+            },
+          },
+        }),
+      );
+
+      const cli = await ensureBuilt();
+      const session = startPty(
+        process.execPath,
+        [cli, "--model", "local/local-test"],
+        {
+          cwd: project,
+          env: {
+            ...BASE_ENV,
+            CODEPUNK_HOME: home,
+            PI_OFFLINE: "1",
+            TERM: "xterm-256color",
+            NO_COLOR: "1",
+          },
+        },
+      );
+      try {
+        await waitForOutput(session, "codepunk · local/local-test", "startup");
+        await fs.writeFile(
+          path.join(project, "pixel.png"),
+          Buffer.from(IMAGE_PNG_BASE64, "base64"),
+        );
+        session.child.stdin.write("hold the current request\r");
+        await firstRequest;
+        const mark = session.output().length;
+        session.child.stdin.write("/image pixel.png rejected prompt\r");
+        await waitForOutputAfter(
+          session,
+          mark,
+          "image confirmed",
+          "image confirmation",
+        );
+        await waitForOutputAfter(
+          session,
+          mark,
+          "/image failed",
+          "image dispatch failure",
+        );
+        const record = await waitFor(
+          async () =>
+            (await readEvidence(home)).find(
+              (entry) =>
+                entry.tool === "image_input" &&
+                entry.path_check.target === "pixel.png",
+            ) ?? null,
+          "failed image input evidence",
+        );
+        assert.equal(record.decision, "allow");
+        assert.equal(record.outcome, "failed");
+        assert.equal(record.rule, "product.image.input_failed");
+        assert.equal(record.exit_code, 1);
+        assert.equal(record.effects.network, false);
+        assert.match(record.output_preview, /already processing/u);
+      } finally {
+        await stopPty(session);
+        server.closeAllConnections();
+        server.close();
+      }
+    },
+  );
 });
 
 test("a real pty undoes and redoes Codepunk file changes", async (t) => {

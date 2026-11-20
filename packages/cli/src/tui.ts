@@ -80,6 +80,7 @@ import {
   readSavedWorkspaceTrustGrants,
   resolveModelRole,
   mergeHandoff,
+  modelMatchesEnabledScope,
   projectPaths,
   removeMergedWorktree,
   searchProjectSessions,
@@ -4250,6 +4251,115 @@ type TuiApprovalEvidence = Awaited<
   ReturnType<CodepunkRuntime["approval"]["request"]>
 >["evidence"];
 
+type ConfirmedImageInput = Awaited<ReturnType<typeof confirmImageInput>>;
+
+function imageDisplayPath(runtime: CodepunkRuntime, imagePath: string): string {
+  const relative = path.relative(runtime.paths.cwd, imagePath);
+  return relative.startsWith("..")
+    ? path.basename(imagePath)
+    : relative.split(path.sep).join("/");
+}
+
+async function appendImageInputEvidence(
+  runtime: CodepunkRuntime,
+  options: {
+    image: ConfirmedImageInput | null;
+    path: string;
+    approval: TuiApprovalEvidence | null;
+    started: number;
+    error?: unknown;
+  },
+): Promise<void> {
+  const failed = options.error !== undefined;
+  const denied =
+    failed &&
+    options.error instanceof ImageCapabilityError &&
+    (options.error.code === "image.confirmation_required" ||
+      options.error.code === "image.model" ||
+      options.error.code === "image.policy");
+  const rule = denied
+    ? "product.image.input_denied"
+    : failed
+      ? "product.image.input_failed"
+      : "product.image.input";
+  const ruleSha256 = recordHash({ rule });
+  const displayPath =
+    options.image?.display_path ?? imageDisplayPath(runtime, options.path);
+  const failureMessage =
+    options.error instanceof Error
+      ? options.error.message
+      : String(options.error);
+  const outputPreview = failed
+    ? redactOutputPreview(failureMessage, runtime.paths.home).slice(0, 4_096)
+    : [
+        `confirmed ${options.image!.mime} image: ${displayPath}`,
+        `bytes: ${options.image!.bytes}`,
+        `sha256: ${options.image!.sha256}`,
+        `redactions: ${options.image!.redactions.join(",")}`,
+      ].join("\n");
+  await runtime.ledger.append({
+    task_id: null,
+    run_id: runtime.ledger.activeRunId,
+    session_id: runtime.session.sessionId,
+    source: "tool",
+    tool: "image_input",
+    tool_call_id: `image-input:${options.image?.sha256 ?? createUlid()}`,
+    decision: denied ? "deny" : "allow",
+    outcome: failed ? (denied ? "denied" : "failed") : "completed",
+    rule,
+    rule_sha256: ruleSha256,
+    policy_layers: [
+      {
+        layer: "user",
+        source: "product:/image",
+        sha256: sha256Text("product:/image"),
+        rule_sha256: ruleSha256,
+      },
+    ],
+    approval: options.approval,
+    approval_mode: runtime.config.approval.mode,
+    command: `image-confirm ${displayPath}`,
+    command_argv: ["image-confirm", displayPath],
+    cwd: runtime.paths.cwd,
+    workspace_root: runtime.paths.deliveryRoot,
+    path_check: { performed: true, target: displayPath },
+    sandbox: {
+      backend: "none",
+      version: null,
+      profile_sha256: null,
+    },
+    effects: {
+      fs: options.image === null ? "none" : "read",
+      shell: false,
+      network: !failed,
+    },
+    coverage: "uncovered",
+    coverage_basis: ["product-action", "image-input"],
+    exit_code: failed ? 1 : 0,
+    duration_ms: Date.now() - options.started,
+    before_sha256: null,
+    after_sha256: null,
+    diff_sha256: null,
+    output_ref: null,
+    output_sha256: options.image?.sha256 ?? sha256Text(outputPreview),
+    output_preview: outputPreview,
+    empty_result: false,
+    executor: "codepunk-image-input",
+    vcs: {
+      commit: null,
+      tree: null,
+      base_commit: null,
+    },
+    memory: {
+      ids: [],
+      action: "none",
+      query_sha256: null,
+      cap: 0,
+      truncated: false,
+    },
+  });
+}
+
 async function assertImageGenerationAllowed(
   runtime: CodepunkRuntime,
   modelReference: string,
@@ -4328,6 +4438,7 @@ async function recordImageGenerationFailure(
   const denied =
     options.error instanceof ImageCapabilityError &&
     (options.error.code === "image.adapter_missing" ||
+      options.error.code === "image.model_scope" ||
       options.error.code === "image.policy" ||
       options.error.code === "image.prompt");
   const rule = denied
@@ -6596,6 +6707,9 @@ export function createTuiExtension(
           }
           const [requested, ...promptParts] = trimmed.split(/\s+/u);
           const imagePath = path.resolve(runtime.paths.cwd, requested!);
+          const started = Date.now();
+          let approval: TuiApprovalEvidence | null = null;
+          let image: ConfirmedImageInput | null = null;
           try {
             const activeModel = context.model;
             if (
@@ -6609,87 +6723,13 @@ export function createTuiExtension(
                   : `current model ${activeModel.provider}/${activeModel.id} does not accept image input`,
               );
             }
-            const approval = await assertImageInputAllowed(runtime, imagePath);
-            const started = Date.now();
-            const image = await confirmImageInput({
+            approval = await assertImageInputAllowed(runtime, imagePath);
+            image = await confirmImageInput({
               path: imagePath,
               allowedRoot: runtime.paths.deliveryRoot,
               confirmed: true,
               assertAllowed: async () => undefined,
             });
-            try {
-              const rule = "product.image.input";
-              const ruleSha256 = recordHash({ rule });
-              await runtime.ledger.append({
-                task_id: null,
-                run_id: runtime.ledger.activeRunId,
-                session_id: runtime.session.sessionId,
-                source: "tool",
-                tool: "image_input",
-                tool_call_id: `image-input:${image.sha256}`,
-                decision: "allow",
-                outcome: "completed",
-                rule,
-                rule_sha256: ruleSha256,
-                policy_layers: [
-                  {
-                    layer: "user",
-                    source: "product:/image",
-                    sha256: sha256Text("product:/image"),
-                    rule_sha256: ruleSha256,
-                  },
-                ],
-                approval,
-                approval_mode: runtime.config.approval.mode,
-                command: `image-confirm ${image.display_path}`,
-                command_argv: ["image-confirm", image.display_path],
-                cwd: runtime.paths.cwd,
-                workspace_root: runtime.paths.deliveryRoot,
-                path_check: { performed: true, target: image.display_path },
-                sandbox: {
-                  backend: "none",
-                  version: null,
-                  profile_sha256: null,
-                },
-                effects: { fs: "read", shell: false, network: true },
-                coverage: "uncovered",
-                coverage_basis: ["product-action", "image-input"],
-                exit_code: 0,
-                duration_ms: Date.now() - started,
-                before_sha256: null,
-                after_sha256: null,
-                diff_sha256: null,
-                output_ref: null,
-                output_sha256: image.sha256,
-                output_preview: [
-                  `confirmed ${image.mime} image: ${image.display_path}`,
-                  `bytes: ${image.bytes}`,
-                  `sha256: ${image.sha256}`,
-                  `redactions: ${image.redactions.join(",")}`,
-                ].join("\n"),
-                empty_result: false,
-                executor: "codepunk-image-input",
-                vcs: {
-                  commit: null,
-                  tree: null,
-                  base_commit: null,
-                },
-                memory: {
-                  ids: [],
-                  action: "none",
-                  query_sha256: null,
-                  cap: 0,
-                  truncated: false,
-                },
-              });
-            } catch (error) {
-              throw new ImageCapabilityError(
-                "image.evidence",
-                `image input evidence could not be written: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              );
-            }
             context.ui.notify(
               [
                 `image confirmed: ${image.display_path}`,
@@ -6699,13 +6739,48 @@ export function createTuiExtension(
               ].join("\n"),
               "info",
             );
-            await pi.sendUserMessage(
+            await runtime.host.session.sendUserMessage(
               imageMessage(image, promptParts.join(" ")),
             );
           } catch (error) {
+            let evidenceFailure: string | null = null;
+            try {
+              await appendImageInputEvidence(runtime, {
+                image,
+                path: imagePath,
+                approval,
+                started,
+                error,
+              });
+            } catch (recordError) {
+              evidenceFailure =
+                recordError instanceof Error
+                  ? recordError.message
+                  : String(recordError);
+            }
+            const message =
+              error instanceof Error ? error.message : String(error);
             context.ui.notify(
-              `/image failed: ${error instanceof Error ? error.message : String(error)}`,
+              evidenceFailure === null
+                ? `/image failed: ${message}`
+                : `/image failed: ${message}\nFailure evidence could not be written: ${evidenceFailure}`,
               error instanceof ImageCapabilityError ? "warning" : "error",
+            );
+            return;
+          }
+          try {
+            await appendImageInputEvidence(runtime, {
+              image: image!,
+              path: imagePath,
+              approval,
+              started,
+            });
+          } catch (error) {
+            context.ui.notify(
+              `image sent, but evidence could not be written: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "warning",
             );
           }
         }),
@@ -6761,11 +6836,33 @@ export function createTuiExtension(
                 "no image generation adapter is configured; add an authenticated image model to models.json",
               );
             }
-            const selectedModel = selected(imageModels, requestedModel);
-            if (selectedModel === undefined) {
+            const enabledModels = runtime.config.model.enabled;
+            const scopedImageModels =
+              enabledModels.length === 0
+                ? imageModels
+                : imageModels.filter((model) =>
+                    modelMatchesEnabledScope(model, enabledModels),
+                  );
+            if (scopedImageModels.length === 0) {
+              reference = requestedModel;
               throw new ImageCapabilityError(
-                "image.adapter_missing",
-                `image model ${requestedModel} is not available`,
+                "image.model_scope",
+                "no image generation model is inside model.enabled",
+              );
+            }
+            const selectedModel = selected(scopedImageModels, requestedModel);
+            if (selectedModel === undefined) {
+              reference = requestedModel;
+              const outsideScope =
+                requestedModel !== null &&
+                imageModels.some(
+                  (model) => `${model.provider}/${model.id}` === requestedModel,
+                );
+              throw new ImageCapabilityError(
+                outsideScope ? "image.model_scope" : "image.adapter_missing",
+                outsideScope
+                  ? `image model ${requestedModel} is outside model.enabled`
+                  : `image model ${requestedModel} is not available`,
               );
             }
             const selectedReference = `${selectedModel.provider}/${selectedModel.id}`;
