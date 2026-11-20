@@ -52,6 +52,8 @@ import {
   listProjectSessions,
   loadAgentProfiles,
   loadScopedRules,
+  loadModelRoles,
+  loadProductPresets,
   LOCK_LEASE_MS,
   loginMcpServer,
   McpAuthStore,
@@ -76,13 +78,22 @@ import {
   readWorkState,
   readSavedWorkspaceTrust,
   readSavedWorkspaceTrustGrants,
+  resolveModelRole,
   mergeHandoff,
   projectPaths,
   removeMergedWorktree,
   searchProjectSessions,
   SessionStore,
+  SideTaskQueue,
   StructuredReviewValidationError,
+  SubagentModelPoolManager,
+  MODEL_ROLE_NAMES,
+  ProductPresetError,
+  ModelRoleError,
+  assertSubagentToolCeiling,
+  selectProductPreset,
   createUlid,
+  createSessionRecap,
   runSubagentHost,
   runDoctor,
   resolveConfiguredModel,
@@ -114,10 +125,13 @@ import {
   type McpServerConfig,
   type McpServerInput,
   type PermissionProfile,
+  type ModelRoleName,
   type PlanModeState,
   type PluginReloadResult,
   type SkillReloadResult,
+  type SideTaskRecord,
   type SubagentHostResult,
+  type SubagentToolMask,
   type SubagentStreamEvent,
   type SessionSearchHit,
   type WorkState,
@@ -165,6 +179,10 @@ export interface TuiState {
   buildWatch?: NodeJS.Timeout | undefined;
   subagents?: Map<string, BackgroundSubagent>;
   backgroundTasks?: BackgroundTaskManager;
+  sideQueue?: SideTaskQueue;
+  sideQueueSessionId?: string;
+  modelPool?: SubagentModelPoolManager;
+  activeToolsBeforePreset?: string[];
   /**
    * Slash command names the Pi host will accept in this session. Pi's builtin
    * table is not exported from the package root, and `pi.getCommands()` covers
@@ -432,6 +450,7 @@ export function codepunkHelp(): string {
     "  /login, /logout            manage Pi provider credentials",
     "  /thinking                  choose the reasoning level; saved to config",
     "  /scoped-models             explain the file-backed model scope",
+    "  /roles [status]            show role models and subagent model pools",
     "",
     "Permissions and work",
     "  /permissions               show status; /permissions <group> opens a picker",
@@ -441,8 +460,9 @@ export function codepunkHelp(): string {
     "  /permissions why -- <cmd>  explain a policy decision without running it",
     "  /trust [status|grant|revoke] [kinds]  show or save per-resource workspace trust",
     "  !<command>                 run a shell command through the same policy gate",
-    "  /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
-    "                             start a child session from a discovered profile",
+    "  /subagent [--profile <name>] [--role plan|smol|slow] [--pool <name>]",
+    "            [--model <provider/model>] [--worktree|--shared] <task>",
+    "                             start a child session from a profile, role, or pool",
     "  /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard <id>]",
     "                             list profiles or manage child sessions",
     "                             transcript opens a full-screen live tool-output view",
@@ -452,6 +472,10 @@ export function codepunkHelp(): string {
     "  /plan                      show the current plan",
     "  /plan-mode [status|on|approve|off]",
     "                             show, enter, approve, or exit plan mode",
+    "  /preset [list|use <name>]  apply a user preset to this session",
+    "  /btw <prompt>              run a read-only side question in the background",
+    "  /side <prompt>             run a background side task",
+    "  /recap [all|<from>..<to>]  show a derived recap for a session range",
     "  /goal [text|status|pause|resume|clear]",
     "                             create or manage the goal that survives turns",
     "  /hooks [status]            show user and project hook evidence",
@@ -3459,6 +3483,7 @@ async function selectModelReference(
   state: TuiState,
   context: ExtensionContext,
   reference: string,
+  options: { persist?: boolean } = {},
 ): Promise<boolean> {
   const runtime = state.runtime;
   if (runtime === null) {
@@ -3506,6 +3531,15 @@ async function selectModelReference(
     return true;
   }
   runtime.primaryModel = model;
+  if (options.persist === false) {
+    context.ui.notify(
+      `model set to ${model.provider}/${model.id} for this session`,
+      "info",
+    );
+    state.modelSelected = true;
+    setupChrome(state, context);
+    return true;
+  }
   try {
     await setConfiguredModel(
       runtime.paths,
@@ -3729,7 +3763,16 @@ async function showBackgroundTasks(
   try {
     const manager = backgroundManager(state, runtime);
     await manager.hydrate();
-    context.ui.notify(formatBackgroundTasks(manager.ps()), "info");
+    const queue = sideQueueFor(state, runtime);
+    await queue.hydrate();
+    context.ui.notify(
+      [
+        formatBackgroundTasks(manager.ps()),
+        "",
+        formatSideTasks(queue.all),
+      ].join("\n"),
+      "info",
+    );
   } catch (error) {
     context.ui.notify(
       `/ps failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -3778,9 +3821,380 @@ function formatBackgroundLogs(
   ].join("\n");
 }
 
+function sideQueueFor(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+): SideTaskQueue {
+  if (
+    state.sideQueue === undefined ||
+    state.sideQueueSessionId !== runtime.session.sessionId
+  ) {
+    state.sideQueue = new SideTaskQueue({
+      paths: runtime.paths,
+      sessionId: runtime.session.sessionId,
+    });
+    state.sideQueueSessionId = runtime.session.sessionId;
+  }
+  return state.sideQueue;
+}
+
+function formatSideTasks(tasks: readonly SideTaskRecord[]): string {
+  if (tasks.length === 0) {
+    return "No side tasks.";
+  }
+  return [
+    `Side tasks (${tasks.length})`,
+    ...tasks.map(
+      (task) =>
+        `${task.id}  ${task.status.padEnd(11)}  ${task.kind}  budget=${task.budget}  ${task.prompt.slice(0, 80)}`,
+    ),
+  ].join("\n");
+}
+
+async function runSideTask(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  kind: "btw" | "side",
+  prompt: string,
+): Promise<void> {
+  if (prompt.trim().length === 0) {
+    context.ui.notify(`usage: /${kind} <prompt>`, "warning");
+    return;
+  }
+  if (state.childHostArgv.length === 0) {
+    context.ui.notify("side task host is not available", "error");
+    return;
+  }
+  const queue = sideQueueFor(state, runtime);
+  try {
+    await queue.hydrate();
+    const queued = await queue.enqueue(kind, prompt);
+    const taken = await queue.take(queued.id);
+    if (taken === null) {
+      throw new Error(`side task ${queued.id} could not be claimed`);
+    }
+    const manager = backgroundManager(state, runtime);
+    const model = physicalModel(runtime);
+    const args = [
+      ...state.childHostArgv.slice(1),
+      "--print",
+      "--new-session-id",
+      queued.id,
+      "--parent-session-id",
+      runtime.session.sessionId,
+      ...(model === undefined
+        ? []
+        : ["--model", `${model.provider}/${model.id}`]),
+      ...(kind === "btw"
+        ? [
+            "--autonomy",
+            "read-only",
+            "--approval",
+            "ask",
+            "--tools",
+            "read,search",
+          ]
+        : []),
+      queued.prompt,
+    ];
+    try {
+      const snapshot = await manager.start({
+        id: queued.id,
+        title: `${kind}: ${queued.prompt.slice(0, 60)}`,
+        command: state.childHostArgv[0]!,
+        args,
+        cwd: runtime.paths.cwd,
+      });
+      context.ui.notify(
+        [
+          `${kind} task queued: ${queued.id}`,
+          `status: ${snapshot.status}`,
+          `follow with /ps, /logs ${queued.id}, or /stop ${queued.id}`,
+        ].join("\n"),
+        "info",
+      );
+      void manager
+        .wait(snapshot.id)
+        .then((finished) =>
+          queue.finish(
+            queued.id,
+            finished.status === "completed"
+              ? "completed"
+              : finished.status === "stopped"
+                ? "cancelled"
+                : "failed",
+          ),
+        )
+        .catch(() => queue.finish(queued.id, "failed"))
+        .catch(() => undefined);
+    } catch (error) {
+      await queue.finish(queued.id, "failed").catch(() => undefined);
+      throw error;
+    }
+  } catch (error) {
+    context.ui.notify(
+      `/${kind} failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
+}
+
+async function listPresets(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  try {
+    const bundle = await loadProductPresets(runtime.paths);
+    if (bundle.warnings.length > 0) {
+      context.ui.notify(bundle.warnings.join("\n"), "warning");
+    }
+    if (bundle.presets.length === 0) {
+      context.ui.notify(
+        "No presets configured. Add [[preset]] entries to $CODEPUNK_HOME/presets.toml.",
+        "info",
+      );
+      return;
+    }
+    context.ui.notify(
+      [
+        `Presets (${bundle.presets.length})`,
+        ...bundle.presets.map((preset) => {
+          const parts = [
+            preset.name,
+            preset.description.length === 0 ? null : preset.description,
+            preset.model === null ? null : `model ${preset.model}`,
+            preset.thinking === null ? null : `thinking ${preset.thinking}`,
+            preset.permission === null
+              ? null
+              : `permission ${preset.permission}`,
+            preset.tools.length === 0
+              ? null
+              : `tools ${preset.tools.join(",")}`,
+          ].filter((part): part is string => part !== null);
+          return `  ${parts.join(" · ")}`;
+        }),
+      ].join("\n"),
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `/preset failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
+}
+
+async function usePreset(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  name: string,
+): Promise<void> {
+  if (name.length === 0) {
+    context.ui.notify("usage: /preset use <name>", "warning");
+    return;
+  }
+  try {
+    const bundle = await loadProductPresets(runtime.paths);
+    if (bundle.warnings.length > 0) {
+      context.ui.notify(bundle.warnings.join("\n"), "warning");
+    }
+    const selected = selectProductPreset(bundle, runtime.config, name);
+    const applied: string[] = [];
+    const skipped: string[] = [];
+
+    if (selected.permission === "read-only") {
+      try {
+        await setAutonomyProfile(runtime, "read-only");
+        runtime.config.autonomy.profile = "read-only";
+        applied.push("permission read-only");
+      } catch (error) {
+        skipped.push(
+          `permission read-only: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else if (runtime.autonomy.profile === "read-only") {
+      skipped.push(
+        "permission standard: a live read-only policy is not widened by a preset",
+      );
+    }
+
+    if (selected.model !== null) {
+      await selectModelReference(state, context, selected.model, {
+        persist: false,
+      });
+      const appliedModel = physicalModel(runtime);
+      if (
+        appliedModel !== undefined &&
+        `${appliedModel.provider}/${appliedModel.id}` === selected.model
+      ) {
+        applied.push(`model ${selected.model}`);
+      } else {
+        skipped.push(`model ${selected.model} could not be activated`);
+      }
+    }
+    if (runtime.host.session.thinkingLevel !== selected.thinking) {
+      runtime.host.session.setThinkingLevel(selected.thinking);
+      applied.push(`thinking ${selected.thinking}`);
+    }
+
+    const active = runtime.host.session.getActiveToolNames();
+    const available = state.activeToolsBeforePreset ?? active;
+    const readOnlyLive = runtime.autonomy.profile === "read-only";
+    const allowedTools = (tools: readonly string[]) =>
+      readOnlyLive
+        ? tools.filter(
+            (tool) =>
+              tool !== "write" &&
+              tool !== "edit" &&
+              tool !== "shell" &&
+              tool !== "exec",
+          )
+        : [...tools];
+    if (selected.tools.length > 0) {
+      if (state.activeToolsBeforePreset === undefined) {
+        state.activeToolsBeforePreset = [...active];
+      }
+      const requested = allowedTools(
+        selected.tools.filter((tool) => available.includes(tool)),
+      );
+      const missing = selected.tools.filter(
+        (tool) => !available.includes(tool),
+      );
+      runtime.host.session.setActiveToolsByName(requested);
+      applied.push(
+        `tools ${requested.length === 0 ? "(none)" : requested.join(",")}`,
+      );
+      if (missing.length > 0) {
+        skipped.push(`tools unavailable in this session: ${missing.join(",")}`);
+      }
+    } else if (state.activeToolsBeforePreset !== undefined) {
+      runtime.host.session.setActiveToolsByName(
+        allowedTools(state.activeToolsBeforePreset),
+      );
+      delete state.activeToolsBeforePreset;
+      applied.push("tools restored to the pre-preset set");
+    }
+
+    context.ui.notify(
+      [
+        `preset ${selected.name}`,
+        applied.length === 0
+          ? "applied: no changes"
+          : `applied: ${applied.join("; ")}`,
+        ...skipped.map((entry) => `skipped: ${entry}`),
+        "preset changes apply to this session; policy is never widened",
+      ].join("\n"),
+      "info",
+    );
+  } catch (error) {
+    context.ui.notify(
+      `/preset use failed: ${error instanceof Error ? error.message : String(error)}`,
+      error instanceof ProductPresetError ? "warning" : "error",
+    );
+  }
+}
+
+async function showModelRoles(
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  try {
+    const bundle = await loadModelRoles(runtime.paths);
+    if (bundle.warnings.length > 0) {
+      context.ui.notify(bundle.warnings.join("\n"), "warning");
+    }
+    const active = physicalModel(runtime);
+    const fallback =
+      active !== undefined
+        ? `${active.provider}/${active.id}`
+        : runtime.config.model.provider !== null &&
+            runtime.config.model.id !== null
+          ? `${runtime.config.model.provider}/${runtime.config.model.id}`
+          : null;
+    const lines = ["Model roles"];
+    for (const role of MODEL_ROLE_NAMES) {
+      const configured = bundle.roles[role];
+      if (configured !== undefined) {
+        lines.push(`  ${role}: ${configured} (user)`);
+        continue;
+      }
+      if (fallback === null) {
+        lines.push(`  ${role}: unconfigured (no fallback model)`);
+        continue;
+      }
+      try {
+        const resolved = resolveModelRole(
+          bundle,
+          runtime.config,
+          role,
+          fallback,
+        );
+        lines.push(`  ${role}: ${resolved.model} (${resolved.source})`);
+      } catch (error) {
+        lines.push(
+          `  ${role}: invalid (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
+    const pools = Object.values(bundle.pools).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+    lines.push(
+      pools.length === 0
+        ? "Subagent pools: none"
+        : `Subagent pools (${pools.length})`,
+    );
+    for (const pool of pools) {
+      lines.push(`  ${pool.name}: max ${pool.max} · ${pool.models.join(", ")}`);
+    }
+    context.ui.notify(lines.join("\n"), "info");
+  } catch (error) {
+    context.ui.notify(
+      `/roles failed: ${error instanceof Error ? error.message : String(error)}`,
+      error instanceof ModelRoleError ? "warning" : "error",
+    );
+  }
+}
+
+function recapRange(
+  argument: string,
+  lastSeq: number,
+): { from: number; to: number } {
+  if (argument.length === 0 || argument === "all") {
+    return { from: 1, to: lastSeq };
+  }
+  const range = /^(\d+)\.\.(\d+)$/u.exec(argument);
+  if (range !== null) {
+    return { from: Number(range[1]), to: Number(range[2]) };
+  }
+  if (/^\d+$/u.test(argument)) {
+    return { from: Number(argument), to: Number(argument) };
+  }
+  throw new ProductPresetError(
+    "recap.range",
+    "usage: /recap [all|<from>..<to>|<seq>]",
+  );
+}
+
+function formatRecap(recap: ReturnType<typeof createSessionRecap>): string {
+  return [
+    `Session recap ${recap.from_seq}..${recap.to_seq}`,
+    `events: ${recap.event_count}`,
+    ...Object.entries(recap.kinds)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([kind, count]) => `  ${kind}: ${count}`),
+    `body_sha256: ${recap.body_sha256}`,
+    "This is a derived view, not evidence.",
+  ].join("\n");
+}
+
 interface SubagentInvocation {
   task: string;
   profileName?: string;
+  role?: ModelRoleName;
+  poolName?: string;
   model?: string;
   worktree: boolean;
   shared: boolean;
@@ -3789,6 +4203,8 @@ interface SubagentInvocation {
 function parseSubagentInvocation(args: string): SubagentInvocation {
   const tokens = args.trim().split(/\s+/u).filter(Boolean);
   let profileName: string | undefined;
+  let role: ModelRoleName | undefined;
+  let poolName: string | undefined;
   let model: string | undefined;
   let worktree = false;
   let shared = false;
@@ -3812,9 +4228,14 @@ function parseSubagentInvocation(args: string): SubagentInvocation {
       index += 1;
       continue;
     }
-    if (token !== "--profile" && token !== "--model") {
+    if (
+      token !== "--profile" &&
+      token !== "--role" &&
+      token !== "--pool" &&
+      token !== "--model"
+    ) {
       throw new Error(
-        "usage: /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
+        "usage: /subagent [--profile <name>] [--role plan|smol|slow] [--pool <name>] [--model <provider/model>] [--worktree|--shared] <task>",
       );
     }
     const value = tokens[index + 1];
@@ -3823,6 +4244,13 @@ function parseSubagentInvocation(args: string): SubagentInvocation {
     }
     if (token === "--profile") {
       profileName = value;
+    } else if (token === "--role") {
+      if (!(MODEL_ROLE_NAMES as readonly string[]).includes(value)) {
+        throw new Error(`--role must be ${MODEL_ROLE_NAMES.join(", ")}`);
+      }
+      role = value as ModelRoleName;
+    } else if (token === "--pool") {
+      poolName = value;
     } else {
       model = value;
     }
@@ -3831,8 +4259,11 @@ function parseSubagentInvocation(args: string): SubagentInvocation {
   const task = tokens.slice(index).join(" ").trim();
   if (task.length === 0) {
     throw new Error(
-      "usage: /subagent [--profile <name>] [--model <provider/model>] [--worktree|--shared] <task>",
+      "usage: /subagent [--profile <name>] [--role plan|smol|slow] [--pool <name>] [--model <provider/model>] [--worktree|--shared] <task>",
     );
+  }
+  if (role !== undefined && model !== undefined) {
+    throw new Error("--role and --model are mutually exclusive");
   }
   if (worktree && shared) {
     throw new Error("--worktree and --shared are mutually exclusive");
@@ -3840,6 +4271,8 @@ function parseSubagentInvocation(args: string): SubagentInvocation {
   return {
     task,
     ...(profileName !== undefined ? { profileName } : {}),
+    ...(role !== undefined ? { role } : {}),
+    ...(poolName !== undefined ? { poolName } : {}),
     ...(model !== undefined ? { model } : {}),
     worktree,
     shared,
@@ -3910,9 +4343,138 @@ async function runSubagent(
     );
     return;
   }
+  const activeModel = physicalModel(runtime);
+  const configuredModel =
+    activeModel !== undefined
+      ? `${activeModel.provider}/${activeModel.id}`
+      : runtime.config.model.provider !== null &&
+          runtime.config.model.id !== null
+        ? `${runtime.config.model.provider}/${runtime.config.model.id}`
+        : undefined;
+  let roleSelection: ReturnType<typeof resolveModelRole> | undefined;
+  let modelLease: ReturnType<SubagentModelPoolManager["acquire"]> | undefined;
+  if (invocation.role !== undefined || invocation.poolName !== undefined) {
+    let roleBundle: Awaited<ReturnType<typeof loadModelRoles>>;
+    try {
+      roleBundle = await loadModelRoles(runtime.paths);
+    } catch (error) {
+      context.ui.notify(
+        `model roles could not be loaded: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "error",
+      );
+      return;
+    }
+    if (roleBundle.warnings.length > 0) {
+      context.ui.notify(roleBundle.warnings.join("\n"), "warning");
+    }
+    if (invocation.role !== undefined) {
+      if (configuredModel === undefined) {
+        context.ui.notify(
+          `role ${invocation.role} has no fallback model; select a model or configure roles.toml`,
+          "error",
+        );
+        return;
+      }
+      try {
+        roleSelection = resolveModelRole(
+          roleBundle,
+          runtime.config,
+          invocation.role,
+          configuredModel,
+        );
+      } catch (error) {
+        context.ui.notify(
+          `role ${invocation.role} is not usable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return;
+      }
+    }
+    if (invocation.poolName !== undefined) {
+      const definition = roleBundle.pools[invocation.poolName];
+      if (definition === undefined) {
+        context.ui.notify(
+          `subagent model pool ${invocation.poolName} is not configured`,
+          "error",
+        );
+        return;
+      }
+      const requested =
+        invocation.model === undefined
+          ? definition.models.slice(0, definition.max)
+          : [
+              invocation.model,
+              ...definition.models.filter(
+                (entry) => entry !== invocation.model,
+              ),
+            ].slice(0, definition.max);
+      try {
+        state.modelPool ??= new SubagentModelPoolManager();
+        modelLease = state.modelPool.acquire(
+          roleBundle,
+          runtime.config,
+          invocation.poolName,
+          requested,
+        );
+      } catch (error) {
+        context.ui.notify(
+          `subagent model pool ${invocation.poolName} is unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "error",
+        );
+        return;
+      }
+    }
+  }
+  const parentTools = new Set(runtime.config.tools.enabled);
+  const readOnlyParent = runtime.autonomy.profile === "read-only";
+  const parentMask: SubagentToolMask = {
+    read: parentTools.has("read"),
+    write: !readOnlyParent && parentTools.has("write"),
+    edit: !readOnlyParent && parentTools.has("edit"),
+    shell:
+      !readOnlyParent && (parentTools.has("shell") || parentTools.has("exec")),
+    search: parentTools.has("search"),
+    memory_search: parentTools.has("memory_search"),
+  };
+  const childMask: SubagentToolMask = profile?.tools ?? {
+    read: true,
+    write: false,
+    edit: false,
+    shell: false,
+    search: true,
+    memory_search: false,
+  };
+  try {
+    assertSubagentToolCeiling(parentMask, childMask);
+  } catch (error) {
+    if (modelLease !== undefined) {
+      state.modelPool?.release(modelLease.lease_id);
+      modelLease = undefined;
+    }
+    context.ui.notify(
+      `subagent tool ceiling rejected the profile: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+    return;
+  }
+  const releaseModelLease = (): void => {
+    if (modelLease !== undefined) {
+      state.modelPool?.release(modelLease.lease_id);
+      modelLease = undefined;
+    }
+  };
   const pool = profile === undefined ? [] : profilePool(profile);
   if (invocation.model !== undefined && pool.length > 0) {
     if (!pool.includes(invocation.model)) {
+      releaseModelLease();
       context.ui.notify(
         `model ${invocation.model} is outside profile ${profile!.name}'s pool: ${pool.join(", ")}`,
         "error",
@@ -3924,6 +4486,7 @@ async function runSubagent(
     profile !== undefined &&
     (profile.tools.write || profile.tools.edit || profile.tools.shell);
   if (invocation.shared && mutating) {
+    releaseModelLease();
     context.ui.notify(
       `profile ${profile!.name} can mutate files and requires a worktree; remove --shared`,
       "error",
@@ -3937,6 +4500,7 @@ async function runSubagent(
     (record) => record.status === "running",
   );
   if (running.length >= 4) {
+    releaseModelLease();
     context.ui.notify(
       "four background subagents are already running; stop one with /agents stop <id>",
       "warning",
@@ -3946,22 +4510,21 @@ async function runSubagent(
   const parentSessionId = runtime.session.sessionId;
   const parentRunId = runtime.host.currentRunId;
   const childSessionId = createUlid();
-  const activeModel = physicalModel(runtime);
-  const configuredModel =
-    activeModel !== undefined
-      ? `${activeModel.provider}/${activeModel.id}`
-      : runtime.config.model.provider !== null &&
-          runtime.config.model.id !== null
-        ? `${runtime.config.model.provider}/${runtime.config.model.id}`
-        : undefined;
   const primaryModel =
-    invocation.model ?? profile?.model ?? configuredModel ?? undefined;
+    invocation.model ??
+    roleSelection?.model ??
+    modelLease?.models[0] ??
+    profile?.model ??
+    configuredModel ??
+    undefined;
   const profileFallbacks =
-    pool.length === 0
+    pool.length === 0 && (modelLease?.models.length ?? 0) <= 1
       ? []
       : [
           ...new Set(
-            pool.filter((entry) => entry !== (primaryModel ?? undefined)),
+            [...pool, ...(modelLease?.models.slice(1) ?? [])].filter(
+              (entry) => entry !== (primaryModel ?? undefined),
+            ),
           ),
         ];
   const fallbackModels =
@@ -4177,7 +4740,12 @@ async function runSubagent(
         record.status === "stopped" ? "warning" : "error",
       );
     }
-  })();
+  })().finally(() => {
+    if (modelLease !== undefined) {
+      state.modelPool?.release(modelLease.lease_id);
+      modelLease = undefined;
+    }
+  });
 }
 
 function formatSubagents(state: TuiState): string {
@@ -5725,6 +6293,69 @@ export function createTuiExtension(
             return;
           }
           await notify(context, hookStatus(runtime.session.allEvents));
+        }),
+      });
+      pi.registerCommand("preset", {
+        description: "List or apply a user preset to this session",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const [subcommand, ...rest] = args.trim().split(/\s+/u);
+          if (
+            subcommand === undefined ||
+            subcommand === "" ||
+            subcommand === "list"
+          ) {
+            await listPresets(runtime, context);
+            return;
+          }
+          if (subcommand === "use") {
+            await usePreset(state, runtime, context, rest.join(" ").trim());
+            return;
+          }
+          context.ui.notify("usage: /preset [list|use <name>]", "warning");
+        }),
+      });
+      pi.registerCommand("btw", {
+        description:
+          "Run a read-only side question without stopping the main task",
+        handler: commandContext(state, async (runtime, context, args) => {
+          await runSideTask(state, runtime, context, "btw", args);
+        }),
+      });
+      pi.registerCommand("side", {
+        description:
+          "Run a background side task without stopping the main task",
+        handler: commandContext(state, async (runtime, context, args) => {
+          await runSideTask(state, runtime, context, "side", args);
+        }),
+      });
+      pi.registerCommand("recap", {
+        description: "Show a derived recap for a contiguous session range",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const events = runtime.session.allEvents;
+          if (events.length === 0) {
+            context.ui.notify("No events in this session.", "info");
+            return;
+          }
+          try {
+            const range = recapRange(args, events.at(-1)!.seq);
+            const recap = createSessionRecap(events, range.from, range.to);
+            await notify(context, formatRecap(recap));
+          } catch (error) {
+            context.ui.notify(
+              error instanceof Error ? error.message : String(error),
+              "warning",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("roles", {
+        description: "Show configured model roles and subagent pools",
+        handler: commandContext(state, async (runtime, context, args) => {
+          if (args.trim() !== "" && args.trim() !== "status") {
+            context.ui.notify("usage: /roles [status]", "warning");
+            return;
+          }
+          await showModelRoles(runtime, context);
         }),
       });
       pi.registerCommand("review", {

@@ -526,6 +526,12 @@ export class SideTaskQueue {
       .map((task) => ({ ...task }));
   }
 
+  get all(): readonly SideTaskRecord[] {
+    return [...this.latest.values()]
+      .sort((left, right) => left.seq - right.seq)
+      .map((task) => ({ ...task }));
+  }
+
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.operationTail;
     let release!: () => void;
