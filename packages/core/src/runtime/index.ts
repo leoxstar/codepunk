@@ -1,6 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { type SessionEvent, type SignOffRequest } from "codepunk-protocol";
+import {
+  type HookEvidence,
+  type SessionEvent,
+  type SignOffRequest,
+} from "codepunk-protocol";
 import type {
   AgentSession,
   AgentSessionServices,
@@ -97,6 +101,7 @@ import {
   type SkillBundle,
   type SkillSource,
 } from "../skills/index.ts";
+import { HookRunner } from "../capabilities/hooks.ts";
 import {
   probeWindowsShell,
   resolveWindowsShell,
@@ -668,6 +673,12 @@ async function createRuntimeInner(
           source: options.projectTrustSource ?? ("flag" as const),
         }),
   });
+  const hooks = new HookRunner({
+    deliveryRoot: paths.deliveryRoot,
+    userHome: paths.home,
+    cwd: paths.cwd,
+    projectTrusted: workspaceTrust.grants.config,
+  });
   const projectResourceRequested =
     workspaceTrust.grants.config || workspaceTrust.grants.policy;
   const projectConfigSafety = projectResourceRequested
@@ -860,6 +871,12 @@ async function createRuntimeInner(
   // the host is created, so the sandbox's network events reach the session
   // log through the host's own append chain.
   const hostRef: { current: PiHost | null } = { current: null };
+  const appendHookEvidence = async (evidence: HookEvidence): Promise<void> => {
+    if (hostRef.current === null) {
+      throw new Error("hook evidence cannot be written before the host exists");
+    }
+    await hostRef.current.recordEvent("hook/result", evidence);
+  };
   if (config.sandbox.mode === "required") {
     try {
       sandbox = await SrtSandbox.create(
@@ -1184,6 +1201,12 @@ async function createRuntimeInner(
       maxToolOutputTokens: config.context.max_tool_output_tokens,
       truncation: config.context.truncation,
       truncationThreshold: config.context.truncation_threshold,
+      beforeToolHook: async (input) => {
+        await hooks.run("before_tool", input, appendHookEvidence);
+      },
+      afterToolHook: async (input) => {
+        await hooks.run("after_tool", input, appendHookEvidence);
+      },
       sessionStore: session,
       settings: piSettings(config, settingsContextWindow),
       enabledTools: tools,
@@ -1266,6 +1289,20 @@ async function createRuntimeInner(
     grants: { ...workspaceTrust.grants },
     available: [...workspaceTrust.available],
   });
+  try {
+    await hooks.run(
+      "session_start",
+      {
+        session_id: session.sessionId,
+        cwd: paths.cwd,
+        project_id: paths.projectId,
+      },
+      appendHookEvidence,
+    );
+  } catch (error) {
+    await host.dispose().catch(() => undefined);
+    throw error;
+  }
   if (skills.skills.length > 0) {
     await host.recordEvent("skill/loaded", {
       skills: skills.skills.map((skill) => ({
@@ -1886,6 +1923,20 @@ async function createRuntimeInner(
       };
     },
     async dispose() {
+      let hookFailure: unknown = null;
+      try {
+        await hooks.run(
+          "session_end",
+          {
+            session_id: session.sessionId,
+            cwd: paths.cwd,
+            project_id: paths.projectId,
+          },
+          appendHookEvidence,
+        );
+      } catch (error) {
+        hookFailure = error;
+      }
       await mcp.close();
       autonomy.revoke();
       await host
@@ -1895,6 +1946,9 @@ async function createRuntimeInner(
         })
         .catch(() => undefined);
       await host.dispose();
+      if (hookFailure !== null) {
+        throw hookFailure;
+      }
     },
   };
   return runtime;

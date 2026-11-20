@@ -68,6 +68,7 @@ export interface WorkspaceTrustResourcePreview {
 
 const TRUST_REQUIRING_FILES = [
   "config.toml",
+  "hooks.toml",
   "local.toml",
   "policy.toml",
 ] as const;
@@ -167,7 +168,11 @@ export async function findTrustRequiringProjectResources(
 export function workspaceTrustResourceKind(
   resource: string,
 ): WorkspaceTrustResourceKind {
-  if (resource.endsWith("/config.toml") || resource.endsWith("/local.toml")) {
+  if (
+    resource.endsWith("/config.toml") ||
+    resource.endsWith("/hooks.toml") ||
+    resource.endsWith("/local.toml")
+  ) {
     return "config";
   }
   if (resource.endsWith("/agents")) {

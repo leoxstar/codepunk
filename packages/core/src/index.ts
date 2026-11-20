@@ -75,6 +75,15 @@ export {
   type CapabilitySnapshot,
 } from "./capabilities/index.ts";
 export {
+  HOOK_CONFIG_FILE,
+  MAX_HOOK_CONFIG_BYTES,
+  HookBlockedError,
+  HookRunner,
+  formatHookStatus,
+  type HookEvidenceAppend,
+  type HookRunnerOptions,
+} from "./capabilities/hooks.ts";
+export {
   DEFAULT_CONTEXT_FILE_BYTES,
   DEFAULT_CONTEXT_TOTAL_BYTES,
   loadContext,
