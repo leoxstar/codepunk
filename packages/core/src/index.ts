@@ -270,6 +270,8 @@ export {
 export {
   APPROVAL_MODE_NAMES,
   CONFIG_FILE_NAME,
+  KEYMAP_ACTIONS,
+  STATUSLINE_SEGMENTS,
   ConfigError,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
@@ -300,6 +302,9 @@ export {
   type PermissionProfileSettings,
   type ReviewerMode,
   type SandboxMode,
+  type KeymapAction,
+  type KeymapBinding,
+  type StatuslineSegment,
   type TelemetryMode,
   type ThinkingLevel,
 } from "./config/index.ts";
