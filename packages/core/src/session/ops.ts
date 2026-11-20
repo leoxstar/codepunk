@@ -16,6 +16,7 @@ import {
   SessionStore,
   type SessionIndexEntry,
 } from "./index.ts";
+import { archivedSessionIds } from "./operations.ts";
 
 export interface SessionListEntry {
   id: string;
@@ -25,6 +26,7 @@ export interface SessionListEntry {
   updated_at: string;
   title: string | null;
   pinned: boolean;
+  archived: boolean;
   last_seq: number;
   cwd: string;
 }
@@ -152,10 +154,15 @@ function redact(value: string, home: string): { text: string; count: number } {
 export async function listProjectSessions(
   rootDir: string,
   projectId: string,
+  options: { includeArchived?: boolean } = {},
 ): Promise<SessionListEntry[]> {
   const entries = await listSessionIndex(rootDir, projectId);
+  const archived = await archivedSessionIds(rootDir);
   const output: SessionListEntry[] = [];
   for (const entry of entries) {
+    if (archived.has(entry.sessionId) && options.includeArchived !== true) {
+      continue;
+    }
     const metaPath = path.join(entry.path, "session-meta.json");
     let meta: SessionMeta | null = null;
     try {
@@ -171,6 +178,7 @@ export async function listProjectSessions(
       updated_at: meta?.updated_at ?? entry.header.created_at,
       title: meta?.title ?? null,
       pinned: meta?.pinned ?? false,
+      archived: archived.has(entry.sessionId),
       last_seq: entry.lastSeq,
       cwd: entry.header.cwd,
     });
@@ -607,7 +615,7 @@ export function formatSessionList(
   return entries
     .map(
       (entry) =>
-        `${entry.pinned ? "*" : " "} ${entry.id}  ${entry.updated_at}  ${entry.last_seq} events  ${entry.title ?? "(untitled)"}${
+        `${entry.pinned ? "*" : " "} ${entry.id}  ${entry.updated_at}  ${entry.last_seq} events  ${entry.archived ? "[archived] " : ""}${entry.title ?? "(untitled)"}${
           entry.parent_session_id === null
             ? ""
             : `  from ${entry.parent_session_id}`

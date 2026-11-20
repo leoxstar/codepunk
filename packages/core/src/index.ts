@@ -430,6 +430,25 @@ export {
   type SignRunResult,
 } from "./verdict/store.ts";
 export {
+  SessionManagementError,
+  archiveSession,
+  createSessionBundle,
+  deleteSession,
+  importSession,
+  renameSession,
+  type DeleteSessionResult,
+  type ImportSessionResult,
+  type SessionBundle,
+} from "./session/management.ts";
+export {
+  appendSessionOperation,
+  archivedSessionIds,
+  readSessionOperations,
+  SessionOperationError,
+  type SessionOperationAction,
+  type SessionOperationRecord,
+} from "./session/operations.ts";
+export {
   planRetention,
   type RetentionAction,
   type RetentionConfig,
