@@ -57,6 +57,7 @@ import {
   formatSessionSearch,
   formatSessionTree,
   importProviderModels,
+  importSession,
   inspectSavedWorkspaceTrust,
   initializeStateVersion,
   installSkill,
@@ -89,6 +90,10 @@ import {
   projectPaths,
   probeSrtSandbox,
   restoreBackup,
+  renameSession,
+  archiveSession,
+  deleteSession,
+  createSessionBundle,
   removeMcpServer,
   readMcpConfig,
   readSavedWorkspaceTrustGrants,
@@ -213,6 +218,8 @@ interface CliOptions {
   check: boolean;
   unpin: boolean;
   allProjects: boolean;
+  includeArchived: boolean;
+  confirm: boolean;
   verdict: "complete" | "incomplete" | undefined;
   actor: string | undefined;
   output: string | undefined;
@@ -252,11 +259,17 @@ function usage(): string {
     "  --parent-session-id <id>  record the parent of a new child session",
     "",
     "Session commands:",
+    "  codepunk sessions [--include-archived]",
     "  codepunk sessions [prune] [--apply]",
     "      sessions prune is dry-run only; --apply is refused, use codepunk gc --apply",
     "  codepunk sessions tree [session-id] [--json]",
     "  codepunk sessions graph [--json]",
     "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
+    "  codepunk sessions rename <session-id> <title>",
+    "  codepunk sessions archive|unarchive <session-id>",
+    "  codepunk sessions delete <session-id> --confirm",
+    "  codepunk sessions export <session-id> [--output path]",
+    "  codepunk sessions import <bundle.json>",
     "  codepunk export [session-id] [--output path]",
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
@@ -398,12 +411,17 @@ function subcommandUsage(command: string | undefined): string | undefined {
       case "prune":
         return [
           "usage:",
-          "  codepunk sessions",
+          "  codepunk sessions [--include-archived]",
           "  codepunk sessions prune [--apply]",
           "      prune is dry-run only; --apply is refused, use codepunk gc --apply",
           "  codepunk sessions tree [session-id] [--json]",
           "  codepunk sessions graph [--json]",
           "  codepunk sessions search <query> [--limit n] [--all-projects] [--json]",
+          "  codepunk sessions rename <session-id> <title>",
+          "  codepunk sessions archive|unarchive <session-id>",
+          "  codepunk sessions delete <session-id> --confirm",
+          "  codepunk sessions export <session-id> [--output path]",
+          "  codepunk sessions import <bundle.json>",
           "  codepunk export [session-id] [--output path]",
           "  codepunk pin <session-id>",
           "  codepunk pin <session-id> --unpin",
@@ -612,6 +630,8 @@ function parseCli(argv: string[]): CliOptions {
       check: { type: "boolean" },
       unpin: { type: "boolean" },
       "all-projects": { type: "boolean" },
+      "include-archived": { type: "boolean" },
+      confirm: { type: "boolean" },
       verdict: { type: "string" },
       actor: { type: "string" },
       output: { type: "string" },
@@ -1025,6 +1045,8 @@ function parseCli(argv: string[]): CliOptions {
     check: values.check === true,
     unpin: values.unpin === true,
     allProjects: values["all-projects"] === true,
+    includeArchived: values["include-archived"] === true,
+    confirm: values.confirm === true,
     verdict,
     actor: values.actor,
     output: values.output,
@@ -2024,6 +2046,105 @@ async function commandSessions(options: CliOptions): Promise<number> {
   if (options.allProjects && subcommand !== "search") {
     throw new Error("--all-projects only applies to sessions search");
   }
+  const sessionOptions = (sessionId: string) => ({
+    rootDir: paths.home,
+    cwd: paths.cwd,
+    projectRoot: paths.deliveryRoot,
+    projectId: paths.projectId,
+    sessionId,
+  });
+  if (
+    subcommand === "rename" ||
+    subcommand === "archive" ||
+    subcommand === "unarchive" ||
+    subcommand === "delete" ||
+    subcommand === "export" ||
+    subcommand === "import"
+  ) {
+    const requested = options.positionals[2];
+    if (requested === undefined) {
+      throw new Error(`sessions ${subcommand} requires a session id`);
+    }
+    if (subcommand === "rename") {
+      const title = options.positionals.slice(3).join(" ").trim();
+      if (title.length === 0) {
+        throw new Error("sessions rename requires a title");
+      }
+      const renamed = await renameSession(sessionOptions(requested), title);
+      process.stdout.write(
+        options.json
+          ? `${JSON.stringify({ session_id: requested, title: renamed })}\n`
+          : `renamed ${requested} -> ${renamed}\n`,
+      );
+      return 0;
+    }
+    if (subcommand === "archive" || subcommand === "unarchive") {
+      await archiveSession(sessionOptions(requested), subcommand === "archive");
+      process.stdout.write(
+        options.json
+          ? `${JSON.stringify({ session_id: requested, archived: subcommand === "archive" })}\n`
+          : `${subcommand === "archive" ? "archived" : "unarchived"} ${requested}\n`,
+      );
+      return 0;
+    }
+    if (subcommand === "delete") {
+      if (!options.confirm) {
+        throw new Error("sessions delete requires --confirm");
+      }
+      const deleted = await deleteSession({
+        ...sessionOptions(requested),
+        confirmed: true,
+      });
+      process.stdout.write(
+        options.json
+          ? `${JSON.stringify(deleted)}\n`
+          : `deleted ${deleted.session_id} (backup ${deleted.backup_id}, ${deleted.deleted_files} file(s))\n`,
+      );
+      return 0;
+    }
+    if (subcommand === "export") {
+      const store = await resolveSession(sessionOptions(requested));
+      const bundle = await createSessionBundle(store);
+      const target =
+        options.output ??
+        path.join(paths.artifactsDir, `${store.sessionId}.session.json`);
+      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      await fs.writeFile(target, `${JSON.stringify(bundle)}\n`, {
+        mode: 0o600,
+      });
+      process.stdout.write(
+        options.json
+          ? `${JSON.stringify({ session_id: store.sessionId, output: target, events: bundle.meta.log_seq })}\n`
+          : `exported ${store.sessionId} -> ${target} (${bundle.meta.log_seq} event(s))\n`,
+      );
+      return 0;
+    }
+    const bundlePath = path.resolve(requested);
+    const stat = await fs.lstat(bundlePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("session bundle must be a regular file");
+    }
+    if (stat.size > 64 * 1024 * 1024) {
+      throw new Error("session bundle exceeds 64 MiB");
+    }
+    let bundle: unknown;
+    try {
+      bundle = JSON.parse(await fs.readFile(bundlePath, "utf8"));
+    } catch {
+      throw new Error("session bundle is not valid JSON");
+    }
+    const imported = await importSession({
+      home: paths.home,
+      projectId: paths.projectId,
+      bundle: bundle as never,
+    });
+    process.stdout.write(
+      options.json
+        ? `${JSON.stringify(imported)}\n`
+        : `imported ${imported.session_id} -> ${imported.path} (${imported.events} event(s))\n`,
+    );
+    return 0;
+  }
   if (subcommand === "search") {
     const query = options.positionals[2];
     if (query === undefined) {
@@ -2079,7 +2200,9 @@ async function commandSessions(options: CliOptions): Promise<number> {
     );
     return 0;
   }
-  const sessions = await listProjectSessions(paths.home, paths.projectId);
+  const sessions = await listProjectSessions(paths.home, paths.projectId, {
+    includeArchived: options.includeArchived,
+  });
   process.stdout.write(
     options.json
       ? `${JSON.stringify(sessions)}\n`
