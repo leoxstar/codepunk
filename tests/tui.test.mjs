@@ -1355,6 +1355,7 @@ test("a real pty lists presets and roles and applies a preset", async () => {
                 api: "openai-completions",
                 contextWindow: 128000,
                 maxTokens: 1024,
+                input: ["text", "image"],
               },
             ],
           },
@@ -1447,6 +1448,30 @@ test("a real pty lists presets and roles and applies a preset", async () => {
             (entry.status === "completed" || entry.status === "failed"),
         );
       }, "side task settlement");
+      const imagePath = path.join(project, "pixel.png");
+      await fs.writeFile(
+        imagePath,
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAABAAAAANCAIAAAAv2XlzAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAEKADAAQAAAABAAAADQAAAACsJSLBAAACGUlEQVQoFQ2Py27TQABF5z1+JnaSIipEQUKCVgIJBKwoO8TH8BF8Enu2SEj8ABUFWqrEzcNJ6vd4xh7PkP25R/fAz58+IhoAYBwvqIRKFkvCOOeslQ1EJPScOs8gMC6j27yZTEZkEsWdxdgOo/GYOb0UDSH8sD8/f+/5/mQ6+/b1S5UXlMLe2OdnT0kYeJT72yyfp3fTOJ5Fo8EAL/DH0bTrZK/10TQOGRpM7/t+qzVCYPBc7nO2WKVlWXBijVGuS+typ2Sjyjs9DFEcEsriaCS0Qr2szaBdBk9mwX0fAdO3QnBGhJTQmng6BQgCiKXQRVYzYknfq7atrv/Ot0nyJnq50v335doPwpvLHy+ePcZcKyW1tLubxbqoW9clZjBV3c5vkiMKoexV01ZCFkU5o32Mh18XF/kuyzKBalnV6nK+J0labev8Oi3C4yjZ7FLVxJy8On1UJBZyVG3K31fLg/xk7EoD8krhbd3N00YBlpZiVVTWKkLwu9dnmDt/btchxU2jbld7zul4HNZ1ixEhFhHf5aofEMMIWs8hFMNoFP68+EekeBK5MUe+S91x7FFzEDGHQmQHgCiBNqv745mf7vPFbZpv9g4bsO3LRlxtqnUuPrw9xZ5LXAqsGZrOAnB4KdrOwk7uVkvG2cjjm1xkldBaH7Dddo8xQZ7DEACV1NbYrlPZoQwDqAdRCdOppmpED2YBuheghw/i/+orRkAlNmTDAAAAAElFTkSuQmCC",
+          "base64",
+        ),
+      );
+      await runCommandAfter(
+        session,
+        "/image pixel.png what is in this image",
+        "image confirmed",
+      );
+      assert.match(session.output(), /type: image\/png/u);
+      await waitFor(
+        () =>
+          model.requests.some((request) =>
+            JSON.stringify(request).includes(
+              "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAANCAI",
+            ),
+          ),
+        "image request",
+      );
+      await waitForQuiet(session, 500);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
