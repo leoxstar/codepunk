@@ -98,10 +98,11 @@ jobs: lint 29 s, Ubuntu test 5m46s, macOS build 37 s, and Windows build 54 s.
 At release commit `32ebeac`, `pnpm run build`, `pnpm run typecheck`,
 `node scripts/check-repo.mjs --require-built`, `pnpm run eval`, and
 `pnpm run format:check` all exited 0; the full `pnpm test` run on the
-corresponding pre-format code reports `# tests 820 / # pass 811 / # fail 0 /
-# skipped 9`. Full CI run `44473437813` passed all seven targets at an earlier
-commit; the release commit's hosted CI has not been awaited. Hosted Windows
-evidence is not a Windows 11 support claim:
+corresponding pre-format code reports
+`# tests 820 / # pass 811 / # fail 0 / # skipped 9`. Full CI run
+`44473437813` passed all seven targets at an earlier commit; the release
+commit's hosted CI has not been awaited. Hosted Windows evidence is not a
+Windows 11 support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
