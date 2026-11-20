@@ -18,7 +18,8 @@ const MAX_AGENT_FILES = 64;
 const MAX_SHELL_RULES = 32;
 const MAX_SHELL_ARGV = 32;
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/u;
-const MODEL_REFERENCE = /^[^/\s]+\/[^/\s]+$/u;
+const MODEL_REFERENCE = /^[A-Za-z0-9._@-]+\/[^\s\u0000-\u001f\u007f]+$/u;
+const MODEL_REFERENCE_MAX = 300;
 const FRONTMATTER_KEYS = new Set([
   "name",
   "description",
@@ -286,7 +287,11 @@ function parseModel(value: unknown, label: string): string | null {
   if (value === undefined || value === null) {
     return null;
   }
-  if (typeof value !== "string" || !MODEL_REFERENCE.test(value.trim())) {
+  if (
+    typeof value !== "string" ||
+    value.length > MODEL_REFERENCE_MAX ||
+    !MODEL_REFERENCE.test(value.trim())
+  ) {
     throw new AgentProfileError(
       "agent.model",
       `${label} must use provider/model`,
@@ -377,7 +382,7 @@ async function readProfile(
     );
   }
   for (const entry of fallback) {
-    if (!MODEL_REFERENCE.test(entry)) {
+    if (entry.length > MODEL_REFERENCE_MAX || !MODEL_REFERENCE.test(entry)) {
       throw new AgentProfileError(
         "agent.fallback",
         "agent profile fallback entries must use provider/model",

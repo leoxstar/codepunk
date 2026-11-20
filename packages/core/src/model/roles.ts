@@ -5,12 +5,14 @@ import type { CodepunkConfig } from "../config/index.ts";
 import { parseToml, TomlError, type TomlTable } from "../config/toml.ts";
 import type { SubagentToolMask } from "../workers/subagent.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
+import { modelMatchesEnabledScope, parseModelReference } from "./index.ts";
 
 export const MODEL_ROLE_NAMES = ["plan", "smol", "slow"] as const;
 export type ModelRoleName = (typeof MODEL_ROLE_NAMES)[number];
 
 const MAX_ROLES_BYTES = 64 * 1024;
-const MODEL_REFERENCE = /^[^/\s]+\/[^/\s]+$/u;
+const MODEL_REFERENCE = /^[A-Za-z0-9._@-]+\/[^\s\u0000-\u001f\u007f]+$/u;
+const MODEL_REFERENCE_MAX = 300;
 const POOL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 
 export class ModelRoleError extends Error {
@@ -50,7 +52,11 @@ export interface SubagentModelLease {
 }
 
 function modelReference(value: unknown, where: string): string {
-  if (typeof value !== "string" || !MODEL_REFERENCE.test(value.trim())) {
+  if (
+    typeof value !== "string" ||
+    value.length > MODEL_REFERENCE_MAX ||
+    !MODEL_REFERENCE.test(value.trim())
+  ) {
     throw new ModelRoleError(
       "roles.model",
       `${where} must be a provider/model reference`,
@@ -224,16 +230,16 @@ export function resolveModelRole(
   }
   const selected = bundle.roles[role];
   const model = selected ?? fallbackModel;
-  if (!MODEL_REFERENCE.test(model)) {
+  const parsed = MODEL_REFERENCE.test(model)
+    ? parseModelReference(model)
+    : null;
+  if (parsed === null) {
     throw new ModelRoleError(
       "roles.fallback",
       `no model is configured for role ${role}`,
     );
   }
-  if (
-    config.model.enabled.length > 0 &&
-    !config.model.enabled.includes(model)
-  ) {
+  if (!modelMatchesEnabledScope(parsed, config.model.enabled)) {
     throw new ModelRoleError(
       "roles.model_scope",
       `model ${model} for role ${role} is outside model.enabled`,
@@ -278,9 +284,12 @@ export function selectSubagentModels(
         `model ${model} is outside pool ${poolName}`,
       );
     }
+    const parsed = MODEL_REFERENCE.test(model)
+      ? parseModelReference(model)
+      : null;
     if (
-      config.model.enabled.length > 0 &&
-      !config.model.enabled.includes(model)
+      parsed === null ||
+      !modelMatchesEnabledScope(parsed, config.model.enabled)
     ) {
       throw new ModelRoleError(
         "roles.model_scope",

@@ -126,6 +126,32 @@ test("project profiles override a user profile with the same name", async () => 
   });
 });
 
+test("agent profiles accept nested provider model ids", async () => {
+  await withTempDirectory("codepunk-agent-nested-model-", async (root) => {
+    const fixture = await pathsFor(root);
+    await writeFile(
+      path.join(fixture.home, "agents", "nested.md"),
+      [
+        "---",
+        "name: nested",
+        "description: nested provider model",
+        "model: openrouter/anthropic/claude-sonnet-4.5",
+        "fallback: openrouter/openai/gpt-6.1, openrouter/google/gemini-3-pro",
+        "---",
+        "Nested model profile.",
+        "",
+      ].join("\n"),
+    );
+    const bundle = await core.loadAgentProfiles(fixture.paths);
+    const nested = bundle.profiles.find((entry) => entry.name === "nested");
+    assert.equal(nested?.model, "openrouter/anthropic/claude-sonnet-4.5");
+    assert.deepEqual(nested?.fallback, [
+      "openrouter/openai/gpt-6.1",
+      "openrouter/google/gemini-3-pro",
+    ]);
+  });
+});
+
 test("invalid or linked profile files are ignored with warnings", async () => {
   await withTempDirectory("codepunk-agent-invalid-", async (root) => {
     const fixture = await pathsFor(root);

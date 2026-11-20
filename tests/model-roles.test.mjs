@@ -142,6 +142,139 @@ test("model roles and subagent pools resolve from user configuration", async () 
   });
 });
 
+test("model roles and pools accept nested provider model ids and glob scope", async () => {
+  await withTempDirectory("codepunk-model-roles-nested-", async (root) => {
+    const { paths } = await makeProject(root);
+    await fs.writeFile(
+      path.join(paths.home, "roles.toml"),
+      [
+        "version = 1",
+        "[roles]",
+        'plan = "openrouter/anthropic/claude-sonnet-4.5"',
+        "",
+        "[[pool]]",
+        'name = "subagent"',
+        'models = ["openrouter/openai/gpt-6.1"]',
+        "max = 1",
+        "",
+      ].join("\n"),
+    );
+    const bundle = await core.loadModelRoles(paths);
+    const scoped = config(["openrouter/**"]);
+    assert.deepEqual(
+      core.resolveModelRole(
+        bundle,
+        scoped,
+        "plan",
+        "openrouter/google/gemini-3-pro",
+      ),
+      {
+        role: "plan",
+        model: "openrouter/anthropic/claude-sonnet-4.5",
+        source: "user",
+      },
+    );
+    assert.deepEqual(
+      core.resolveModelRole(
+        bundle,
+        scoped,
+        "slow",
+        "openrouter/google/gemini-3-pro",
+      ),
+      {
+        role: "slow",
+        model: "openrouter/google/gemini-3-pro",
+        source: "fallback",
+      },
+    );
+    assert.deepEqual(
+      core.selectSubagentModels(bundle, scoped, "subagent", [
+        "openrouter/openai/gpt-6.1",
+      ]),
+      ["openrouter/openai/gpt-6.1"],
+    );
+    assert.throws(
+      () =>
+        core.resolveModelRole(
+          bundle,
+          config(["openrouter/google/**"]),
+          "plan",
+          "openrouter/default/model",
+        ),
+      (error) => error.code === "roles.model_scope",
+    );
+  });
+});
+
+test("model scope patterns preserve segment boundaries and exact references", () => {
+  assert.equal(
+    core.modelMatchesEnabledScope(
+      { provider: "openrouter", id: "anthropic/claude-sonnet-4.5" },
+      ["openrouter/**"],
+    ),
+    true,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope(
+      { provider: "openrouter", id: "anthropic/claude-sonnet-4.5" },
+      ["openrouter/*"],
+    ),
+    false,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "openrouter", id: "gpt/x" }, [
+      "openrouter/gpt**",
+    ]),
+    false,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "openrouter", id: "a/foo" }, [
+      "openrouter/**foo",
+    ]),
+    false,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "openrouter", id: "a/foo" }, [
+      "openrouter/**/foo",
+    ]),
+    true,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "gateway/team", id: "alpha" }, [
+      "alpha",
+    ]),
+    true,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "gateway/team", id: "alpha" }, [
+      "team/alpha",
+    ]),
+    false,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "gateway/team", id: "alpha" }, [
+      "*/alpha",
+    ]),
+    false,
+  );
+  assert.equal(
+    core.modelMatchesEnabledScope({ provider: "gateway", id: "model:high" }, [
+      "gateway/model",
+    ]),
+    true,
+  );
+  assert.throws(
+    () =>
+      core.resolveModelRole(
+        { roles: {}, pools: {}, warnings: [] },
+        config(["team/alpha"]),
+        "slow",
+        "gateway/team/alpha",
+      ),
+    (error) => error.code === "roles.model_scope",
+  );
+});
+
 test("invalid role files and unknown keys fail closed", async () => {
   await withTempDirectory("codepunk-model-roles-invalid-", async (root) => {
     const { paths } = await makeProject(root);

@@ -88,6 +88,72 @@ test("presets load only from the user home and reject unknown keys", async () =>
   });
 });
 
+test("presets accept nested provider model ids and glob scope", async () => {
+  await withTempDirectory("codepunk-presets-nested-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writePresets(
+      paths,
+      [
+        "version = 1",
+        "[[preset]]",
+        'name = "nested"',
+        'description = "Nested provider model"',
+        'model = "openrouter/anthropic/claude-sonnet-4.5"',
+        'thinking = "high"',
+        "",
+      ].join("\n"),
+    );
+    const bundle = await core.loadProductPresets(paths);
+    const selected = core.selectProductPreset(
+      bundle,
+      config({
+        model: { enabled: ["openrouter/**"], thinking: "low" },
+      }),
+      "nested",
+    );
+    assert.equal(selected.model, "openrouter/anthropic/claude-sonnet-4.5");
+    assert.throws(
+      () =>
+        core.selectProductPreset(
+          bundle,
+          config({
+            model: { enabled: ["openrouter/google/**"], thinking: "low" },
+          }),
+          "nested",
+        ),
+      (error) => error.code === "preset.widen_model",
+    );
+  });
+});
+
+test("presets reject an exact scope that only matches part of the model id", async () => {
+  await withTempDirectory("codepunk-presets-ambiguous-scope-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writePresets(
+      paths,
+      [
+        "version = 1",
+        "[[preset]]",
+        'name = "ambiguous"',
+        'description = "Ambiguous exact scope"',
+        'model = "gateway/team/alpha"',
+        'thinking = "high"',
+        "",
+      ].join("\n"),
+    );
+    const bundle = await core.loadProductPresets(paths);
+    assert.throws(
+      () =>
+        core.selectProductPreset(
+          bundle,
+          config({ model: { enabled: ["team/alpha"], thinking: "low" } }),
+          "ambiguous",
+        ),
+      (error) => error.code === "preset.widen_model",
+    );
+  });
+});
+
 test("presets cannot widen tools, models, or read-only autonomy", async () => {
   const bundle = {
     presets: [

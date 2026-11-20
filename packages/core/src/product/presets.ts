@@ -18,12 +18,17 @@ import {
 import { ensurePrivateDir } from "../platform/fs.ts";
 import { withClaimFileLock } from "../platform/file-lock.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
+import {
+  modelMatchesEnabledScope,
+  parseModelReference,
+} from "../model/index.ts";
 
 const MAX_PRESET_BYTES = 64 * 1024;
 const MAX_SIDE_PROMPT = 32_000;
 const MAX_SIDE_QUEUE_BYTES = 1024 * 1024;
 const PRESET_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
-const MODEL_REFERENCE = /^[^/\s]+\/[^/\s]+$/u;
+const MODEL_REFERENCE = /^[A-Za-z0-9._@-]+\/[^\s\u0000-\u001f\u007f]+$/u;
+const MODEL_REFERENCE_MAX = 300;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const SIDE_QUEUE_LOCK_TIMEOUT_MS = 5_000;
 const SIDE_QUEUE_LOCK_STALE_MS = 60_000;
@@ -148,7 +153,10 @@ function parsePreset(value: TomlValue, index: number): ProductPreset {
     );
   }
   const model = optionalString(preset["model"], `${where}.model`);
-  if (model !== null && !MODEL_REFERENCE.test(model)) {
+  if (
+    model !== null &&
+    (model.length > MODEL_REFERENCE_MAX || !MODEL_REFERENCE.test(model))
+  ) {
     throw new ProductPresetError(
       "preset.model",
       `${where}.model must be provider/model`,
@@ -328,10 +336,12 @@ export function selectProductPreset(
       `preset ${name} resolves to read-only but enables a mutating tool`,
     );
   }
+  const scopeModel =
+    preset.model === null ? null : parseModelReference(preset.model);
   if (
     preset.model !== null &&
-    config.model.enabled.length > 0 &&
-    !config.model.enabled.includes(preset.model)
+    (scopeModel === null ||
+      !modelMatchesEnabledScope(scopeModel, config.model.enabled))
   ) {
     throw new ProductPresetError(
       "preset.widen_model",
