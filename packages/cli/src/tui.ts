@@ -95,6 +95,7 @@ import {
   createUlid,
   createSessionRecap,
   confirmImageInput,
+  generateImage,
   ImageCapabilityError,
   runSubagentHost,
   runDoctor,
@@ -479,6 +480,8 @@ export function codepunkHelp(): string {
     "  /side <prompt>             run a background side task",
     "  /recap [all|<from>..<to>]  show a derived recap for a session range",
     "  /image <path> [prompt]     confirm and send an image as untrusted input",
+    "  /image-gen [--model <ref>] <prompt>",
+    "                             generate an image through a configured image model",
     "  /goal [text|status|pause|resume|clear]",
     "                             create or manage the goal that survives turns",
     "  /hooks [status]            show user and project hook evidence",
@@ -4196,7 +4199,9 @@ function formatRecap(recap: ReturnType<typeof createSessionRecap>): string {
 async function assertImageInputAllowed(
   runtime: CodepunkRuntime,
   imagePath: string,
-): Promise<void> {
+): Promise<
+  Awaited<ReturnType<CodepunkRuntime["approval"]["request"]>>["evidence"] | null
+> {
   const decision = decidePolicy({
     tool: "read",
     args: { path: imagePath },
@@ -4220,7 +4225,7 @@ async function assertImageInputAllowed(
     );
   }
   if (decision.decision !== "ask") {
-    return;
+    return null;
   }
   const approval = await runtime.approval.request({
     sessionId: runtime.session.sessionId,
@@ -4238,6 +4243,160 @@ async function assertImageInputAllowed(
       `image input approval was denied: ${approval.reason}`,
     );
   }
+  return approval.evidence;
+}
+
+type TuiApprovalEvidence = Awaited<
+  ReturnType<CodepunkRuntime["approval"]["request"]>
+>["evidence"];
+
+async function assertImageGenerationAllowed(
+  runtime: CodepunkRuntime,
+  modelReference: string,
+  prompt: string,
+): Promise<TuiApprovalEvidence | null> {
+  const command = `image-generate ${modelReference}`;
+  const decision = decidePolicy({
+    tool: "bash",
+    args: { command },
+    command,
+    cwd: runtime.paths.cwd,
+    workspaceRoot: runtime.paths.deliveryRoot,
+    deliveryRoot: runtime.paths.deliveryRoot,
+    codepunkHome: runtime.paths.home,
+    mode: "interactive",
+    autonomy: runtime.autonomy.profile,
+    approvalMode: runtime.config.approval.mode,
+    filesystem: runtime.config.filesystem.mode,
+    writeSet: runtime.policy.writeSet,
+    userRules: runtime.policy.userRules,
+    projectRules: runtime.policy.projectRules,
+    layers: runtime.policy.layers,
+  });
+  if (decision.decision === "deny") {
+    throw new ImageCapabilityError(
+      "image.policy",
+      `image generation was denied by policy: ${decision.reason}`,
+    );
+  }
+  if (decision.decision !== "ask") {
+    return null;
+  }
+  const approval = await runtime.approval.request({
+    sessionId: runtime.session.sessionId,
+    workerId: runtime.session.sessionId,
+    toolCallId: createUlid(),
+    tool: "bash",
+    command,
+    cwd: runtime.paths.cwd,
+    reason: `confirm image generation: ${decision.reason}`,
+    argsPreview: [
+      `model: ${modelReference}`,
+      `prompt: ${prompt.length} character(s)`,
+    ].join("\n"),
+    argsSha256: sha256Text(prompt),
+    coveragePreview:
+      "network request to the configured image provider; content-addressed artifact write",
+  });
+  if (!approval.approved) {
+    throw new ImageCapabilityError(
+      "image.policy",
+      `image generation approval was denied: ${approval.reason}`,
+    );
+  }
+  return approval.evidence;
+}
+
+async function recordImageGenerationFailure(
+  runtime: CodepunkRuntime,
+  options: {
+    reference: string | null;
+    approval: TuiApprovalEvidence | null;
+    started: number;
+    networkAttempted: boolean;
+    error: unknown;
+  },
+): Promise<void> {
+  const message =
+    options.error instanceof Error
+      ? options.error.message
+      : String(options.error);
+  const preview = redactOutputPreview(message, runtime.paths.home).slice(
+    0,
+    4_096,
+  );
+  const denied =
+    options.error instanceof ImageCapabilityError &&
+    (options.error.code === "image.adapter_missing" ||
+      options.error.code === "image.policy" ||
+      options.error.code === "image.prompt");
+  const rule = denied
+    ? "product.image.generate_denied"
+    : "product.image.generate_failed";
+  const ruleSha256 = recordHash({ rule });
+  await runtime.ledger.append({
+    task_id: null,
+    run_id: runtime.ledger.activeRunId,
+    session_id: runtime.session.sessionId,
+    source: "tool",
+    tool: "image_generate",
+    tool_call_id: `image-generate:${createUlid()}`,
+    decision: denied ? "deny" : "allow",
+    outcome: denied ? "denied" : "failed",
+    rule,
+    rule_sha256: ruleSha256,
+    policy_layers: [
+      {
+        layer: "user",
+        source: "product:/image-gen",
+        sha256: sha256Text("product:/image-gen"),
+        rule_sha256: ruleSha256,
+      },
+    ],
+    approval: options.approval,
+    approval_mode: runtime.config.approval.mode,
+    command:
+      options.reference === null
+        ? "image-generate"
+        : `image-generate ${options.reference}`,
+    command_argv:
+      options.reference === null
+        ? ["image-generate"]
+        : ["image-generate", options.reference],
+    cwd: runtime.paths.cwd,
+    workspace_root: runtime.paths.deliveryRoot,
+    path_check: { performed: false, target: null },
+    sandbox: { backend: "none", version: null, profile_sha256: null },
+    effects: {
+      fs: options.networkAttempted ? "write" : "none",
+      shell: false,
+      network: options.networkAttempted,
+    },
+    coverage: "uncovered",
+    coverage_basis: ["product-action", "image-model"],
+    exit_code: 1,
+    duration_ms: Date.now() - options.started,
+    before_sha256: null,
+    after_sha256: null,
+    diff_sha256: null,
+    output_ref: null,
+    output_sha256: sha256Text(preview),
+    output_preview: preview,
+    empty_result: false,
+    executor: "codepunk-image-generation",
+    vcs: {
+      commit: null,
+      tree: null,
+      base_commit: null,
+    },
+    memory: {
+      ids: [],
+      action: "none",
+      query_sha256: null,
+      cap: 0,
+      truncated: false,
+    },
+  });
 }
 
 function imageMessage(
@@ -6444,13 +6603,87 @@ export function createTuiExtension(
                   : `current model ${activeModel.provider}/${activeModel.id} does not accept image input`,
               );
             }
-            await assertImageInputAllowed(runtime, imagePath);
+            const approval = await assertImageInputAllowed(runtime, imagePath);
+            const started = Date.now();
             const image = await confirmImageInput({
               path: imagePath,
               allowedRoot: runtime.paths.deliveryRoot,
               confirmed: true,
               assertAllowed: async () => undefined,
             });
+            try {
+              const rule = "product.image.input";
+              const ruleSha256 = recordHash({ rule });
+              await runtime.ledger.append({
+                task_id: null,
+                run_id: runtime.ledger.activeRunId,
+                session_id: runtime.session.sessionId,
+                source: "tool",
+                tool: "image_input",
+                tool_call_id: `image-input:${image.sha256}`,
+                decision: "allow",
+                outcome: "completed",
+                rule,
+                rule_sha256: ruleSha256,
+                policy_layers: [
+                  {
+                    layer: "user",
+                    source: "product:/image",
+                    sha256: sha256Text("product:/image"),
+                    rule_sha256: ruleSha256,
+                  },
+                ],
+                approval,
+                approval_mode: runtime.config.approval.mode,
+                command: `image-confirm ${image.display_path}`,
+                command_argv: ["image-confirm", image.display_path],
+                cwd: runtime.paths.cwd,
+                workspace_root: runtime.paths.deliveryRoot,
+                path_check: { performed: true, target: image.display_path },
+                sandbox: {
+                  backend: "none",
+                  version: null,
+                  profile_sha256: null,
+                },
+                effects: { fs: "read", shell: false, network: true },
+                coverage: "uncovered",
+                coverage_basis: ["product-action", "image-input"],
+                exit_code: 0,
+                duration_ms: Date.now() - started,
+                before_sha256: null,
+                after_sha256: null,
+                diff_sha256: null,
+                output_ref: null,
+                output_sha256: image.sha256,
+                output_preview: [
+                  `confirmed ${image.mime} image: ${image.display_path}`,
+                  `bytes: ${image.bytes}`,
+                  `sha256: ${image.sha256}`,
+                  `redactions: ${image.redactions.join(",")}`,
+                ].join("\n"),
+                empty_result: false,
+                executor: "codepunk-image-input",
+                vcs: {
+                  commit: null,
+                  tree: null,
+                  base_commit: null,
+                },
+                memory: {
+                  ids: [],
+                  action: "none",
+                  query_sha256: null,
+                  cap: 0,
+                  truncated: false,
+                },
+              });
+            } catch (error) {
+              throw new ImageCapabilityError(
+                "image.evidence",
+                `image input evidence could not be written: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
             context.ui.notify(
               [
                 `image confirmed: ${image.display_path}`,
@@ -6466,6 +6699,207 @@ export function createTuiExtension(
           } catch (error) {
             context.ui.notify(
               `/image failed: ${error instanceof Error ? error.message : String(error)}`,
+              error instanceof ImageCapabilityError ? "warning" : "error",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("image-gen", {
+        description: "Generate an image through an available image model",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const trimmed = args.trim();
+          if (trimmed.length === 0) {
+            context.ui.notify(
+              "usage: /image-gen [--model <provider/model>] <prompt>",
+              "warning",
+            );
+            return;
+          }
+          const tokens = trimmed.split(/\s+/u);
+          let requestedModel: string | null = null;
+          if (tokens[0] === "--model") {
+            requestedModel = tokens[1] ?? null;
+            tokens.splice(0, 2);
+            if (requestedModel === null || tokens.length === 0) {
+              context.ui.notify(
+                "usage: /image-gen [--model <provider/model>] <prompt>",
+                "warning",
+              );
+              return;
+            }
+          }
+          const prompt = tokens.join(" ").trim();
+          const started = Date.now();
+          let reference: string | null = null;
+          let approval: TuiApprovalEvidence | null = null;
+          let networkAttempted = false;
+          try {
+            const imageModels =
+              await runtime.host.services.modelRuntime.getAvailableOfType(
+                "image",
+              );
+            const selected = (
+              available: typeof imageModels,
+              wanted: string | null,
+            ) => {
+              if (wanted === null) {
+                return available[0];
+              }
+              return available.find(
+                (model) => `${model.provider}/${model.id}` === wanted,
+              );
+            };
+            if (imageModels.length === 0) {
+              throw new ImageCapabilityError(
+                "image.adapter_missing",
+                "no image generation adapter is configured; add an authenticated image model to models.json",
+              );
+            }
+            const selectedModel = selected(imageModels, requestedModel);
+            if (selectedModel === undefined) {
+              throw new ImageCapabilityError(
+                "image.adapter_missing",
+                `image model ${requestedModel} is not available`,
+              );
+            }
+            const selectedReference = `${selectedModel.provider}/${selectedModel.id}`;
+            reference = selectedReference;
+            approval = await assertImageGenerationAllowed(
+              runtime,
+              selectedReference,
+              prompt,
+            );
+            const generated = await generateImage({
+              prompt,
+              adapter: {
+                id: selectedReference,
+                generate: async (request) => {
+                  networkAttempted = true;
+                  const result =
+                    await runtime.host.services.modelRuntime.generateImages(
+                      selectedModel,
+                      {
+                        input: [{ type: "text", text: request.prompt }],
+                      },
+                    );
+                  if (result.stopReason !== "stop") {
+                    throw new ImageCapabilityError(
+                      "image.generation_failed",
+                      result.errorMessage ??
+                        `image model stopped with ${result.stopReason}`,
+                    );
+                  }
+                  const image = result.output.find(
+                    (block) => block.type === "image",
+                  );
+                  if (image === undefined) {
+                    throw new ImageCapabilityError(
+                      "image.generation_failed",
+                      "image model returned no image",
+                    );
+                  }
+                  return Buffer.from(image.data, "base64");
+                },
+              },
+              artifactDir: path.join(runtime.paths.artifactsDir, "images"),
+              assertAllowed: async () => undefined,
+              appendEvidence: async (record) => {
+                const rule = "product.image.generate";
+                const ruleSha256 = recordHash({ rule });
+                await runtime.ledger.append({
+                  task_id: null,
+                  run_id: runtime.ledger.activeRunId,
+                  session_id: runtime.session.sessionId,
+                  source: "tool",
+                  tool: "image_generate",
+                  tool_call_id: `image:${record.id}`,
+                  decision: "allow",
+                  outcome: "completed",
+                  rule,
+                  rule_sha256: ruleSha256,
+                  policy_layers: [
+                    {
+                      layer: "user",
+                      source: "product:/image-gen",
+                      sha256: sha256Text("product:/image-gen"),
+                      rule_sha256: ruleSha256,
+                    },
+                  ],
+                  approval,
+                  approval_mode: runtime.config.approval.mode,
+                  command: `image-generate ${selectedReference}`,
+                  command_argv: ["image-generate", selectedReference],
+                  cwd: runtime.paths.cwd,
+                  workspace_root: runtime.paths.deliveryRoot,
+                  path_check: { performed: true, target: record.path },
+                  sandbox: {
+                    backend: "none",
+                    version: null,
+                    profile_sha256: null,
+                  },
+                  effects: { fs: "write", shell: false, network: true },
+                  coverage: "uncovered",
+                  coverage_basis: ["product-action", "image-model"],
+                  exit_code: 0,
+                  duration_ms: Date.now() - started,
+                  before_sha256: null,
+                  after_sha256: record.sha256,
+                  diff_sha256: null,
+                  output_ref: path
+                    .relative(runtime.paths.projectDir, record.path)
+                    .split(path.sep)
+                    .join("/"),
+                  output_sha256: record.sha256,
+                  output_preview: `generated ${record.mime} image with ${selectedReference} (${record.bytes} bytes)`,
+                  empty_result: false,
+                  executor: "codepunk-image-generation",
+                  vcs: {
+                    commit: null,
+                    tree: null,
+                    base_commit: null,
+                  },
+                  memory: {
+                    ids: [],
+                    action: "none",
+                    query_sha256: null,
+                    cap: 0,
+                    truncated: false,
+                  },
+                });
+              },
+            });
+            context.ui.notify(
+              [
+                `image generated: ${generated.path}`,
+                `model: ${selectedReference}`,
+                `type: ${generated.mime} · bytes: ${generated.bytes}`,
+                `sha256: ${generated.sha256}`,
+                "The artifact and policy decision were written to evidence.",
+              ].join("\n"),
+              "info",
+            );
+          } catch (error) {
+            let evidenceFailure: string | null = null;
+            try {
+              await recordImageGenerationFailure(runtime, {
+                reference,
+                approval,
+                started,
+                networkAttempted,
+                error,
+              });
+            } catch (recordError) {
+              evidenceFailure =
+                recordError instanceof Error
+                  ? recordError.message
+                  : String(recordError);
+            }
+            const message =
+              error instanceof Error ? error.message : String(error);
+            context.ui.notify(
+              evidenceFailure === null
+                ? `/image-gen failed: ${message}`
+                : `/image-gen failed: ${message}\nFailure evidence could not be written: ${evidenceFailure}`,
               error instanceof ImageCapabilityError ? "warning" : "error",
             );
           }

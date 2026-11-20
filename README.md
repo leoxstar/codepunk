@@ -55,6 +55,10 @@ explicit policy boundary around file and shell actions.
 - `/ps`, `/logs <id>`, and `/stop <id>` inspect and stop detached background
   tasks. Their stdout, stderr, lifecycle evidence, and bounded steering
   history survive a TUI restart.
+- `/image <path> [prompt]` validates and confirms a workspace image before
+  attaching it to the next prompt. `/image-gen [--model <provider/model>]
+<prompt>` generates an image through an authenticated image model. Both
+  record their policy decision, content hash, and effects in evidence.
 - `/commit [message]` previews staged, unstaged, and untracked files, asks for
   an explicit scope and confirmation, then creates a Git commit outside the
   model sandbox and records its base/result commit hashes in evidence.
@@ -571,6 +575,30 @@ killed and marked failed rather than left running. A new TUI process shows
 durable finished tasks and marks a task that was still active when the old
 process disappeared as failed for inspection; it does not silently claim
 ownership of an unobserved process.
+
+## Images
+
+```text
+/image <path> [prompt]
+/image-gen [--model <provider/model>] <prompt>
+```
+
+`/image` accepts a PNG, JPEG, GIF, or WebP file inside the workspace, up to
+10 MiB. It rejects symbolic links and credential-shaped plaintext in the
+image bytes, asks for confirmation, records the file hash, size, path
+redaction, and any approval in evidence, and sends the image only when the
+active chat model accepts image input.
+
+`/image-gen` selects an authenticated image model from the configured model
+catalog; use `--model` to choose one explicitly. It runs the normal policy and
+human-approval gate, then writes the decoded image to a content-addressed,
+owner-only artifact under the project state directory. Evidence records the
+model, artifact reference, hash, size, approval, and network/filesystem
+effects. A policy denial, missing adapter, model failure, or invalid output
+aborts the action and records the failure when evidence is writable.
+
+The sensitive-content check inspects raw image bytes. It does not read text
+rendered inside pixels, so screenshot review still belongs to the user.
 
 ## Requirements
 
