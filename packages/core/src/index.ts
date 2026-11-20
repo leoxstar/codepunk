@@ -792,6 +792,14 @@ export {
   type SideTaskRecord,
 } from "./product/presets.ts";
 export {
+  ImageCapabilityError,
+  confirmImageInput,
+  generateImage,
+  type ConfirmedImage,
+  type GeneratedImage,
+  type ImageGenerationAdapter,
+} from "./product/images.ts";
+export {
   AcpServer,
   DaemonClient,
   DaemonClientError,
