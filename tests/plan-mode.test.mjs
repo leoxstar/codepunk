@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore, importProtocol } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { makeProject, withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
 const protocol = await importProtocol();
@@ -472,5 +472,79 @@ test("the same wrapped write succeeds when plan mode is off", async () => {
     const record = evidenceFor(fixture.ledger, "off-control-off");
     assert.ok(record);
     assert.equal(record.decision, "allow");
+  });
+});
+
+test("runtime plan mode narrows tools, approves a recorded plan, and exits", async () => {
+  await withTempDirectory("codepunk-plan-mode-runtime-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const runtime = await core.createRuntime({
+      cwd: projectRoot,
+      environment: { CODEPUNK_HOME: paths.home },
+      approvalChannel: null,
+      allowMissingModel: true,
+    });
+    try {
+      assert.equal(runtime.planMode.state(), null);
+
+      const initialTools = new Set(runtime.host.session.getActiveToolNames());
+      assert.equal(initialTools.has("read"), true);
+      assert.equal(initialTools.has("write"), true);
+      assert.equal(initialTools.has("edit"), true);
+
+      const planning = await runtime.planMode.enter();
+      assert.equal(planning.mode, "planning");
+      assert.equal(planning.plan_sha256, null);
+      assert.deepEqual(runtime.planMode.state(), planning);
+
+      const planningTools = new Set(runtime.host.session.getActiveToolNames());
+      for (const tool of ["write", "edit", "bash"]) {
+        assert.equal(planningTools.has(tool), false, tool);
+      }
+      assert.equal(planningTools.has("read"), true);
+
+      await assert.rejects(
+        () => runtime.planMode.approve(),
+        /No plan to approve/u,
+      );
+
+      const steps = [
+        { step: "inspect the runtime", status: "completed" },
+        { step: "verify plan enforcement", status: "in_progress" },
+      ];
+      const plan = {
+        run_id: runtime.runId,
+        steps,
+        explanation: null,
+        updated_at: UPDATED_AT,
+        sha256: core.recordHash({ steps }),
+      };
+      await runtime.session.append("plan/update", plan);
+
+      const approved = await runtime.planMode.approve();
+      const storedPlan = core.readWorkState(runtime.session.allEvents).plan;
+      assert.ok(storedPlan);
+      assert.equal(approved.mode, "executing");
+      assert.equal(approved.plan_sha256, core.planContentHash(storedPlan));
+
+      const executingTools = new Set(runtime.host.session.getActiveToolNames());
+      assert.equal(executingTools.has("write"), true);
+      for (const tool of ["read", "edit", "bash"]) {
+        if (initialTools.has(tool)) {
+          assert.equal(executingTools.has(tool), true, tool);
+        }
+      }
+
+      const exited = await runtime.planMode.exit();
+      assert.equal(exited.mode, "off");
+      assert.equal(runtime.planMode.state()?.mode, "off");
+
+      const transitions = runtime.session.allEvents
+        .filter((event) => event.kind === "plan_mode/update")
+        .map((event) => event.data.mode);
+      assert.deepEqual(transitions, ["planning", "executing", "off"]);
+    } finally {
+      await runtime.dispose();
+    }
   });
 });
