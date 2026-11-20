@@ -9,6 +9,9 @@ import {
   Sha256Schema,
   TimestampSchema,
 } from "./common.ts";
+import { GoalErrorDataSchema, GoalEventDataSchema } from "./goal.ts";
+import { HookEvidenceSchema } from "./hooks.ts";
+import { ReviewErrorDataSchema, ReviewEventDataSchema } from "./review.ts";
 
 export const SessionHeaderSchema = Type.Object(
   {
@@ -770,6 +773,61 @@ export const PlanModeUpdateEventSchema = Type.Object(
 
 export type PlanModeUpdateEvent = Static<typeof PlanModeUpdateEventSchema>;
 
+export const GoalUpdateEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("goal/update"),
+    data: GoalEventDataSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type GoalUpdateEvent = Static<typeof GoalUpdateEventSchema>;
+
+export const GoalErrorEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("goal/error"),
+    data: GoalErrorDataSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type GoalErrorEvent = Static<typeof GoalErrorEventSchema>;
+
+export const ReviewResultEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("review/result"),
+    data: ReviewEventDataSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type ReviewResultEvent = Static<typeof ReviewResultEventSchema>;
+
+export const ReviewErrorEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("review/error"),
+    data: ReviewErrorDataSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type ReviewErrorEvent = Static<typeof ReviewErrorEventSchema>;
+
+export const HookResultEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("hook/result"),
+    data: HookEvidenceSchema,
+  },
+  { additionalProperties: false },
+);
+
+export type HookResultEvent = Static<typeof HookResultEventSchema>;
+
 export const TodoItemSchema = Type.Object(
   {
     content: NonEmptyStringSchema,
@@ -985,6 +1043,11 @@ export const SessionEventSchema = Type.Union([
   SkillInvokedEventSchema,
   PlanUpdateEventSchema,
   PlanModeUpdateEventSchema,
+  GoalUpdateEventSchema,
+  GoalErrorEventSchema,
+  ReviewErrorEventSchema,
+  ReviewResultEventSchema,
+  HookResultEventSchema,
   TodoUpdateEventSchema,
   AutonomyProfileEventSchema,
   AutonomyRevokedEventSchema,
