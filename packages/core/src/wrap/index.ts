@@ -628,7 +628,8 @@ async function denyPlanMode(
   const message = `denied: ${input.rule} (${input.reason})`;
   await options.ledger.append(
     baseRecord(options, {
-      source: evidenceSource(input.tool),
+      source:
+        input.tool === "user_bash" ? "user_bash" : evidenceSource(input.tool),
       tool: input.tool,
       toolCallId: input.toolCallId,
       decision: "deny",
