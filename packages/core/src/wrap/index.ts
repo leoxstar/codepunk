@@ -58,6 +58,11 @@ import {
 } from "../permissions/index.ts";
 import { agentShellEnvironment, type ShellProvider } from "../sandbox/index.ts";
 import { toolExecutionPolicy } from "../tools/index.ts";
+import {
+  evaluatePlanModeGate,
+  type PlanModeState,
+  type WorkState,
+} from "../work/index.ts";
 
 const NONE_SANDBOX: SandboxDescriptor = {
   backend: "none",
@@ -86,6 +91,8 @@ export interface ToolWrapOptions {
   reviewer?: ActionReviewer | null;
   autonomy?: AutonomyController | null;
   approvalMode?: ApprovalMode | (() => ApprovalMode);
+  planMode?: () => PlanModeState | null;
+  currentPlan?: () => WorkState | null;
   /** Operator-configured egress allowlist; used to explain network approvals. */
   networkAllowedDomains?: readonly string[];
   /** Operator-configured egress deny list; shown in the same explanation. */
@@ -606,6 +613,57 @@ function textResult(text: string): AnyToolResult {
   };
 }
 
+async function denyPlanMode(
+  options: ToolWrapOptions,
+  input: {
+    tool: string;
+    toolCallId: string;
+    command: string | null;
+    commandArgv: string[] | null;
+    pathTarget: string | null;
+    rule: string;
+    reason: string;
+  },
+): Promise<string> {
+  const message = `denied: ${input.rule} (${input.reason})`;
+  await options.ledger.append(
+    baseRecord(options, {
+      source: evidenceSource(input.tool),
+      tool: input.tool,
+      toolCallId: input.toolCallId,
+      decision: "deny",
+      rule: input.rule,
+      ruleSha256: recordHash({ rule: input.rule }),
+      policyLayers: [
+        {
+          layer: "user",
+          source: "product/plan-mode",
+          sha256: sha256Text("plan_mode"),
+          rule_sha256: recordHash({ rule: "plan_mode" }),
+        },
+      ],
+      approval: null,
+      command: input.command,
+      commandArgv: input.commandArgv,
+      pathTarget: input.pathTarget,
+      sandbox: NONE_SANDBOX,
+      coverage: "uncovered",
+      coverageBasis: ["plan-mode"],
+      exitCode: null,
+      durationMs: 0,
+      beforeSha256: null,
+      afterSha256: null,
+      diffSha256: null,
+      outputRef: null,
+      outputSha256: outputSha(message),
+      outputPreview: message,
+      emptyResult: null,
+      executor: null,
+    }),
+  );
+  return message;
+}
+
 function alreadyAppliedResult(
   tool: string,
   target: string,
@@ -1029,6 +1087,26 @@ export async function wrapToolDefinition(
         definition.name === "bash" && typeof params["command"] === "string"
           ? params["command"]
           : null;
+      const planModeState = options.planMode?.() ?? null;
+      if (planModeState !== null && planModeState.mode !== "off") {
+        const planGate = evaluatePlanModeGate({
+          state: planModeState,
+          plan: options.currentPlan?.() ?? null,
+          tool: definition.name,
+        });
+        if (!planGate.allowed) {
+          const message = await denyPlanMode(options, {
+            tool: definition.name,
+            toolCallId,
+            command,
+            commandArgv,
+            pathTarget: target,
+            rule: planGate.rule ?? "plan_mode.denied",
+            reason: planGate.reason ?? "the active plan mode denied this call",
+          });
+          return textResult(message);
+        }
+      }
       const executionState = executionStateFor(options);
       const executionPolicy = toolExecutionPolicy(definition.name);
       const loopArgv = canonicalShellArgv(definition.name, params);
@@ -1859,6 +1937,26 @@ export async function wrapUserBashCommand(
       }),
     );
     return { result: deniedUserBashResult(message) };
+  }
+  const planModeState = options.planMode?.() ?? null;
+  if (planModeState !== null && planModeState.mode !== "off") {
+    const planGate = evaluatePlanModeGate({
+      state: planModeState,
+      plan: options.currentPlan?.() ?? null,
+      tool: "user_bash",
+    });
+    if (!planGate.allowed) {
+      const message = await denyPlanMode(options, {
+        tool: "user_bash",
+        toolCallId,
+        command,
+        commandArgv: null,
+        pathTarget: null,
+        rule: planGate.rule ?? "plan_mode.denied",
+        reason: planGate.reason ?? "the active plan mode denied this call",
+      });
+      return { result: deniedUserBashResult(message) };
+    }
   }
   const sandboxProvider = options.sandbox ?? null;
   const autonomy = options.autonomy ?? null;
