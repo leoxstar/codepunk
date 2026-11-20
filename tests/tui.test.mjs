@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -32,6 +33,8 @@ const PTY_RUNNER =
 // provider credentials of the machine running the suite must not reach the
 // child process.
 const BASE_ENV = withoutAmbientProviderEnv();
+const IMAGE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAANCAIAAAAv2XlzAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAEKADAAQAAAABAAAADQAAAACsJSLBAAACGUlEQVQoFQ2Py27TQABF5z1+JnaSIipEQUKCVgIJBKwoO8TH8BF8Enu2SEj8ABUFWqrEzcNJ6vd4xh7PkP25R/fAz58+IhoAYBwvqIRKFkvCOOeslQ1EJPScOs8gMC6j27yZTEZkEsWdxdgOo/GYOb0UDSH8sD8/f+/5/mQ6+/b1S5UXlMLe2OdnT0kYeJT72yyfp3fTOJ5Fo8EAL/DH0bTrZK/10TQOGRpM7/t+qzVCYPBc7nO2WKVlWXBijVGuS+typ2Sjyjs9DFEcEsriaCS0Qr2szaBdBk9mwX0fAdO3QnBGhJTQmng6BQgCiKXQRVYzYknfq7atrv/Ot0nyJnq50v335doPwpvLHy+ePcZcKyW1tLubxbqoW9clZjBV3c5vkiMKoexV01ZCFkU5o32Mh18XF/kuyzKBalnV6nK+J0labev8Oi3C4yjZ7FLVxJy8On1UJBZyVG3K31fLg/xk7EoD8krhbd3N00YBlpZiVVTWKkLwu9dnmDt/btchxU2jbld7zul4HNZ1ixEhFhHf5aofEMMIWs8hFMNoFP68+EekeBK5MUe+S91x7FFzEDGHQmQHgCiBNqv745mf7vPFbZpv9g4bsO3LRlxtqnUuPrw9xZ5LXAqsGZrOAnB4KdrOwk7uVkvG2cjjm1xkldBaH7Dddo8xQZ7DEACV1NbYrlPZoQwDqAdRCdOppmpED2YBuheghw/i/+orRkAlNmTDAAAAAElFTkSuQmCC";
 
 async function startTextModelServer() {
   const requests = [];
@@ -160,7 +163,7 @@ function sendTextResponse(response, text) {
   response.end();
 }
 
-async function startReviewModelServer(responses) {
+async function startReviewModelServer(responses, options = {}) {
   const requests = [];
   const server = http.createServer((request, response) => {
     let raw = "";
@@ -168,7 +171,50 @@ async function startReviewModelServer(responses) {
       raw += chunk;
     });
     request.on("end", () => {
-      requests.push(JSON.parse(raw));
+      const body = JSON.parse(raw);
+      requests.push(body);
+      if (
+        options.imageBase64 !== undefined &&
+        Array.isArray(body.modalities) &&
+        body.modalities.includes("image")
+      ) {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "cache-control": "no-cache",
+        });
+        response.end(
+          JSON.stringify({
+            id: "image-response",
+            object: "chat.completion",
+            created: 1,
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  images: [
+                    {
+                      type: "image_url",
+                      image_url: {
+                        url: `data:image/png;base64,${options.imageBase64}`,
+                      },
+                    },
+                  ],
+                },
+                finish_reason: "stop",
+              },
+            ],
+            usage: {
+              prompt_tokens: 4,
+              completion_tokens: 4,
+              total_tokens: 8,
+            },
+          }),
+        );
+        return;
+      }
       const text =
         responses[Math.min(requests.length - 1, responses.length - 1)] ??
         responses.at(-1) ??
@@ -1449,13 +1495,7 @@ test("a real pty lists presets and roles and applies a preset", async () => {
         );
       }, "side task settlement");
       const imagePath = path.join(project, "pixel.png");
-      await fs.writeFile(
-        imagePath,
-        Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAABAAAAANCAIAAAAv2XlzAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAEKADAAQAAAABAAAADQAAAACsJSLBAAACGUlEQVQoFQ2Py27TQABF5z1+JnaSIipEQUKCVgIJBKwoO8TH8BF8Enu2SEj8ABUFWqrEzcNJ6vd4xh7PkP25R/fAz58+IhoAYBwvqIRKFkvCOOeslQ1EJPScOs8gMC6j27yZTEZkEsWdxdgOo/GYOb0UDSH8sD8/f+/5/mQ6+/b1S5UXlMLe2OdnT0kYeJT72yyfp3fTOJ5Fo8EAL/DH0bTrZK/10TQOGRpM7/t+qzVCYPBc7nO2WKVlWXBijVGuS+typ2Sjyjs9DFEcEsriaCS0Qr2szaBdBk9mwX0fAdO3QnBGhJTQmng6BQgCiKXQRVYzYknfq7atrv/Ot0nyJnq50v335doPwpvLHy+ePcZcKyW1tLubxbqoW9clZjBV3c5vkiMKoexV01ZCFkU5o32Mh18XF/kuyzKBalnV6nK+J0labev8Oi3C4yjZ7FLVxJy8On1UJBZyVG3K31fLg/xk7EoD8krhbd3N00YBlpZiVVTWKkLwu9dnmDt/btchxU2jbld7zul4HNZ1ixEhFhHf5aofEMMIWs8hFMNoFP68+EekeBK5MUe+S91x7FFzEDGHQmQHgCiBNqv745mf7vPFbZpv9g4bsO3LRlxtqnUuPrw9xZ5LXAqsGZrOAnB4KdrOwk7uVkvG2cjjm1xkldBaH7Dddo8xQZ7DEACV1NbYrlPZoQwDqAdRCdOppmpED2YBuheghw/i/+orRkAlNmTDAAAAAElFTkSuQmCC",
-          "base64",
-        ),
-      );
+      await fs.writeFile(imagePath, Buffer.from(IMAGE_PNG_BASE64, "base64"));
       await runCommandAfter(
         session,
         "/image pixel.png what is in this image",
@@ -1471,7 +1511,188 @@ test("a real pty lists presets and roles and applies a preset", async () => {
           ),
         "image request",
       );
+      const imageRecord = await waitFor(
+        async () =>
+          (await readEvidence(home)).find(
+            (record) =>
+              record.tool === "image_input" &&
+              record.path_check.target === "pixel.png",
+          ) ?? null,
+        "image input evidence",
+      );
+      assert.equal(imageRecord.decision, "allow");
+      assert.equal(
+        imageRecord.output_sha256,
+        `sha256:${createHash("sha256")
+          .update(Buffer.from(IMAGE_PNG_BASE64, "base64"))
+          .digest("hex")}`,
+      );
+      assert.match(
+        imageRecord.output_preview,
+        /bytes: 687\nsha256: sha256:[0-9a-f]{64}\nredactions: path/u,
+      );
       await waitForQuiet(session, 500);
+      await runCommandAfter(
+        session,
+        "/image-gen a red fox in snow",
+        "no image generation adapter is configured",
+      );
+      const rejectedImageGeneration = await waitFor(
+        async () =>
+          (await readEvidence(home)).find(
+            (record) =>
+              record.tool === "image_generate" &&
+              record.decision === "deny" &&
+              record.rule === "product.image.generate_denied",
+          ) ?? null,
+        "rejected image generation evidence",
+      );
+      assert.equal(rejectedImageGeneration.outcome, "denied");
+      assert.equal(rejectedImageGeneration.approval, null);
+      assert.match(
+        rejectedImageGeneration.output_preview,
+        /no image generation adapter is configured/u,
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
+    }
+  });
+});
+
+test("a real pty generates an image through a configured image model", async () => {
+  await withTempDirectory("codepunk-tui-image-gen-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const model = await startReviewModelServer(["not json"], {
+      imageBase64: IMAGE_PNG_BASE64,
+    });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+                input: ["text"],
+              },
+            ],
+          },
+          openrouter: {
+            name: "OpenRouter",
+            baseUrl: model.baseUrl,
+            apiKey: "test",
+          },
+        },
+      }),
+    );
+
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      const mark = session.output().length;
+      const command =
+        "/image-gen --model openrouter/black-forest-labs/flux.2-pro a red fox in snow";
+      session.child.stdin.write(`${command}\r`);
+      await waitForOutputAfter(
+        session,
+        mark,
+        "Approval required",
+        "image generation approval prompt",
+      );
+      assert.match(
+        stripAnsi(session.output().slice(mark)),
+        /command: image-generate openrouter\/black-forest-labs\/flux\.2-pro/u,
+      );
+      session.child.stdin.write("\r");
+      await waitForOutputAfter(
+        session,
+        mark,
+        "image generated:",
+        "image generation result",
+      );
+
+      const record = await waitFor(
+        async () =>
+          (await readEvidence(home)).find(
+            (entry) =>
+              entry.tool === "image_generate" &&
+              entry.command ===
+                "image-generate openrouter/black-forest-labs/flux.2-pro",
+          ) ?? null,
+        "image generation evidence",
+      );
+      assert.equal(record.decision, "allow");
+      assert.equal(record.outcome, "completed");
+      assert.notEqual(record.approval, null);
+      assert.equal(record.approval.answer, "allow");
+      assert.match(record.output_sha256, /^sha256:[0-9a-f]{64}$/u);
+      assert.equal(record.after_sha256, record.output_sha256);
+      assert.equal(record.effects.network, true);
+      assert.equal(record.effects.fs, "write");
+      assert.match(
+        record.output_ref,
+        /^artifacts\/images\/[0-9a-f]{24}\.png$/u,
+      );
+
+      const artifactEntry = (await fs.readdir(home, { recursive: true })).find(
+        (entry) => entry.split(path.sep).join("/").endsWith(record.output_ref),
+      );
+      assert.ok(artifactEntry, "generated artifact is missing");
+      const bytes = await fs.readFile(path.join(home, artifactEntry));
+      assert.equal(
+        `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        record.output_sha256,
+      );
+      assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+      assert.ok(
+        model.requests.some(
+          (request) =>
+            Array.isArray(request.modalities) &&
+            request.modalities.includes("image") &&
+            JSON.stringify(request).includes("a red fox in snow"),
+        ),
+        "image generation request is missing",
+      );
+
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
