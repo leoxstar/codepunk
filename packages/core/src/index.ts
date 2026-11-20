@@ -461,9 +461,27 @@ export {
 } from "./ops/index.ts";
 export {
   readWorkspaceDiff,
+  readWorkspaceDiffSnapshot,
+  workspaceDiffSnapshotSha256,
+  type DiffLineRange,
+  type WorkspaceDiffLineRanges,
   type WorkspaceDiff,
   type WorkspaceDiffOptions,
+  type WorkspaceDiffSnapshot,
+  type WorkspaceDiffUntrackedFile,
 } from "./ops/diff.ts";
+export {
+  StructuredReviewValidationError,
+  appendStructuredReview,
+  assertRepositoryRelativePath,
+  createStructuredReview,
+  generateStructuredReviewFindings,
+  parseStructuredReviewFindings,
+  validateStructuredReview,
+  type CreateStructuredReviewOptions,
+  type GenerateStructuredReviewOptions,
+  type StructuredReviewExpectation,
+} from "./reviewer/structured.ts";
 export {
   GitCommitError,
   createGitCommit,
