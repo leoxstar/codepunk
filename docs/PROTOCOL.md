@@ -332,9 +332,9 @@ CONNECT and is governed by the runtime allowlist alone.
 (`budget_exceeded`). All fields are declared in
 `packages/protocol/src/evidence.ts`; undeclared top-level keys are rejected.
 
-### Product P0 events
+### Product capability events
 
-The product P0 capabilities add five event kinds without changing the session
+The product capabilities add five event kinds without changing the session
 envelope or any existing event:
 
 | Event           | Payload and invariant                                                                                                                        |
