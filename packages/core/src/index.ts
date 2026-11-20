@@ -765,6 +765,19 @@ export {
   type BackgroundTaskStatus,
 } from "./background/index.ts";
 export {
+  ProductPresetError,
+  SideTaskQueue,
+  createSessionRecap,
+  loadProductPresets,
+  selectProductPreset,
+  type PresetBundle,
+  type ProductPreset,
+  type SelectedPreset,
+  type SessionRecap,
+  type SideTaskKind,
+  type SideTaskRecord,
+} from "./product/presets.ts";
+export {
   AcpServer,
   DaemonClient,
   DaemonClientError,
