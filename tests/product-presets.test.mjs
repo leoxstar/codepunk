@@ -386,6 +386,37 @@ test("side task lock ignores and prunes stale claims", async () => {
   });
 });
 
+test("side task queue waits for a fresh foreign claim", async () => {
+  await withTempDirectory("codepunk-side-tasks-foreign-lock-", async (root) => {
+    const { paths } = await makeProject(root);
+    const queue = new core.SideTaskQueue({
+      paths,
+      sessionId: "session-foreign-lock",
+      lockTimeoutMs: 150,
+    });
+    const lockDir = path.join(
+      paths.projectDir,
+      "product",
+      "side-tasks",
+      "session-foreign-lock.jsonl.lock.d",
+    );
+    await fs.mkdir(lockDir, { recursive: true });
+    await fs.writeFile(
+      path.join(lockDir, "foreign.claim"),
+      `${JSON.stringify({
+        pid: process.pid,
+        nonce: "foreign",
+        created_ms: Date.now() - 1_000,
+        created_at: new Date().toISOString(),
+      })}\n`,
+    );
+    await assert.rejects(
+      queue.enqueue("btw", "blocked", 1),
+      (error) => error.code === "side.queue_busy",
+    );
+  });
+});
+
 test("side task queue corruption fails closed", async () => {
   await withTempDirectory("codepunk-side-tasks-corrupt-", async (root) => {
     const { paths } = await makeProject(root);
