@@ -231,6 +231,15 @@ export {
   type SessionWriter,
 } from "./session/index.ts";
 export {
+  GoalController,
+  GoalCorruptError,
+  GoalTransitionError,
+  appendGoalEvent,
+  goalModelContext,
+  readGoalState,
+  type GoalControllerOptions,
+} from "./session/goal.ts";
+export {
   deniedUserBashResult,
   wrapToolDefinition,
   wrapToolDefinitions,
