@@ -115,6 +115,13 @@ import {
   type WorkspaceTrustGrants,
   type WorkspaceTrustSource,
 } from "../trust/index.ts";
+import {
+  isPlanModeReadOnlyTool,
+  planContentHash,
+  readPlanModeState,
+  readWorkState,
+  type PlanModeState,
+} from "../work/index.ts";
 import { listProjectSessions, resolveSession } from "../session/ops.ts";
 import {
   appendEvidenceIndex,
@@ -265,6 +272,12 @@ export interface CodepunkRuntime {
   };
   usage(): ModelUsageSummary;
   setApprovalMode(mode: "ask" | "deny" | "auto" | "allow"): void;
+  planMode: {
+    state(): PlanModeState | null;
+    enter(): Promise<PlanModeState>;
+    approve(): Promise<PlanModeState>;
+    exit(): Promise<PlanModeState>;
+  };
   /**
    * Re-read the layered Codepunk config without replacing the session.
    * Approval mode, autonomy, and the plugin-enable switch can take effect
@@ -1159,6 +1172,8 @@ async function createRuntimeInner(
       reviewer,
       sandbox,
       approvalMode: () => config.approval.mode,
+      planMode: () => readPlanModeState(session.allEvents),
+      currentPlan: () => readWorkState(session.allEvents).plan,
       networkAllowedDomains: config.sandbox.network_allow,
       networkDeniedDomains: config.sandbox.network_deny,
       shellUnavailableReason: () => shellUnavailableReason(sessionSandboxMode),
@@ -1324,6 +1339,42 @@ async function createRuntimeInner(
     config.autonomy = structuredClone(next);
   };
 
+  let toolNamesBeforePlanMode: string[] | null = null;
+  const applyPlanModeToolSurface = (mode: PlanModeState["mode"]): void => {
+    if (mode === "planning") {
+      if (toolNamesBeforePlanMode === null) {
+        toolNamesBeforePlanMode = host.session.getActiveToolNames();
+      }
+      const readOnly = host.session
+        .getAllTools()
+        .map((tool) => tool.name)
+        .filter(isPlanModeReadOnlyTool);
+      host.session.setActiveToolsByName(readOnly);
+      return;
+    }
+    if (toolNamesBeforePlanMode !== null) {
+      host.session.setActiveToolsByName(toolNamesBeforePlanMode);
+      toolNamesBeforePlanMode = null;
+    }
+  };
+  const appendPlanMode = async (
+    mode: PlanModeState["mode"],
+    planSha256: string | null,
+  ): Promise<PlanModeState> => {
+    const state = {
+      mode,
+      plan_sha256: planSha256,
+      updated_at: (options.now?.() ?? new Date()).toISOString(),
+    };
+    await session.append("plan_mode/update", state);
+    applyPlanModeToolSurface(mode);
+    return state;
+  };
+  const currentPlanMode = readPlanModeState(session.allEvents);
+  if (currentPlanMode?.mode === "planning") {
+    applyPlanModeToolSurface("planning");
+  }
+
   const runtime: CodepunkRuntime = {
     project,
     paths,
@@ -1379,6 +1430,39 @@ async function createRuntimeInner(
       });
     },
     setApprovalMode: applyApprovalMode,
+    planMode: {
+      state() {
+        return readPlanModeState(session.allEvents);
+      },
+      async enter() {
+        const current = readPlanModeState(session.allEvents);
+        if (current?.mode === "planning") {
+          return current;
+        }
+        return appendPlanMode("planning", null);
+      },
+      async approve() {
+        const plan = readWorkState(session.allEvents).plan;
+        const hash = planContentHash(plan);
+        if (hash === null) {
+          throw new Error(
+            "No plan to approve. Record a plan with the plan tool first.",
+          );
+        }
+        const current = readPlanModeState(session.allEvents);
+        if (current?.mode === "executing" && current.plan_sha256 === hash) {
+          return current;
+        }
+        return appendPlanMode("executing", hash);
+      },
+      async exit() {
+        const current = readPlanModeState(session.allEvents);
+        if (current?.mode === "off") {
+          return current;
+        }
+        return appendPlanMode("off", null);
+      },
+    },
     async reloadConfig() {
       if (host.session.isStreaming) {
         throw new Error(

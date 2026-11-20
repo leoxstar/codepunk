@@ -744,6 +744,32 @@ export const PlanUpdateEventSchema = Type.Object(
 
 export type PlanUpdateEvent = Static<typeof PlanUpdateEventSchema>;
 
+export const PlanModeSchema = Type.Union([
+  Type.Literal("off"),
+  Type.Literal("planning"),
+  Type.Literal("executing"),
+]);
+
+export type PlanMode = Static<typeof PlanModeSchema>;
+
+export const PlanModeUpdateEventSchema = Type.Object(
+  {
+    ...EventBase,
+    kind: Type.Literal("plan_mode/update"),
+    data: Type.Object(
+      {
+        mode: PlanModeSchema,
+        plan_sha256: Type.Union([Sha256Schema, Type.Null()]),
+        updated_at: TimestampSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export type PlanModeUpdateEvent = Static<typeof PlanModeUpdateEventSchema>;
+
 export const TodoItemSchema = Type.Object(
   {
     content: NonEmptyStringSchema,
@@ -958,6 +984,7 @@ export const SessionEventSchema = Type.Union([
   SkillLoadedEventSchema,
   SkillInvokedEventSchema,
   PlanUpdateEventSchema,
+  PlanModeUpdateEventSchema,
   TodoUpdateEventSchema,
   AutonomyProfileEventSchema,
   AutonomyRevokedEventSchema,

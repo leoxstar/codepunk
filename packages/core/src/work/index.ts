@@ -3,6 +3,7 @@ import {
   PlanStepSchema,
   TodoItemSchema,
   validateSchema,
+  type PlanMode,
   type PlanStep,
   type SessionEvent,
   type TodoItem,
@@ -29,9 +30,114 @@ export interface WorkStateSnapshot {
   todos: TodoState | null;
 }
 
+export interface PlanModeState {
+  mode: PlanMode;
+  plan_sha256: string | null;
+  updated_at: string;
+}
+
+export interface PlanModeGate {
+  allowed: boolean;
+  rule: string | null;
+  reason: string | null;
+}
+
+const PLAN_MODE_READ_ONLY_TOOLS = new Set([
+  "read",
+  "search",
+  "plan",
+  "todo",
+  "memory_search",
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+export function isPlanModeReadOnlyTool(tool: string): boolean {
+  return PLAN_MODE_READ_ONLY_TOOLS.has(tool);
+}
+
 export interface WorkUpdate<State> {
   state: State;
   text: string;
+}
+
+export function readPlanModeState(
+  events: readonly SessionEvent[],
+): PlanModeState | null {
+  let state: PlanModeState | null = null;
+  for (const event of events) {
+    if (event.kind === "plan_mode/update") {
+      state = {
+        mode: event.data.mode,
+        plan_sha256: event.data.plan_sha256,
+        updated_at: event.data.updated_at,
+      };
+    }
+  }
+  return state;
+}
+
+/**
+ * Approval binds the ordered plan content, not step status. Status changes
+ * during execution must not invalidate an approval, while adding, removing,
+ * reordering, or rewriting a step must.
+ */
+export function planContentHash(plan: WorkState | null): string | null {
+  if (plan === null || plan.steps.length === 0) {
+    return null;
+  }
+  return recordHash({
+    kind: "codepunk/plan-content",
+    steps: plan.steps.map((step) => step.step),
+  });
+}
+
+export function evaluatePlanModeGate(input: {
+  state: PlanModeState | null;
+  plan: WorkState | null;
+  tool: string;
+}): PlanModeGate {
+  const { state, plan, tool } = input;
+  if (state === null || state.mode === "off") {
+    return { allowed: true, rule: null, reason: null };
+  }
+  if (state.mode === "planning") {
+    return isPlanModeReadOnlyTool(tool)
+      ? { allowed: true, rule: null, reason: null }
+      : {
+          allowed: false,
+          rule: "plan_mode.read_only",
+          reason:
+            "Plan mode is on; only read-only tools are available. Record the plan, then run /plan-mode approve before mutating anything.",
+        };
+  }
+  if (state.plan_sha256 === null) {
+    return {
+      allowed: false,
+      rule: "plan_mode.approval_missing",
+      reason:
+        "Plan execution has no approved plan hash. Run /plan-mode approve after recording a plan.",
+    };
+  }
+  const current = planContentHash(plan);
+  if (current === null) {
+    return {
+      allowed: false,
+      rule: "plan_mode.approval_missing",
+      reason:
+        "No plan is recorded for this execution. Record a plan and run /plan-mode approve.",
+    };
+  }
+  if (current !== state.plan_sha256) {
+    return {
+      allowed: false,
+      rule: "plan_mode.approval_mismatch",
+      reason:
+        "The current plan no longer matches the approved plan. Review it and run /plan-mode approve again.",
+    };
+  }
+  return { allowed: true, rule: null, reason: null };
 }
 
 export function readWorkState(
