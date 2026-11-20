@@ -82,7 +82,7 @@ const p0Events = [
   event("hook/result", hook),
 ];
 
-test("the P0 event additions remain additive session-event version 1", () => {
+test("the capability event additions remain additive session-event version 1", () => {
   assert.equal(protocol.SESSION_EVENT_SCHEMA_VERSION, 1);
   for (const value of p0Events) {
     const validation = protocol.validateSchema(

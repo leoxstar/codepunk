@@ -1227,8 +1227,12 @@ test("a real pty covers Goal, hooks, and structured review events", async () => 
     );
     try {
       await waitForOutput(session, "codepunk · local/local-test", "startup");
-      await runCommandAfter(session, "/goal Ship the P0 wave", "Goal: active");
-      assert.match(session.output(), /Ship the P0 wave/u);
+      await runCommandAfter(
+        session,
+        "/goal Ship the capability wave",
+        "Goal: active",
+      );
+      assert.match(session.output(), /Ship the capability wave/u);
       await runCommandAfter(session, "/goal pause", "Goal: paused");
       await runCommandAfter(session, "/goal resume", "Goal: active");
       await runCommandAfter(session, "/hooks status", "Lifecycle hooks");
