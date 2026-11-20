@@ -1327,6 +1327,141 @@ test("a real pty lists, reads, and stops durable background tasks", async () => 
   });
 });
 
+test("a real pty lists presets and roles and applies a preset", async () => {
+  await withTempDirectory("codepunk-tui-p1-commands-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    const model = await startReviewModelServer(["not json"]);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    await fs.writeFile(
+      path.join(home, "presets.toml"),
+      [
+        "version = 1",
+        "[[preset]]",
+        'name = "reader"',
+        'description = "Read-only review"',
+        'model = "local/local-test"',
+        'thinking = "low"',
+        'permission = "read-only"',
+        'tools = ["read", "search"]',
+        "",
+      ].join("\n"),
+    );
+    await fs.writeFile(
+      path.join(home, "roles.toml"),
+      [
+        "version = 1",
+        "[roles]",
+        'plan = "local/local-test"',
+        "",
+        "[[pool]]",
+        'name = "subagent"',
+        'models = ["local/local-test"]',
+        "max = 1",
+        "",
+      ].join("\n"),
+    );
+
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/roles status", "Model roles");
+      assert.match(session.output(), /plan: local\/local-test \(user\)/u);
+      assert.match(session.output(), /subagent: max 1/u);
+      await runCommandAfter(session, "/preset list", "reader");
+      assert.match(session.output(), /Read-only review/u);
+      await runCommandAfter(session, "/preset use reader", "preset reader");
+      assert.match(session.output(), /permission read-only/u);
+      assert.match(session.output(), /tools read,search/u);
+      await runCommandAfter(session, "/recap all", "Session recap");
+      assert.match(session.output(), /autonomy\/profile: 1/u);
+      assert.match(session.output(), /trust\/decision: 1/u);
+      await runCommandAfter(
+        session,
+        "/btw summarize the current state",
+        "btw task queued",
+      );
+      await runCommandAfter(session, "/ps", "Side tasks");
+      assert.match(session.output(), /btw\s+budget=1/u);
+      await waitFor(async () => {
+        const files = (
+          await fs.readdir(path.join(home, "projects"), { recursive: true })
+        ).filter((entry) => entry.endsWith(".jsonl"));
+        const sideFile = files.find((entry) =>
+          entry.includes("product/side-tasks"),
+        );
+        if (sideFile === undefined) {
+          return false;
+        }
+        const lines = (
+          await fs.readFile(path.join(home, "projects", sideFile), "utf8")
+        )
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        return lines.some(
+          (entry) =>
+            entry.type === "codepunk/side-task" &&
+            (entry.status === "completed" || entry.status === "failed"),
+        );
+      }, "side task settlement");
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
+    }
+  });
+});
+
 test("a real pty undoes and redoes Codepunk file changes", async (t) => {
   if (process.platform === "win32") {
     t.skip(
