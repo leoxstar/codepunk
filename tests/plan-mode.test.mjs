@@ -548,3 +548,104 @@ test("runtime plan mode narrows tools, approves a recorded plan, and exits", asy
     }
   });
 });
+
+test("runtime plan mode keeps state and tools unchanged when append fails", async () => {
+  await withTempDirectory(
+    "codepunk-plan-mode-append-failure-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const runtime = await core.createRuntime({
+        cwd: projectRoot,
+        environment: { CODEPUNK_HOME: paths.home },
+        approvalChannel: null,
+        allowMissingModel: true,
+      });
+      const originalAppend = runtime.session.append.bind(runtime.session);
+      const failedAppend = async () => {
+        throw new Error("append failed");
+      };
+      try {
+        const initialTools = new Set(runtime.host.session.getActiveToolNames());
+        assert.equal(initialTools.has("write"), true);
+
+        runtime.session.append = failedAppend;
+        await assert.rejects(() => runtime.planMode.enter(), /append failed/u);
+        assert.equal(runtime.planMode.state(), null);
+        assert.equal(
+          runtime.host.session.getActiveToolNames().includes("write"),
+          true,
+        );
+
+        runtime.session.append = originalAppend;
+        const planning = await runtime.planMode.enter();
+        assert.equal(planning.mode, "planning");
+
+        const steps = [
+          { step: "record a plan before approve", status: "pending" },
+        ];
+        await runtime.session.append("plan/update", {
+          run_id: runtime.runId,
+          steps,
+          explanation: null,
+          updated_at: UPDATED_AT,
+          sha256: core.recordHash({ steps }),
+        });
+
+        runtime.session.append = failedAppend;
+        await assert.rejects(
+          () => runtime.planMode.approve(),
+          /append failed/u,
+        );
+        assert.equal(runtime.planMode.state()?.mode, "planning");
+        assert.equal(
+          runtime.host.session.getActiveToolNames().includes("write"),
+          false,
+        );
+        assert.equal(
+          runtime.host.session.getActiveToolNames().includes("read"),
+          true,
+        );
+      } finally {
+        runtime.session.append = originalAppend;
+        await runtime.dispose();
+      }
+    },
+  );
+});
+
+test("runtime resumes a planning session with the narrowed tool surface", async () => {
+  await withTempDirectory("codepunk-plan-mode-resume-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const options = {
+      cwd: projectRoot,
+      environment: { CODEPUNK_HOME: paths.home },
+      approvalChannel: null,
+      allowMissingModel: true,
+    };
+
+    const first = await core.createRuntime(options);
+    let sessionId;
+    try {
+      await first.planMode.enter();
+      sessionId = first.session.sessionId;
+    } finally {
+      await first.dispose();
+    }
+
+    const resumed = await core.createRuntime({
+      ...options,
+      sessionId,
+    });
+    try {
+      assert.equal(resumed.session.sessionId, sessionId);
+      assert.equal(resumed.planMode.state()?.mode, "planning");
+      const tools = new Set(resumed.host.session.getActiveToolNames());
+      for (const tool of ["write", "edit", "bash"]) {
+        assert.equal(tools.has(tool), false, tool);
+      }
+      assert.equal(tools.has("read"), true);
+    } finally {
+      await resumed.dispose();
+    }
+  });
+});
