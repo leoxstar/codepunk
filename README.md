@@ -48,6 +48,13 @@ explicit policy boundary around file and shell actions.
   unchanged.
 - `/diff` shows the working-tree status, staged and unstaged stats, and a
   bounded patch without sending a model request or writing the index.
+- `/goal` creates or manages a goal that survives turns, compaction, and
+  resume; `/review` produces structured findings bound to the current diff
+  hash, and `/hooks status` shows user and project hook evidence. Review
+  findings never apply themselves.
+- `/ps`, `/logs <id>`, and `/stop <id>` inspect and stop detached background
+  tasks. Their stdout, stderr, lifecycle evidence, and bounded steering
+  history survive a TUI restart.
 - `/commit [message]` previews staged, unstaged, and untracked files, asks for
   an explicit scope and confirmation, then creates a Git commit outside the
   model sandbox and records its base/result commit hashes in evidence.
@@ -58,9 +65,11 @@ explicit policy boundary around file and shell actions.
   outside this boundary.
 - Library-level delivery primitives for detached worktrees, handoffs,
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
-  yet. The local daemon serves session list and read, plus one metadata write
-  (`session/pin`); it never appends session events, so `hello.read_only` is
-  false while `session/read` results stay read-only snapshots.
+  yet. The local daemon serves scoped session reads and metadata writes plus
+  `run`, `steer`, `stop`, `approve`, `plan`, and `goal` control methods behind
+  writer leases. `codepunk acp` exposes the same control model over
+  newline-delimited JSON-RPC on stdio; the daemon never accepts an arbitrary
+  file-write or session-append method.
 - `codepunk completion bash|zsh|fish` prints a static completion script for
   the product commands, nested subcommands, and main permission/trust options.
 
@@ -149,9 +158,13 @@ one session. `--no-skills` and `--no-plugins` isolate those surfaces
 individually. `--bare` is the aggregate session switch: it disables discovered
 instruction files, skills, user plugins, MCP servers, and memory while leaving
 model auth, trust, policy, approval, and sandbox settings in force.
-Project `extensions`/`hooks` are not loaded in this build, so they do not
-produce a misleading trust prompt. User-level instructions in Codepunk home
-still load when the workspace is untrusted.
+User lifecycle hooks live in `$CODEPUNK_HOME/hooks.toml`. Project hooks in
+`.codepunk/hooks.toml` remain inert unless the workspace has the `config`
+trust grant and the user file explicitly sets `project_enabled = true`.
+Project hook files cannot authorize themselves. Hook timeout, nonzero exit,
+spawn failure, malformed configuration, and evidence-write failure all fail
+closed. Project `extensions` are not loaded in this build. User-level
+instructions in Codepunk home still load when the workspace is untrusted.
 
 The two stores use canonical paths and exact-root lookup. A parent
 repository's decision never covers a nested repository. A malformed
@@ -508,6 +521,56 @@ Every `rg --files` operand and every `rg -f/--file` pattern file is treated as
 a read path, and `find` output primaries such as `-fprint0` are side effects
 that ask. Agent shell commands run with `GIT_OPTIONAL_LOCKS=0`, so an allowed
 `git status` cannot rewrite `.git/index`.
+
+## Goals, review, and hooks
+
+```text
+/goal [text|status|pause|resume|clear]
+/review
+/hooks [status]
+```
+
+`/goal` stores a hash-chained goal event with its status and revision. Active
+goals are injected as untrusted data into the next model request; paused,
+cleared, malformed, or chained-invalid states are not injected. A corrupt goal
+blocks the request instead of silently dropping the goal.
+
+`/review` reads a bounded working-tree snapshot, records its SHA-256 in the
+review event, and validates every finding's severity, repository-relative
+path, line, and reason against that snapshot. It does not edit files, commit,
+merge, or create a policy allow rule.
+
+The user hooks configuration is `$CODEPUNK_HOME/hooks.toml`; the project file
+is `.codepunk/hooks.toml`. The user file's `project_enabled` defaults to
+`false`. Removing the user file, or setting `project_enabled = false` and
+restarting, disables hooks without migrating session history. The protocol
+defines the four lifecycle events `before_tool`, `after_tool`,
+`session_start`, and `session_end`; each evidence record stores only output
+hashes and bounded metadata.
+
+## Background tasks
+
+```text
+/ps
+/logs <id>
+/stop <id>
+```
+
+Backend tasks run in a detached POSIX process group. Each task has a durable
+`task.json`, append-only `evidence.jsonl`, and bounded stdout/stderr files
+under the project state and artifacts directories. `/ps` reloads durable task
+records, `/logs` reads a bounded tail with an explicit truncation marker, and
+`/stop` sends `SIGTERM`, then `SIGKILL`, and verifies the process group is
+gone. A task whose lease is stale or was reclaimed cannot be stopped with the
+old token.
+
+Queue limits, concurrent-run limits, the steering queue, and log size are all
+bounded. A full queue or an unwritable artifact is rejected before the child
+starts, with a denial record; a task that loses its lease or log sink is
+killed and marked failed rather than left running. A new TUI process shows
+durable finished tasks and marks a task that was still active when the old
+process disappeared as failed for inspection; it does not silently claim
+ownership of an unobserved process.
 
 ## Requirements
 
