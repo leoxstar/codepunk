@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { importCore } from "./support/core.mjs";
+import { importCore, importSource } from "./support/core.mjs";
+import { privateFileStatus, withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
 
@@ -59,3 +60,27 @@ test("sensitive path matching is case-insensitive", () => {
   assert.equal(core.isSensitivePath(path.join(root, ".ENV.EXAMPLE")), false);
   assert.equal(core.isSensitivePath(path.join(root, ".env.template")), true);
 });
+
+test(
+  "private directories do not depend on PATH for Windows tools",
+  { skip: process.platform !== "win32" ? "Windows-only ACLs" : false },
+  async () => {
+    const { ensurePrivateDir } = await importSource(
+      "packages/core/src/platform/fs.ts",
+    );
+    await withTempDirectory("codepunk-private-", async (root) => {
+      const emptyPath = path.join(root, "empty-path");
+      const target = path.join(root, "state");
+      await fs.mkdir(emptyPath);
+      const originalPath = process.env.PATH;
+      process.env.PATH = emptyPath;
+      try {
+        await ensurePrivateDir(target);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+      const status = await privateFileStatus(target);
+      assert.equal(status.ok, true, status.detail);
+    });
+  },
+);
