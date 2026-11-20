@@ -16,6 +16,7 @@ import {
   sha256Value,
 } from "../platform/hash.ts";
 import { ensurePrivateDir } from "../platform/fs.ts";
+import { withClaimFileLock } from "../platform/file-lock.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 
 const MAX_PRESET_BYTES = 64 * 1024;
@@ -463,19 +464,14 @@ function isTerminalStatus(status: SideTaskStatus): boolean {
   );
 }
 
-interface SideTaskClaim {
-  path: string;
-  rank: number;
-  nonce: string;
-  mtimeMs: number;
-}
-
 export class SideTaskQueue {
   private readonly filePath: string;
   private readonly lockDir: string;
   private readonly sessionId: string;
   private readonly maxPending: number;
   private readonly maxBudget: number;
+  private readonly lockTimeoutMs: number;
+  private readonly lockStaleMs: number;
   private readonly now: () => Date;
   private pending: SideTaskRecord[] = [];
   private latest: Map<string, SideTaskRecord> = new Map();
@@ -487,6 +483,8 @@ export class SideTaskQueue {
     sessionId: string;
     maxPending?: number;
     maxBudget?: number;
+    lockTimeoutMs?: number;
+    lockStaleMs?: number;
     now?: () => Date;
   }) {
     if (!SESSION_ID.test(options.sessionId)) {
@@ -505,6 +503,14 @@ export class SideTaskQueue {
     this.sessionId = options.sessionId;
     this.maxPending = Math.max(1, options.maxPending ?? 4);
     this.maxBudget = Math.max(1, options.maxBudget ?? 4);
+    this.lockTimeoutMs = Math.max(
+      1,
+      options.lockTimeoutMs ?? SIDE_QUEUE_LOCK_TIMEOUT_MS,
+    );
+    this.lockStaleMs = Math.max(
+      1,
+      options.lockStaleMs ?? SIDE_QUEUE_LOCK_STALE_MS,
+    );
     this.now = options.now ?? (() => new Date());
   }
 
@@ -535,134 +541,18 @@ export class SideTaskQueue {
   }
 
   private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
-    await ensurePrivateDir(this.lockDir);
-    const nonce = randomUUID();
-    const started = Date.now();
-    const ownPath = path.join(
-      this.lockDir,
-      `${started}-${process.pid}-${nonce}.claim`,
-    );
-    const handle = await fs.open(ownPath, "wx", 0o600);
-    let birthtimeMs = 0;
-    try {
-      await handle.writeFile(
-        `${JSON.stringify({
-          pid: process.pid,
-          nonce,
-          created_ms: started,
-          created_at: new Date().toISOString(),
-        })}\n`,
-        "utf8",
-      );
-      await handle.sync();
-      const stat = await handle.stat();
-      birthtimeMs = stat.birthtimeMs > 0 ? stat.birthtimeMs : started;
-    } finally {
-      await handle.close();
-    }
-    const heartbeat = setInterval(
-      () => {
-        const now = new Date();
-        void fs.utimes(ownPath, now, now).catch(() => undefined);
-      },
-      Math.max(1_000, Math.floor(SIDE_QUEUE_LOCK_STALE_MS / 3)),
-    );
-    heartbeat.unref();
-    try {
-      for (;;) {
-        const claims = await this.readClaims();
-        const now = Date.now();
-        const older = claims.filter(
-          (claim) =>
-            claim.nonce !== nonce &&
-            now - claim.mtimeMs <= SIDE_QUEUE_LOCK_STALE_MS &&
-            (claim.rank < birthtimeMs ||
-              (claim.rank === birthtimeMs && claim.nonce < nonce)),
-        );
-        if (older.length === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          const confirmed = (await this.readClaims()).filter(
-            (claim) =>
-              claim.nonce !== nonce &&
-              now - claim.mtimeMs <= SIDE_QUEUE_LOCK_STALE_MS &&
-              (claim.rank < birthtimeMs ||
-                (claim.rank === birthtimeMs && claim.nonce < nonce)),
-          );
-          if (confirmed.length === 0) {
-            break;
-          }
-        }
-        if (Date.now() - started >= SIDE_QUEUE_LOCK_TIMEOUT_MS) {
-          throw new ProductPresetError(
+    return withClaimFileLock(
+      {
+        lockDir: this.lockDir,
+        timeoutMs: this.lockTimeoutMs,
+        staleMs: this.lockStaleMs,
+        busyError: () =>
+          new ProductPresetError(
             "side.queue_busy",
             "side task queue is locked by another process",
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      return await operation();
-    } finally {
-      clearInterval(heartbeat);
-      await fs.unlink(ownPath).catch(() => undefined);
-      await this.pruneStaleClaims();
-    }
-  }
-
-  private async readClaims(): Promise<SideTaskClaim[]> {
-    const entries = await fs.readdir(this.lockDir).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return [];
-      }
-      throw error;
-    });
-    const claims: SideTaskClaim[] = [];
-    for (const entry of entries) {
-      const claimPath = path.join(this.lockDir, entry);
-      let stat;
-      try {
-        stat = await fs.lstat(claimPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          continue;
-        }
-        throw error;
-      }
-      if (!stat.isFile() || stat.isSymbolicLink()) {
-        continue;
-      }
-      const raw = await fs.readFile(claimPath, "utf8").catch(() => "");
-      let nonce = entry;
-      let rankFallback = stat.ctimeMs;
-      try {
-        const parsed = JSON.parse(raw) as {
-          nonce?: unknown;
-          created_ms?: unknown;
-        };
-        if (typeof parsed.nonce === "string" && parsed.nonce.length > 0) {
-          nonce = parsed.nonce;
-        }
-        if (
-          Number.isSafeInteger(parsed.created_ms) &&
-          (parsed.created_ms as number) >= 0
-        ) {
-          rankFallback = parsed.created_ms as number;
-        }
-      } catch {
-        // A malformed or partially written claim still blocks older writers.
-      }
-      const rank = stat.birthtimeMs > 0 ? stat.birthtimeMs : rankFallback;
-      claims.push({ path: claimPath, rank, nonce, mtimeMs: stat.mtimeMs });
-    }
-    return claims;
-  }
-
-  private async pruneStaleClaims(): Promise<void> {
-    const now = Date.now();
-    const claims = await this.readClaims().catch(() => []);
-    await Promise.all(
-      claims
-        .filter((claim) => now - claim.mtimeMs > SIDE_QUEUE_LOCK_STALE_MS)
-        .map((claim) => fs.unlink(claim.path).catch(() => undefined)),
+          ),
+      },
+      operation,
     );
   }
 
