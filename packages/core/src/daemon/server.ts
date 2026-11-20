@@ -6,18 +6,24 @@ import {
   DAEMON_MAX_CONNECTIONS,
   DAEMON_MAX_PAGE_SIZE,
   DAEMON_METHODS,
+  DAEMON_METHOD_SCOPES,
+  DAEMON_READ_METHODS,
   DAEMON_PROTOCOL_VERSION,
   DAEMON_REQUEST_MAX_BYTES,
   DAEMON_REQUEST_TIMEOUT_MS,
   DAEMON_RESPONSE_MAX_BYTES,
+  DAEMON_WRITE_LEASE_TTL_MS,
   DaemonRequestSchema,
   DaemonResponseSchema,
   validateSchema,
   type DaemonErrorCode,
+  type DaemonControlResult,
   type DaemonHelloResult,
   type DaemonRequest,
   type DaemonResponse,
+  type DaemonScope,
   type DaemonSessionListResult,
+  type DaemonSessionNewResult,
   type DaemonSessionPinResult,
   type DaemonSessionReadResult,
 } from "codepunk-protocol";
@@ -26,6 +32,16 @@ import { posixMetadataIsReliable } from "../platform/fs.ts";
 import { readSessionSnapshot, SessionNotFoundError } from "../session/index.ts";
 import { listProjectSessions, pinSession } from "../session/ops.ts";
 import { daemonSocketPath } from "./paths.ts";
+import {
+  ControlApprovalError,
+  ControlNotFoundError,
+  ControlRunError,
+  ControlScopeError,
+  ControlWriteConflictError,
+  RuntimeControlBackend,
+  type ControlBackend,
+} from "./control.ts";
+import { createRuntime } from "../runtime/index.ts";
 
 const SUPPORTED_METHODS = new Set<string>(DAEMON_METHODS);
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -37,6 +53,8 @@ export interface DaemonServerOptions {
   maxRequestBytes?: number;
   maxResponseBytes?: number;
   now?: () => Date;
+  control?: ControlBackend;
+  scopes?: readonly DaemonScope[];
 }
 
 type DecodedRequest =
@@ -254,13 +272,14 @@ async function listen(server: Server, socketPath: string): Promise<void> {
 export class DaemonServer {
   readonly socketPath: string;
   readonly projectId: string;
-  readonly readOnly = true as const;
   private readonly server: Server;
   private readonly sockets = new Set<Socket>();
   private readonly requestTimeoutMs: number;
   private readonly maxRequestBytes: number;
   private readonly maxResponseBytes: number;
   private readonly paths: ProjectPaths;
+  private readonly control: ControlBackend;
+  private readonly scopes: ReadonlySet<DaemonScope>;
   private readonly startedAt: string;
   private readonly closePromise: Promise<void>;
   private closeResolve: (() => void) | null = null;
@@ -271,6 +290,23 @@ export class DaemonServer {
     this.socketPath = socketPath;
     this.projectId = options.paths.projectId;
     this.paths = options.paths;
+    this.scopes = new Set(
+      options.scopes ?? ["daemon:read", "sessions:read", "sessions:write"],
+    );
+    this.control =
+      options.control ??
+      new RuntimeControlBackend({
+        cwd: options.paths.cwd,
+        createRuntime: () =>
+          createRuntime({
+            cwd: options.paths.cwd,
+            environment: process.env,
+            newSession: true,
+            bindMode: "print",
+            allowMissingModel: true,
+            allowUnsandboxedShell: false,
+          }),
+      });
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.server.maxConnections = DAEMON_MAX_CONNECTIONS;
     this.requestTimeoutMs =
@@ -318,6 +354,14 @@ export class DaemonServer {
     }
   }
 
+  get readOnly(): boolean {
+    return DAEMON_METHODS.filter((method) =>
+      this.scopes.has(DAEMON_METHOD_SCOPES[method]),
+    ).every((method) =>
+      (DAEMON_READ_METHODS as readonly string[]).includes(method),
+    );
+  }
+
   wait(): Promise<void> {
     return this.closePromise;
   }
@@ -338,6 +382,7 @@ export class DaemonServer {
           this.server.close(() => resolve());
         });
       }
+      await this.control.close?.();
       const identity = this.socketIdentity;
       this.socketIdentity = null;
       if (identity !== null) {
@@ -368,16 +413,31 @@ export class DaemonServer {
   }
 
   private helloResult(): DaemonHelloResult {
-    return {
+    const methods = DAEMON_METHODS.filter((method) =>
+      this.scopes.has(DAEMON_METHOD_SCOPES[method]),
+    );
+    const result = {
       protocol_version: DAEMON_PROTOCOL_VERSION,
-      read_only: false,
-      methods: [...DAEMON_METHODS],
+      read_only: this.readOnly,
+      methods,
+      scopes: [...this.scopes],
+      method_scopes: { ...DAEMON_METHOD_SCOPES },
+      write_lease_ttl_ms: DAEMON_WRITE_LEASE_TTL_MS,
+      compatibility:
+        "v1 responses and four original methods remain valid; control methods and events are additive v1",
       pid: process.pid,
       started_at: this.startedAt,
     };
+    return result as DaemonHelloResult;
   }
 
   private async handleRequest(request: DaemonRequest): Promise<DaemonResponse> {
+    const requiredScope = DAEMON_METHOD_SCOPES[request.method];
+    if (!this.scopes.has(requiredScope)) {
+      throw new ControlScopeError(
+        `scope ${requiredScope} is required for ${request.method}`,
+      );
+    }
     if (request.method === "daemon/hello") {
       return {
         type: "codepunk/daemon-response",
@@ -434,6 +494,30 @@ export class DaemonServer {
         result,
       };
     }
+    if (request.method === "session/new") {
+      const session = await this.control.newSession([]);
+      const result: DaemonSessionNewResult = {
+        session_id: session.sessionId,
+        writer_lease: session.writerLease,
+      };
+      return {
+        type: "codepunk/daemon-response",
+        version: DAEMON_PROTOCOL_VERSION,
+        request_id: request.request_id,
+        ok: true,
+        result,
+      };
+    }
+    if (request.method !== "session/read") {
+      const result: DaemonControlResult = await this.controlRequest(request);
+      return {
+        type: "codepunk/daemon-response",
+        version: DAEMON_PROTOCOL_VERSION,
+        request_id: request.request_id,
+        ok: true,
+        result,
+      };
+    }
     const afterSeq = request.params.after_seq ?? 0;
     const limit = Math.min(
       request.params.limit ?? DAEMON_DEFAULT_PAGE_SIZE,
@@ -464,6 +548,62 @@ export class DaemonServer {
       ok: true,
       result,
     };
+  }
+
+  private async controlRequest(
+    request: Extract<
+      DaemonRequest,
+      {
+        method:
+          | "session/run"
+          | "session/steer"
+          | "session/stop"
+          | "session/approve"
+          | "session/plan"
+          | "session/goal";
+      }
+    >,
+  ): Promise<DaemonControlResult> {
+    const common = request.params;
+    const prompt =
+      "prompt" in common && typeof common.prompt === "string"
+        ? common.prompt
+        : "";
+    const action = {
+      sessionId: common.session_id,
+      message: "message" in common ? common.message : "",
+      reason: common.reason,
+      writerLease: common.writer_lease,
+    };
+    switch (request.method) {
+      case "session/run":
+        return this.control.run({
+          sessionId: common.session_id,
+          prompt,
+          reason: action.reason,
+          writerLease: common.writer_lease,
+        });
+      case "session/steer":
+        return this.control.steer(action);
+      case "session/stop":
+        return this.control.stop(action);
+      case "session/plan":
+        return this.control.plan(action);
+      case "session/goal":
+        return this.control.goal(action);
+      case "session/approve":
+        if (!("approval_id" in common) || !("nonce_sha256" in common)) {
+          throw new Error("approval fields are missing");
+        }
+        return this.control.approve({
+          sessionId: common.session_id,
+          approvalId: common.approval_id,
+          nonceSha256: common.nonce_sha256,
+          approved: common.approved,
+          reason: common.reason,
+          writerLease: common.writer_lease,
+        });
+    }
   }
 
   private send(socket: Socket, response: DaemonResponse): void {
@@ -552,6 +692,41 @@ export class DaemonServer {
       }
       void this.handleRequest(decoded.request)
         .catch((error: unknown) => {
+          if (error instanceof ControlScopeError) {
+            return errorResponse(
+              decoded.request.request_id,
+              "daemon.scope_denied",
+              error.message,
+            );
+          }
+          if (error instanceof ControlWriteConflictError) {
+            return errorResponse(
+              decoded.request.request_id,
+              "daemon.write_conflict",
+              error.message,
+            );
+          }
+          if (error instanceof ControlRunError) {
+            return errorResponse(
+              decoded.request.request_id,
+              "daemon.run_failed",
+              error.message,
+            );
+          }
+          if (error instanceof ControlApprovalError) {
+            return errorResponse(
+              decoded.request.request_id,
+              "daemon.approval_mismatch",
+              error.message,
+            );
+          }
+          if (error instanceof ControlNotFoundError) {
+            return errorResponse(
+              decoded.request.request_id,
+              "daemon.not_found",
+              error.message,
+            );
+          }
           if (error instanceof SessionNotFoundError) {
             return errorResponse(
               decoded.request.request_id,

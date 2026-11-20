@@ -45,6 +45,8 @@ export interface ApprovalBrokerOptions {
 interface PendingApproval {
   request: ApprovalRequest;
   used: boolean;
+  control: Promise<ApprovalResult>;
+  resolveControl: (result: ApprovalResult) => void;
 }
 
 interface SessionGrant {
@@ -88,6 +90,53 @@ export class ApprovalBroker {
 
   clearSessionGrants(): void {
     this.sessionGrants.length = 0;
+  }
+
+  /**
+   * Answer a pending request from a trusted control surface. The nonce and
+   * the full request correlation are still checked by `acceptAnswer`; this
+   * method never creates an approval that was not requested by a channel.
+   */
+  answer(
+    requestId: string,
+    nonceSha256: string,
+    approved: boolean,
+  ): ApprovalResult {
+    const pending = this.pending.get(requestId);
+    if (pending === undefined) {
+      return {
+        approved: false,
+        answer: null,
+        evidence: null,
+        reason: "approval request is not pending",
+        failure: "already_answered",
+      };
+    }
+    const request = pending.request;
+    if (request.nonce_sha256 !== nonceSha256) {
+      return {
+        approved: false,
+        answer: null,
+        evidence: null,
+        reason: "approval nonce does not match",
+        failure: "mismatch",
+      };
+    }
+    const answer: ApprovalAnswer = {
+      request_id: request.request_id,
+      answer: approved ? "allow" : "deny",
+      scope: "once",
+      channel: "cli",
+      channel_id: request.channel_id,
+      nonce_sha256: request.nonce_sha256,
+      worker_id: request.worker_id,
+      session_id: request.session_id,
+      tool_call_id: request.tool_call_id,
+      answered_at: this.now().toISOString(),
+    };
+    const result = this.acceptAnswer(answer, request, pending);
+    pending.resolveControl(result);
+    return result;
   }
 
   private assertChannel(channel: ApprovalChannel): void {
@@ -186,17 +235,30 @@ export class ApprovalBroker {
         failure: null,
       };
     }
-    const pending: PendingApproval = { request, used: false };
+    const control = Promise.withResolvers<ApprovalResult>();
+    const pending: PendingApproval = {
+      request,
+      used: false,
+      control: control.promise,
+      resolveControl: control.resolve,
+    };
     this.pending.set(request.request_id, pending);
-    let answer: ApprovalAnswer | null;
-    let channelError: string | null = null;
-    try {
-      answer = await channel.ask(request);
-    } catch (error) {
-      answer = null;
-      channelError =
-        error instanceof Error ? error.message : "approval channel failed";
+    const outcome = await Promise.race([
+      channel.ask(request).then(
+        (answer) => ({ kind: "answer" as const, answer }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      ),
+      control.promise.then((result) => ({ kind: "control" as const, result })),
+    ]);
+    if (outcome.kind === "control") {
+      return outcome.result;
     }
+    const channelError =
+      outcome.kind === "error"
+        ? outcome.error instanceof Error
+          ? outcome.error.message
+          : "approval channel failed"
+        : null;
     if (channelError !== null) {
       pending.used = true;
       this.pending.delete(request.request_id);
@@ -208,7 +270,11 @@ export class ApprovalBroker {
         failure: "channel_error",
       };
     }
-    return this.acceptAnswer(answer, request, pending);
+    return this.acceptAnswer(
+      outcome.kind === "answer" ? outcome.answer : null,
+      request,
+      pending,
+    );
   }
 
   acceptAnswer(

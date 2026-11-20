@@ -231,7 +231,13 @@ test(
 
         assert.equal(hello.protocol_version, protocol.DAEMON_PROTOCOL_VERSION);
         assert.equal(hello.read_only, false);
-        assert.deepEqual(hello.methods, [...protocol.DAEMON_METHODS]);
+        assert.deepEqual(hello.methods, [
+          "daemon/hello",
+          "session/list",
+          "session/read",
+          "session/pin",
+          "session/new",
+        ]);
         assert.equal(listed.sessions.length, 1);
         assert.equal(listed.sessions[0].id, store.sessionId);
         assert.equal(listed.sessions[0].last_seq, 2);
@@ -711,6 +717,409 @@ test(
       } finally {
         await server.close();
       }
+    });
+  },
+);
+
+test(
+  "daemon control scopes, leases, and approval failures are fail-closed",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-control-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const sessionId = "control-session";
+      const writerLease = {
+        session_id: sessionId,
+        run_id: "run-control",
+        token: "lease-token",
+        channel_id: "codepunk-acp",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      };
+      const control = {
+        async newSession() {
+          throw new Error("not used");
+        },
+        async run() {
+          throw new core.ControlWriteConflictError();
+        },
+        async steer() {
+          throw new core.ControlWriteConflictError();
+        },
+        async stop() {
+          throw new core.ControlWriteConflictError();
+        },
+        async plan() {
+          throw new core.ControlWriteConflictError();
+        },
+        async goal() {
+          throw new core.ControlWriteConflictError();
+        },
+        async approve() {
+          throw new core.ControlApprovalError();
+        },
+      };
+      const readServer = await core.DaemonServer.start({
+        paths,
+        control,
+        scopes: ["daemon:read", "sessions:read"],
+      });
+      try {
+        const deniedMethods = [
+          ["session/run", { prompt: "must not run" }],
+          ["session/steer", { message: "must not steer" }],
+          ["session/stop", {}],
+          [
+            "session/approve",
+            {
+              approval_id: "approval-1",
+              nonce_sha256: `sha256:${"a".repeat(64)}`,
+              approved: true,
+            },
+          ],
+          ["session/plan", { plan: "must not plan" }],
+          ["session/goal", { goal: "must not set a goal" }],
+        ];
+        for (const [method, extraParams] of deniedMethods) {
+          const denied = await rawRequest(
+            readServer.socketPath,
+            request(
+              method,
+              {
+                session_id: sessionId,
+                ...extraParams,
+                reason: "scope test",
+                writer_lease: writerLease,
+              },
+              1,
+            ),
+          );
+          assert.equal(denied.ok, false, method);
+          assert.equal(denied.error.code, "daemon.scope_denied", method);
+        }
+      } finally {
+        await readServer.close();
+      }
+
+      const leaseServer = await core.DaemonServer.start({
+        paths,
+        control,
+        scopes: ["daemon:read", "sessions:read", "runs:write"],
+      });
+      try {
+        const correct = await rawRequest(
+          leaseServer.socketPath,
+          request("session/run", {
+            session_id: sessionId,
+            prompt: "lease test",
+            reason: "lease test",
+            writer_lease: writerLease,
+          }),
+        );
+        assert.equal(correct.error.code, "daemon.write_conflict");
+        const wrongToken = await rawRequest(
+          leaseServer.socketPath,
+          request("session/run", {
+            session_id: sessionId,
+            prompt: "lease test",
+            reason: "lease test",
+            writer_lease: { ...writerLease, token: "wrong-token" },
+          }),
+        );
+        assert.equal(wrongToken.error.code, "daemon.write_conflict");
+      } finally {
+        await leaseServer.close();
+      }
+
+      const controlServer = await core.DaemonServer.start({
+        paths,
+        control,
+        scopes: [
+          "daemon:read",
+          "sessions:read",
+          "runs:write",
+          "approvals:write",
+        ],
+      });
+      try {
+        const hello = await new core.DaemonClient({
+          socketPath: controlServer.socketPath,
+        }).hello();
+        assert.equal(hello.methods.includes("session/run"), true);
+        const conflict = await rawRequest(
+          controlServer.socketPath,
+          request(
+            "session/run",
+            {
+              session_id: sessionId,
+              prompt: "conflict",
+              reason: "lease test",
+              writer_lease: writerLease,
+            },
+            1,
+          ),
+        );
+        assert.equal(conflict.ok, false);
+        assert.equal(conflict.error.code, "daemon.write_conflict");
+
+        const mismatch = await rawRequest(
+          controlServer.socketPath,
+          request(
+            "session/approve",
+            {
+              session_id: sessionId,
+              approval_id: "approval-1",
+              nonce_sha256: `sha256:${"a".repeat(64)}`,
+              approved: true,
+              reason: "approval test",
+              writer_lease: writerLease,
+            },
+            1,
+          ),
+        );
+        assert.equal(mismatch.ok, false);
+        assert.equal(mismatch.error.code, "daemon.approval_mismatch");
+      } finally {
+        await controlServer.close();
+      }
+    });
+  },
+);
+
+test(
+  "daemon hello read_only follows the granted scope surface",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-readonly-scope-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const server = await core.DaemonServer.start({
+        paths,
+        scopes: ["daemon:read", "sessions:read"],
+      });
+      try {
+        assert.equal(server.readOnly, true);
+        const hello = await new core.DaemonClient({
+          socketPath: server.socketPath,
+        }).hello();
+        assert.equal(hello.read_only, true);
+        assert.deepEqual(hello.methods, [
+          "daemon/hello",
+          "session/list",
+          "session/read",
+        ]);
+        assert.deepEqual(hello.scopes, ["daemon:read", "sessions:read"]);
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "daemon scopes gate observation methods before dispatch",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-scope-gate-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const server = await core.DaemonServer.start({
+        paths,
+        scopes: ["daemon:read"],
+      });
+      try {
+        const hello = await new core.DaemonClient({
+          socketPath: server.socketPath,
+        }).hello();
+        assert.equal(hello.read_only, true);
+        assert.deepEqual(hello.methods, ["daemon/hello"]);
+
+        const listed = await rawRequest(
+          server.socketPath,
+          request("session/list"),
+        );
+        assert.equal(listed.ok, false);
+        assert.equal(listed.error.code, "daemon.scope_denied");
+
+        const read = await rawRequest(
+          server.socketPath,
+          request("session/read", { session_id: "session-scope" }),
+        );
+        assert.equal(read.ok, false);
+        assert.equal(read.error.code, "daemon.scope_denied");
+
+        const pinned = await rawRequest(
+          server.socketPath,
+          request("session/pin", {
+            session_id: "session-scope",
+            pinned: true,
+          }),
+        );
+        assert.equal(pinned.ok, false);
+        assert.equal(pinned.error.code, "daemon.scope_denied");
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "daemon session/new issues a lease usable by an existing session",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-new-session-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const server = await core.DaemonServer.start({
+        paths,
+        scopes: [
+          "daemon:read",
+          "sessions:read",
+          "sessions:write",
+          "runs:write",
+        ],
+      });
+      try {
+        const client = new core.DaemonClient({
+          socketPath: server.socketPath,
+        });
+        const hello = await client.hello();
+        assert.equal(hello.methods.includes("session/new"), true);
+        assert.equal(hello.methods.includes("session/run"), true);
+        const opened = await client.newSession();
+        assert.match(opened.session_id, /^[A-Za-z0-9_-]+$/u);
+        assert.equal(opened.writer_lease.session_id, opened.session_id);
+        assert.ok(opened.writer_lease.token.length > 0);
+
+        const missing = await rawRequest(
+          server.socketPath,
+          request("session/run", {
+            session_id: "missing-session",
+            prompt: "must not run",
+            reason: "session lookup test",
+            writer_lease: opened.writer_lease,
+          }),
+        );
+        assert.equal(missing.ok, false);
+        assert.equal(missing.error.code, "daemon.not_found");
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "daemon run failures are rejected instead of returning a success result",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-run-failure-", async (root) => {
+      const { paths } = await makeDaemonProject(root);
+      const sessionId = "control-session";
+      const writerLease = {
+        session_id: sessionId,
+        run_id: "run-control",
+        token: "lease-token",
+        channel_id: "codepunk-acp",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      };
+      const control = {
+        async newSession() {
+          throw new Error("not used");
+        },
+        async run(request) {
+          throw new core.ControlRunError("prompt failed", [
+            {
+              type: "codepunk/daemon-control-event",
+              version: 1,
+              session_id: request.sessionId,
+              run_id: request.writerLease.run_id,
+              seq: 1,
+              kind: "control/error",
+              reason: "prompt failed",
+            },
+          ]);
+        },
+        async steer() {
+          throw new Error("not used");
+        },
+        async stop() {
+          throw new Error("not used");
+        },
+        async plan() {
+          throw new Error("not used");
+        },
+        async goal() {
+          throw new Error("not used");
+        },
+        async approve() {
+          throw new Error("not used");
+        },
+      };
+      const server = await core.DaemonServer.start({
+        paths,
+        control,
+        scopes: ["daemon:read", "sessions:read", "runs:write"],
+      });
+      try {
+        const response = await rawRequest(
+          server.socketPath,
+          request("session/run", {
+            session_id: sessionId,
+            prompt: "fail",
+            reason: "failure test",
+            writer_lease: writerLease,
+          }),
+        );
+        assert.equal(response.ok, false);
+        assert.equal(response.error.code, "daemon.run_failed");
+      } finally {
+        await server.close();
+      }
+    });
+  },
+);
+
+test(
+  "the daemon CLI accepts explicit scopes and rejects unknown ones",
+  { skip: UNIX_SOCKET_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-daemon-cli-scopes-", async (root) => {
+      const { project, home } = await makeDaemonProject(root);
+      const cli = await ensureBuilt();
+      const environment = {
+        ...process.env,
+        CODEPUNK_HOME: home,
+        NO_COLOR: "1",
+      };
+      const daemon = spawn(
+        process.execPath,
+        [cli, "daemon", "--json", "--scopes", "daemon:read,sessions:read"],
+        {
+          cwd: project,
+          env: environment,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      try {
+        const started = await waitForJsonLine(daemon);
+        assert.equal(started.read_only, true);
+        assert.deepEqual(started.scopes, ["daemon:read", "sessions:read"]);
+        assert.deepEqual(started.methods, [
+          "daemon/hello",
+          "session/list",
+          "session/read",
+        ]);
+      } finally {
+        daemon.kill("SIGTERM");
+      }
+      assert.equal(await waitForExit(daemon), 0);
+
+      await assert.rejects(
+        execFileAsync(
+          process.execPath,
+          [cli, "daemon", "--json", "--scopes", "daemon:read,sessions:invalid"],
+          { cwd: project, env: environment },
+        ),
+        /unknown scope/u,
+      );
     });
   },
 );
