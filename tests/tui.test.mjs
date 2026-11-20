@@ -1011,6 +1011,52 @@ test("a real pty shows the working tree diff", async () => {
   });
 });
 
+test("a real pty covers the plan mode command surface", async () => {
+  await withTempDirectory("codepunk-tui-plan-mode-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...BASE_ENV,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/plan-mode status", "Plan mode: off");
+      await runCommandAfter(session, "/plan-mode on", "Plan mode: planning");
+      await runCommandAfter(
+        session,
+        "/plan-mode approve",
+        "/plan-mode failed: No plan to approve",
+      );
+      await runCommandAfter(session, "/plan-mode off", "Plan mode: off");
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
 test("a real pty undoes and redoes Codepunk file changes", async (t) => {
   if (process.platform === "win32") {
     t.skip(
