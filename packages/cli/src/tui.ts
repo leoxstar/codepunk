@@ -94,6 +94,8 @@ import {
   selectProductPreset,
   createUlid,
   createSessionRecap,
+  confirmImageInput,
+  ImageCapabilityError,
   runSubagentHost,
   runDoctor,
   resolveConfiguredModel,
@@ -476,6 +478,7 @@ export function codepunkHelp(): string {
     "  /btw <prompt>              run a read-only side question in the background",
     "  /side <prompt>             run a background side task",
     "  /recap [all|<from>..<to>]  show a derived recap for a session range",
+    "  /image <path> [prompt]     confirm and send an image as untrusted input",
     "  /goal [text|status|pause|resume|clear]",
     "                             create or manage the goal that survives turns",
     "  /hooks [status]            show user and project hook evidence",
@@ -4190,6 +4193,76 @@ function formatRecap(recap: ReturnType<typeof createSessionRecap>): string {
   ].join("\n");
 }
 
+async function assertImageInputAllowed(
+  runtime: CodepunkRuntime,
+  imagePath: string,
+): Promise<void> {
+  const decision = decidePolicy({
+    tool: "read",
+    args: { path: imagePath },
+    cwd: runtime.paths.cwd,
+    workspaceRoot: runtime.paths.deliveryRoot,
+    deliveryRoot: runtime.paths.deliveryRoot,
+    codepunkHome: runtime.paths.home,
+    mode: "interactive",
+    autonomy: runtime.autonomy.profile,
+    approvalMode: runtime.config.approval.mode,
+    filesystem: runtime.config.filesystem.mode,
+    writeSet: runtime.policy.writeSet,
+    userRules: runtime.policy.userRules,
+    projectRules: runtime.policy.projectRules,
+    layers: runtime.policy.layers,
+  });
+  if (decision.decision === "deny") {
+    throw new ImageCapabilityError(
+      "image.policy",
+      `image input was denied by policy: ${decision.reason}`,
+    );
+  }
+  if (decision.decision !== "ask") {
+    return;
+  }
+  const approval = await runtime.approval.request({
+    sessionId: runtime.session.sessionId,
+    workerId: runtime.session.sessionId,
+    toolCallId: createUlid(),
+    tool: "read",
+    path: imagePath,
+    cwd: runtime.paths.cwd,
+    reason: `confirm image input: ${decision.reason}`,
+    argsPreview: "image input",
+  });
+  if (!approval.approved) {
+    throw new ImageCapabilityError(
+      "image.policy",
+      `image input approval was denied: ${approval.reason}`,
+    );
+  }
+}
+
+function imageMessage(
+  image: Awaited<ReturnType<typeof confirmImageInput>>,
+  prompt: string,
+): Array<
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string }
+> {
+  return [
+    {
+      type: "text",
+      text:
+        prompt.trim().length === 0
+          ? "Describe this image and call out anything relevant to the task."
+          : prompt.trim(),
+    },
+    {
+      type: "image",
+      data: image.data.toString("base64"),
+      mimeType: image.mime,
+    },
+  ];
+}
+
 interface SubagentInvocation {
   task: string;
   profileName?: string;
@@ -6344,6 +6417,56 @@ export function createTuiExtension(
             context.ui.notify(
               error instanceof Error ? error.message : String(error),
               "warning",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("image", {
+        description: "Confirm an image and send it with the next prompt",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const trimmed = args.trim();
+          if (trimmed.length === 0) {
+            context.ui.notify("usage: /image <path> [prompt]", "warning");
+            return;
+          }
+          const [requested, ...promptParts] = trimmed.split(/\s+/u);
+          const imagePath = path.resolve(runtime.paths.cwd, requested!);
+          try {
+            const activeModel = context.model;
+            if (
+              activeModel === undefined ||
+              !activeModel.input.includes("image")
+            ) {
+              throw new ImageCapabilityError(
+                "image.model",
+                activeModel === undefined
+                  ? "select a model before sending an image"
+                  : `current model ${activeModel.provider}/${activeModel.id} does not accept image input`,
+              );
+            }
+            await assertImageInputAllowed(runtime, imagePath);
+            const image = await confirmImageInput({
+              path: imagePath,
+              allowedRoot: runtime.paths.deliveryRoot,
+              confirmed: true,
+              assertAllowed: async () => undefined,
+            });
+            context.ui.notify(
+              [
+                `image confirmed: ${image.display_path}`,
+                `type: ${image.mime} · bytes: ${image.bytes}`,
+                `sha256: ${image.sha256}`,
+                "The image is untrusted input; the prompt will be sent now.",
+              ].join("\n"),
+              "info",
+            );
+            await pi.sendUserMessage(
+              imageMessage(image, promptParts.join(" ")),
+            );
+          } catch (error) {
+            context.ui.notify(
+              `/image failed: ${error instanceof Error ? error.message : String(error)}`,
+              error instanceof ImageCapabilityError ? "warning" : "error",
             );
           }
         }),
