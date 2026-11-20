@@ -748,6 +748,23 @@ export {
   type WorkSource,
 } from "./swarm/index.ts";
 export {
+  BACKGROUND_DEFAULT_MAX_CONCURRENT,
+  BACKGROUND_DEFAULT_MAX_LOG_BYTES,
+  BACKGROUND_DEFAULT_MAX_STEERING,
+  BACKGROUND_DEFAULT_MAX_TASKS,
+  BACKGROUND_DEFAULT_STOP_TIMEOUT_MS,
+  BACKGROUND_TASK_VERSION,
+  BackgroundQueueFullError,
+  BackgroundTaskError,
+  BackgroundTaskManager,
+  BackgroundTaskNotFoundError,
+  type BackgroundTaskLogs,
+  type BackgroundTaskManagerOptions,
+  type BackgroundTaskSnapshot,
+  type BackgroundTaskSpec,
+  type BackgroundTaskStatus,
+} from "./background/index.ts";
+export {
   AcpServer,
   DaemonClient,
   DaemonClientError,
