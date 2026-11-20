@@ -193,6 +193,21 @@ test("a child cannot exceed the parent's permission or tool ceiling", () => {
       tools: ["read", "search"],
     }),
   );
+  const shellMask = {
+    read: true,
+    write: false,
+    edit: false,
+    shell: true,
+    search: true,
+    memory_search: false,
+  };
+  assert.doesNotThrow(() =>
+    core.assertSubagentWithinParentPolicy(shellMask, "scoped", {
+      approval: "ask",
+      autonomy: "ask",
+      tools: ["read", "search", "exec"],
+    }),
+  );
 });
 
 test("a profile permission and network policy cannot widen the parent", () => {

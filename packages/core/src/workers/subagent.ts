@@ -173,6 +173,8 @@ export function assertSubagentWithinParentPolicy(
     );
   }
   const parentTools = new Set(parent.tools);
+  const parentHasTool = (tool: string): boolean =>
+    parentTools.has(tool) || (tool === "shell" && parentTools.has("exec"));
   const ceiling: ReadonlyArray<readonly [keyof SubagentToolMask, string]> = [
     ["read", "read"],
     ["search", "search"],
@@ -181,7 +183,7 @@ export function assertSubagentWithinParentPolicy(
     ["shell", "shell"],
   ];
   for (const [key, tool] of ceiling) {
-    if (mask[key] && !parentTools.has(tool)) {
+    if (mask[key] && !parentHasTool(tool)) {
       throw new SubagentError(
         "subagent.parent_tool_ceiling",
         `subagent tool ${tool} exceeds the parent's enabled tools`,

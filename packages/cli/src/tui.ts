@@ -90,7 +90,7 @@ import {
   MODEL_ROLE_NAMES,
   ProductPresetError,
   ModelRoleError,
-  assertSubagentToolCeiling,
+  assertSubagentWithinParentPolicy,
   selectProductPreset,
   createUlid,
   createSessionRecap,
@@ -4663,17 +4663,6 @@ async function runSubagent(
       }
     }
   }
-  const parentTools = new Set(runtime.config.tools.enabled);
-  const readOnlyParent = runtime.autonomy.profile === "read-only";
-  const parentMask: SubagentToolMask = {
-    read: parentTools.has("read"),
-    write: !readOnlyParent && parentTools.has("write"),
-    edit: !readOnlyParent && parentTools.has("edit"),
-    shell:
-      !readOnlyParent && (parentTools.has("shell") || parentTools.has("exec")),
-    search: parentTools.has("search"),
-    memory_search: parentTools.has("memory_search"),
-  };
   const childMask: SubagentToolMask = profile?.tools ?? {
     read: true,
     write: false,
@@ -4682,15 +4671,45 @@ async function runSubagent(
     search: true,
     memory_search: false,
   };
+  const parentPolicy = {
+    approval: runtime.config.approval.mode,
+    autonomy: runtime.autonomy.profile,
+    tools: runtime.config.tools.enabled,
+    permission:
+      runtime.autonomy.profile === "read-only" ||
+      runtime.config.approval.mode === "deny"
+        ? ("read-only" as const)
+        : ("standard" as const),
+    networkAllow: runtime.config.sandbox.network_allow,
+    networkDeny: runtime.config.sandbox.network_deny,
+  };
+  const mutatingChild = childMask.write || childMask.edit || childMask.shell;
+  const childPermission =
+    profile?.permission === "read-only" || !mutatingChild
+      ? ("read-only" as const)
+      : childMask.shell
+        ? ("scoped" as const)
+        : ("ask" as const);
   try {
-    assertSubagentToolCeiling(parentMask, childMask);
+    assertSubagentWithinParentPolicy(
+      childMask,
+      childPermission,
+      parentPolicy,
+      profile === undefined
+        ? undefined
+        : {
+            permission: profile.permission,
+            networkAllow: profile.networkAllow,
+            networkDeny: profile.networkDeny,
+          },
+    );
   } catch (error) {
     if (modelLease !== undefined) {
       state.modelPool?.release(modelLease.lease_id);
       modelLease = undefined;
     }
     context.ui.notify(
-      `subagent tool ceiling rejected the profile: ${
+      `subagent failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
       "error",
@@ -4714,9 +4733,7 @@ async function runSubagent(
       return;
     }
   }
-  const mutating =
-    profile !== undefined &&
-    (profile.tools.write || profile.tools.edit || profile.tools.shell);
+  const mutating = profile !== undefined && mutatingChild;
   if (invocation.shared && mutating) {
     releaseModelLease();
     context.ui.notify(
@@ -4838,18 +4855,7 @@ async function runSubagent(
       record.result = await runSubagentHost({
         hostArgv: state.childHostArgv,
         cwd: runtime.paths.cwd,
-        parentPolicy: {
-          approval: runtime.config.approval.mode,
-          autonomy: runtime.autonomy.profile,
-          tools: runtime.config.tools.enabled,
-          permission:
-            runtime.config.autonomy.profile === "read-only" ||
-            runtime.config.approval.mode === "deny"
-              ? "read-only"
-              : "standard",
-          networkAllow: runtime.config.sandbox.network_allow,
-          networkDeny: runtime.config.sandbox.network_deny,
-        },
+        parentPolicy,
         ...(runtime.paths.additionalRoots.length === 0
           ? {}
           : { additionalDirs: runtime.paths.additionalRoots }),
