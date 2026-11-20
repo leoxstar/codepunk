@@ -16,9 +16,10 @@ import {
   withTempDirectory,
   withoutAmbientProviderEnv,
 } from "./support/helpers.mjs";
-import { importSource } from "./support/core.mjs";
+import { importCore, importSource } from "./support/core.mjs";
 
 const execFileAsync = promisify(execFile);
+const core = await importCore();
 const PTY_RUNNER =
   process.platform === "win32"
     ? [
@@ -157,6 +158,32 @@ function sendTextResponse(response, text) {
   });
   response.write("data: [DONE]\n\n");
   response.end();
+}
+
+async function startReviewModelServer(responses) {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      requests.push(JSON.parse(raw));
+      const text =
+        responses[Math.min(requests.length - 1, responses.length - 1)] ??
+        responses.at(-1) ??
+        "not json";
+      sendTextResponse(response, text);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return {
+    server,
+    requests,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  };
 }
 
 async function startWriteModelServer({ path: targetPath, content }) {
@@ -424,6 +451,12 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /\/plan\s+show the current plan/u);
   assert.match(help, /\/plan-mode \[status\|on\|approve\|off\]/u);
   assert.match(help, /show, enter, approve, or exit plan mode/u);
+  assert.match(help, /\/goal \[text\|status\|pause\|resume\|clear\]/u);
+  assert.match(help, /\/review\s+review the current diff/u);
+  assert.match(help, /\/hooks \[status\]/u);
+  assert.match(help, /\/ps\s+list background tasks/u);
+  assert.match(help, /\/logs <id>\s+show bounded background task logs/u);
+  assert.match(help, /\/stop <id>\s+stop a background task/u);
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
@@ -1043,6 +1076,243 @@ test("a real pty covers the plan mode command surface", async () => {
         "/plan-mode failed: No plan to approve",
       );
       await runCommandAfter(session, "/plan-mode off", "Plan mode: off");
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
+test("a real pty covers Goal, hooks, and structured review events", async () => {
+  await withTempDirectory("codepunk-tui-p0-capabilities-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      cwd: project,
+    });
+    await execFileAsync("git", ["config", "user.name", "Test"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "one\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd: project });
+    await execFileAsync("git", ["commit", "-q", "-m", "initial"], {
+      cwd: project,
+    });
+    await fs.writeFile(path.join(project, "tracked.txt"), "two\n");
+
+    const model = await startReviewModelServer([
+      JSON.stringify({
+        findings: [
+          {
+            severity: "high",
+            file: "tracked.txt",
+            line: 1,
+            reason: "the changed value loses the original state",
+          },
+        ],
+      }),
+      "REVIEW_FAILED_NOT_JSON",
+    ]);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    await fs.writeFile(
+      path.join(home, "hooks.toml"),
+      [
+        "version = 1",
+        "[[hooks]]",
+        'name = "startup"',
+        'event = "session_start"',
+        `argv = ${JSON.stringify([process.execPath, "-e", "process.exit(0)"])}`,
+        "timeout_ms = 5000",
+        "max_output_bytes = 1024",
+        "fail_closed = true",
+        "",
+      ].join("\n"),
+    );
+
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/goal Ship the P0 wave", "Goal: active");
+      assert.match(session.output(), /Ship the P0 wave/u);
+      await runCommandAfter(session, "/goal pause", "Goal: paused");
+      await runCommandAfter(session, "/goal resume", "Goal: active");
+      await runCommandAfter(session, "/hooks status", "Lifecycle hooks");
+      assert.match(session.output(), /user hook startup passed/u);
+
+      await runCommandAfter(session, "/review", "Structured review");
+      assert.match(session.output(), /HIGH tracked\.txt:1/u);
+      assert.match(session.output(), /loses the original state/u);
+      await runCommandAfter(
+        session,
+        "/review",
+        "/review failed: review model did not return a JSON object",
+      );
+      await runCommandAfter(session, "/goal clear", "No goal is active");
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+
+      const eventFiles = (await fs.readdir(home, { recursive: true })).filter(
+        (entry) => entry.endsWith("session.jsonl"),
+      );
+      assert.equal(eventFiles.length, 1);
+      const events = (await fs.readFile(path.join(home, eventFiles[0]), "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.type === "codepunk/event");
+      assert.equal(
+        events.some(
+          (entry) =>
+            entry.kind === "goal/update" && entry.data.action === "set",
+        ),
+        true,
+      );
+      assert.equal(
+        events.some(
+          (entry) =>
+            entry.kind === "goal/update" && entry.data.action === "clear",
+        ),
+        true,
+      );
+      assert.equal(
+        events.some(
+          (entry) =>
+            entry.kind === "hook/result" &&
+            entry.data.hook_name === "startup" &&
+            entry.data.outcome === "passed",
+        ),
+        true,
+      );
+      assert.equal(
+        events.some((entry) => entry.kind === "review/result"),
+        true,
+      );
+      assert.equal(
+        events.some((entry) => entry.kind === "review/error"),
+        true,
+      );
+    } finally {
+      await stopPty(session);
+      model.server.close();
+    }
+  });
+});
+
+test("a real pty lists, reads, and stops durable background tasks", async () => {
+  await withTempDirectory("codepunk-tui-background-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const projectId = core.projectIdFor(project);
+    const paths = core.projectPaths(
+      { cwd: project, deliveryRoot: project, projectId },
+      home,
+    );
+    await core.ensureProjectRegistration(
+      {
+        cwd: project,
+        deliveryRoot: project,
+        projectId,
+        isGitRepository: true,
+      },
+      paths,
+    );
+    const seed = new core.BackgroundTaskManager({
+      paths,
+      sessionId: "seed-session",
+    });
+    const started = await seed.start({
+      id: "tui-background",
+      title: "TUI background task",
+      command: process.execPath,
+      args: ["-e", 'process.stdout.write("BGREADY\\n"); process.exit(0);'],
+      cwd: project,
+    });
+    await seed.wait(started.id);
+
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...BASE_ENV,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/ps", "tui-background");
+      await runCommandAfter(session, "/logs tui-background", "stdout:");
+      assert.match(session.output(), /BGREADY/u);
+      await runCommandAfter(
+        session,
+        "/stop tui-background",
+        "Background task tui-background: completed",
+      );
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,

@@ -12,12 +12,14 @@ import {
   ChildHostError,
   CheckpointConflictError,
   APPROVAL_MODE_NAMES,
+  BackgroundTaskManager,
   DEFAULT_PROTECTED_PATHS,
   PERMISSION_PROFILE_NAMES,
   PERMISSION_PROFILES,
   PI_INSTRUCTION_FILE_NAMES,
   autonomyRulesHash,
   collectCapabilities,
+  createStructuredReview,
   createHandoff,
   createGitCommit,
   createTaskSpec,
@@ -32,12 +34,16 @@ import {
   formatCapabilities,
   formatDoctor,
   formatAgentProfiles,
+  formatHookStatus,
   formatPlan,
   formatPermissionExplanation,
   formatTodos,
   formatWorkspaceTrust,
   allWorkspaceTrustGrants,
   applyWorkspaceTrustGrantChanges,
+  GoalController,
+  GoalCorruptError,
+  generateStructuredReviewFindings,
   formatMcpServers,
   formatSessionList,
   isFallbackModel,
@@ -65,6 +71,7 @@ import {
   readLock,
   readWorkspaceCommitPreview,
   readWorkspaceDiff,
+  readWorkspaceDiffSnapshot,
   readSkillInvocation,
   readWorkState,
   readSavedWorkspaceTrust,
@@ -74,6 +81,7 @@ import {
   removeMergedWorktree,
   searchProjectSessions,
   SessionStore,
+  StructuredReviewValidationError,
   createUlid,
   runSubagentHost,
   runDoctor,
@@ -95,6 +103,7 @@ import {
   writeUserThinkingSelection,
   type ApprovalChannel,
   type AgentProfile,
+  type BackgroundTaskSnapshot,
   type CheckpointPreview,
   type CodepunkRuntime,
   type ConfigReloadResult,
@@ -123,7 +132,10 @@ import type {
   ApprovalRequest,
   ApprovalScope,
   BudgetExceededEvent,
+  GoalState,
   MergeRecord,
+  SessionEvent,
+  StructuredReview,
   TaskHandoff,
   Verdict,
 } from "codepunk-protocol";
@@ -151,6 +163,7 @@ export interface TuiState {
   titleTimers?: NodeJS.Timeout[];
   buildWatch?: NodeJS.Timeout | undefined;
   subagents?: Map<string, BackgroundSubagent>;
+  backgroundTasks?: BackgroundTaskManager;
   /**
    * Slash command names the Pi host will accept in this session. Pi's builtin
    * table is not exported from the package root, and `pi.getCommands()` covers
@@ -432,9 +445,16 @@ export function codepunkHelp(): string {
     "  /agents [profiles|result|transcript|wait|stop|review|sign|merge|discard <id>]",
     "                             list profiles or manage child sessions",
     "                             transcript opens a full-screen live tool-output view",
+    "  /ps                        list background tasks",
+    "  /logs <id>                 show bounded background task logs",
+    "  /stop <id>                 stop a background task",
     "  /plan                      show the current plan",
     "  /plan-mode [status|on|approve|off]",
     "                             show, enter, approve, or exit plan mode",
+    "  /goal [text|status|pause|resume|clear]",
+    "                             create or manage the goal that survives turns",
+    "  /hooks [status]            show user and project hook evidence",
+    "  /review                    review the current diff with structured findings",
     "  /todos                     show the current todo list",
     "",
     "Project",
@@ -535,6 +555,71 @@ export function formatPlanModeStatus(
     );
   }
   return lines.join("\n");
+}
+
+function formatGoalStatus(goal: GoalState | null): string {
+  if (goal === null) {
+    return "No goal is active. Use /goal <objective> to create one.";
+  }
+  return [
+    `Goal: ${goal.status}`,
+    `id: ${goal.goal_id}`,
+    `revision: ${goal.revision}`,
+    `created: ${goal.created_at}`,
+    `updated: ${goal.updated_at}`,
+    "objective:",
+    goal.objective,
+  ].join("\n");
+}
+
+function hookStatus(events: readonly SessionEvent[]): string {
+  const records = events
+    .filter(
+      (event): event is Extract<SessionEvent, { kind: "hook/result" }> =>
+        event.kind === "hook/result",
+    )
+    .slice(-20);
+  if (records.length === 0) {
+    return "No lifecycle hook evidence in this session.";
+  }
+  return [
+    `Lifecycle hooks (${records.length} recent result${records.length === 1 ? "" : "s"})`,
+    ...records.map((event) => formatHookStatus(event.data)),
+  ].join("\n");
+}
+
+function formatStructuredReview(review: StructuredReview): string {
+  const lines = [
+    `Structured review ${review.review_id}`,
+    `diff: ${review.diff_sha256}`,
+    `files: ${review.changed_paths.length}`,
+  ];
+  if (review.findings.length === 0) {
+    lines.push("findings: none");
+  } else {
+    lines.push(`findings (${review.findings.length}):`);
+    for (const finding of review.findings) {
+      lines.push(
+        `  ${finding.severity.toUpperCase()} ${finding.file}:${finding.line}`,
+        `    ${finding.reason}`,
+      );
+    }
+  }
+  lines.push("No changes were applied.");
+  return lines.join("\n");
+}
+
+export async function recordReviewFailure(
+  runtime: CodepunkRuntime,
+  reason: string,
+): Promise<void> {
+  await runtime.host.recordEvent("review/error", {
+    version: 1,
+    session_id: runtime.session.sessionId,
+    run_id: runtime.host.currentRunId ?? runtime.runId ?? "review-only",
+    reason: redactOutputPreview(reason, runtime.paths.home).slice(0, 2_000),
+    created_at: new Date().toISOString(),
+  });
 }
 
 const PERSIST_APPROVAL = "Save exact rule and allow";
@@ -3617,6 +3702,61 @@ async function notify(
   context.ui.notify(message, "info");
 }
 
+function backgroundManager(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+): BackgroundTaskManager {
+  if (state.backgroundTasks === undefined) {
+    state.backgroundTasks = new BackgroundTaskManager({
+      paths: runtime.paths,
+      sessionId: runtime.session.sessionId,
+    });
+  } else {
+    state.backgroundTasks.setSessionId(runtime.session.sessionId);
+  }
+  return state.backgroundTasks;
+}
+
+function formatBackgroundTasks(
+  tasks: readonly BackgroundTaskSnapshot[],
+): string {
+  if (tasks.length === 0) {
+    return "No background tasks.";
+  }
+  const now = Date.now();
+  return [
+    `Background tasks (${tasks.length})`,
+    ...tasks.map((task) => {
+      const started =
+        task.started_at === null ? null : Date.parse(task.started_at);
+      const ended = task.ended_at === null ? now : Date.parse(task.ended_at);
+      const seconds =
+        started === null || !Number.isFinite(started)
+          ? 0
+          : Math.max(0, Math.round((ended - started) / 1000));
+      return `${task.id}  ${task.status.padEnd(9)}  pid=${
+        task.pid ?? "-"
+      }  ${seconds}s  ${task.title}`;
+    }),
+  ].join("\n");
+}
+
+function formatBackgroundLogs(
+  id: string,
+  logs: Awaited<ReturnType<BackgroundTaskManager["logs"]>>,
+): string {
+  return [
+    `Background task ${id} logs`,
+    `evidence: ${logs.evidence_ref}`,
+    "",
+    `stdout${logs.stdout_truncated ? " (truncated)" : ""}:`,
+    logs.stdout.length === 0 ? "(empty)" : logs.stdout.trimEnd(),
+    "",
+    `stderr${logs.stderr_truncated ? " (truncated)" : ""}:`,
+    logs.stderr.length === 0 ? "(empty)" : logs.stderr.trimEnd(),
+  ].join("\n");
+}
+
 interface SubagentInvocation {
   task: string;
   profileName?: string;
@@ -5526,6 +5666,118 @@ export function createTuiExtension(
           }
         }),
       });
+      pi.registerCommand("goal", {
+        description: "Create or manage the goal that survives turns",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const controller = new GoalController(runtime.session);
+          const subcommand = args.trim();
+          try {
+            if (subcommand === "" || subcommand === "status") {
+              await notify(context, formatGoalStatus(controller.state));
+              return;
+            }
+            if (subcommand === "pause") {
+              await controller.pause();
+            } else if (subcommand === "resume") {
+              await controller.resume();
+            } else if (subcommand === "clear") {
+              await controller.clear();
+            } else {
+              await controller.set(subcommand);
+            }
+            await notify(context, formatGoalStatus(controller.state));
+          } catch (error) {
+            context.ui.notify(
+              `/goal failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              error instanceof GoalCorruptError ? "error" : "warning",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("hooks", {
+        description: "Show lifecycle hook evidence",
+        handler: commandContext(state, async (runtime, context, args) => {
+          if (args.trim() !== "" && args.trim() !== "status") {
+            context.ui.notify("usage: /hooks [status]", "warning");
+            return;
+          }
+          await notify(context, hookStatus(runtime.session.allEvents));
+        }),
+      });
+      pi.registerCommand("review", {
+        description: "Review the current diff with structured findings",
+        handler: commandContext(state, async (runtime, context, args) => {
+          if (args.trim() !== "") {
+            context.ui.notify("usage: /review", "warning");
+            return;
+          }
+          if (runtime.primaryModel === undefined) {
+            const reason = "A model must be selected before /review can run.";
+            let recordFailure: string | null = null;
+            try {
+              await recordReviewFailure(runtime, reason);
+            } catch (error) {
+              recordFailure =
+                error instanceof Error ? error.message : String(error);
+            }
+            context.ui.notify(
+              recordFailure === null
+                ? reason
+                : `${reason}\nThe review error event could not be written: ${recordFailure}`,
+              "warning",
+            );
+            return;
+          }
+          try {
+            const snapshot = await readWorkspaceDiffSnapshot({
+              root: runtime.paths.deliveryRoot,
+            });
+            if (snapshot.changed_paths.length === 0) {
+              context.ui.notify("No diff to review.", "info");
+              return;
+            }
+            const findings = await generateStructuredReviewFindings({
+              runtime: runtime.host.services.modelRuntime,
+              model: runtime.primaryModel,
+              snapshot,
+            });
+            const review = await createStructuredReview(snapshot, {
+              session_id: runtime.session.sessionId,
+              run_id:
+                runtime.host.currentRunId ?? runtime.runId ?? "review-only",
+              findings,
+              append: async (record) => {
+                await runtime.host.recordEvent("review/result", record);
+              },
+            });
+            await notify(context, formatStructuredReview(review));
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            let recordFailure: string | null = null;
+            try {
+              await recordReviewFailure(runtime, reason);
+            } catch (recordError) {
+              recordFailure =
+                recordError instanceof Error
+                  ? recordError.message
+                  : String(recordError);
+            }
+            context.ui.notify(
+              `/review failed: ${reason}${
+                recordFailure === null
+                  ? ""
+                  : `\nThe review error event could not be written: ${recordFailure}`
+              }`,
+              error instanceof StructuredReviewValidationError
+                ? "warning"
+                : "error",
+            );
+          }
+        }),
+      });
       pi.registerCommand("todos", {
         description: "Show the current todo list",
         handler: commandContext(state, async (runtime, context) => {
@@ -5966,6 +6218,82 @@ export function createTuiExtension(
         description: "Review, sign, merge, or discard background subagents",
         handler: commandContext(state, async (runtime, context, args) => {
           await manageSubagents(state, runtime, context, args);
+        }),
+      });
+      pi.registerCommand("ps", {
+        description: "List background tasks",
+        handler: commandContext(state, async (runtime, context, args) => {
+          if (args.trim().length > 0) {
+            context.ui.notify("usage: /ps", "warning");
+            return;
+          }
+          try {
+            const manager = backgroundManager(state, runtime);
+            await manager.hydrate();
+            await notify(context, formatBackgroundTasks(manager.ps()));
+          } catch (error) {
+            context.ui.notify(
+              `/ps failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("logs", {
+        description: "Show bounded background task logs",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const id = args.trim();
+          if (id.length === 0) {
+            context.ui.notify("usage: /logs <id>", "warning");
+            return;
+          }
+          try {
+            const manager = backgroundManager(state, runtime);
+            await manager.hydrate();
+            await notify(
+              context,
+              formatBackgroundLogs(id, await manager.logs(id)),
+            );
+          } catch (error) {
+            context.ui.notify(
+              `/logs failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
+        }),
+      });
+      pi.registerCommand("stop", {
+        description: "Stop a background task",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const id = args.trim();
+          if (id.length === 0) {
+            context.ui.notify("usage: /stop <id>", "warning");
+            return;
+          }
+          try {
+            const manager = backgroundManager(state, runtime);
+            await manager.hydrate();
+            const task = await manager.stop(id);
+            await notify(
+              context,
+              [
+                `Background task ${task.id}: ${task.status}`,
+                `evidence: ${task.evidence_ref}`,
+                ...(task.error === null ? [] : [`error: ${task.error}`]),
+              ].join("\n"),
+            );
+          } catch (error) {
+            context.ui.notify(
+              `/stop failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
         }),
       });
       pi.registerCommand("sign", {
