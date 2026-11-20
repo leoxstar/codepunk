@@ -422,6 +422,8 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /F2 cycles through recent models/u);
   assert.match(help, /\/permissions why -- <cmd>/u);
   assert.match(help, /\/plan\s+show the current plan/u);
+  assert.match(help, /\/plan-mode \[status\|on\|approve\|off\]/u);
+  assert.match(help, /show, enter, approve, or exit plan mode/u);
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
