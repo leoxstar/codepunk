@@ -67,6 +67,7 @@ import {
   type SessionStore,
   type SessionWriter,
 } from "../../session/index.ts";
+import { GoalCorruptError, goalModelContext } from "../../session/goal.ts";
 import { normalizeSessionTitle } from "../../session/ops.ts";
 import {
   createCodepunkToolDefinitions,
@@ -1346,6 +1347,32 @@ export async function createPiHost(
         assertNoExtensionFailures();
         productHookState.assertRegistry();
         event.systemPromptOptions.sections["product"] = PRODUCT_SYSTEM_SECTION;
+        let goalContext: string | null = null;
+        if (store !== null) {
+          try {
+            goalContext = goalModelContext(store.allEvents);
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            await store
+              .append("goal/error", {
+                version: 1,
+                code: "goal.corrupt",
+                reason: reason.slice(0, 2_000),
+                created_at: new Date().toISOString(),
+              })
+              .catch(() => undefined);
+            throw new GoalCorruptError(
+              `goal state could not be injected; the prompt was blocked: ${reason}`,
+              { cause: error },
+            );
+          }
+        }
+        if (goalContext === null) {
+          delete event.systemPromptOptions.sections["goal"];
+        } else {
+          event.systemPromptOptions.sections["goal"] = goalContext;
+        }
         if (currentRuntimeEnvironment !== null) {
           event.systemPromptOptions.sections["environment"] =
             currentRuntimeEnvironment();
@@ -1367,6 +1394,25 @@ export async function createPiHost(
             "error",
           );
           return { action: "handled" as const };
+        }
+        if (store !== null) {
+          try {
+            goalModelContext(store.allEvents);
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            await appendEvent("goal/error", {
+              version: 1,
+              code: "goal.corrupt",
+              reason: reason.slice(0, 2_000),
+              created_at: new Date().toISOString(),
+            });
+            context.ui.notify(
+              `codepunk blocked the prompt: goal state is corrupt: ${reason}`,
+              "error",
+            );
+            return { action: "handled" as const };
+          }
         }
         if (budgetExceeded) {
           context.ui.notify(budgetExceededMessage(), "error");
