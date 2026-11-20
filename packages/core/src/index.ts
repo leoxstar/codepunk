@@ -570,6 +570,20 @@ export {
   type FallbackValidationOptions,
 } from "./model/fallback.ts";
 export {
+  MODEL_ROLE_NAMES,
+  ModelRoleError,
+  SubagentModelPoolManager,
+  assertSubagentToolCeiling,
+  loadModelRoles,
+  resolveModelRole,
+  selectSubagentModels,
+  type ModelRoleBundle,
+  type ModelRoleName,
+  type ModelRoleSelection,
+  type SubagentModelLease,
+  type SubagentModelPool,
+} from "./model/roles.ts";
+export {
   MAX_PLUGIN_BYTES,
   PluginError,
   installUserPlugin,
