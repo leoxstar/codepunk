@@ -148,6 +148,8 @@ export interface ToolWrapOptions {
     data: unknown,
   ) => Promise<void> | void;
   onBudgetAbort?: () => Promise<void> | void;
+  beforeToolHook?: (input: ToolLifecycleHookInput) => Promise<void> | void;
+  afterToolHook?: (input: ToolLifecycleHookResult) => Promise<void> | void;
   verifyToolResult?: (input: {
     tool: string;
     params: Record<string, unknown>;
@@ -158,6 +160,19 @@ export interface ToolWrapOptions {
   }) =>
     | Promise<{ result: "pass" | "fail"; reason: string | null }>
     | { result: "pass" | "fail"; reason: string | null };
+}
+
+export interface ToolLifecycleHookInput {
+  tool: string;
+  tool_call_id: string;
+  args_sha256: string;
+  args_preview: string;
+}
+
+export interface ToolLifecycleHookResult extends ToolLifecycleHookInput {
+  is_error: boolean;
+  output_sha256: string;
+  duration_ms: number;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
@@ -1078,6 +1093,14 @@ export async function wrapToolDefinition(
         );
         return textResult(message);
       }
+      const hookInput: ToolLifecycleHookInput = {
+        tool: definition.name,
+        tool_call_id: toolCallId,
+        args_sha256: sha256Text(canonicalJson(params)),
+        args_preview: boundedApprovalPreview(
+          JSON.stringify(redactApprovalValue(params), null, 2),
+        ),
+      };
       const sandboxProvider = options.sandbox ?? null;
       const autonomy = options.autonomy ?? null;
       const target = targetPath(definition.name, params, options.cwd);
@@ -1456,48 +1479,127 @@ export async function wrapToolDefinition(
           }
         }
 
-        // The policy decision and any human approval happened above. Snapshot
-        // the target once more immediately before execution: if it became a
-        // symbolic link, changed content, or changed mode while the caller was
-        // deciding, refuse the write instead of following the new object. Pi's
-        // writer uses a plain file write and would follow a swapped link.
         if (
-          isMutation &&
-          target !== null &&
-          finalDecision === "allow" &&
-          before !== null
+          definition.name === "exec" &&
+          commandArgv !== null &&
+          options.verifyExec !== undefined
         ) {
+          let issue: string | null;
+          try {
+            issue = await options.verifyExec(commandArgv, options.cwd);
+          } catch (error) {
+            issue = `headless exec verification failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+          if (issue !== null) {
+            await options.ledger.append(
+              baseRecord(options, {
+                source: evidenceSource(definition.name),
+                tool: definition.name,
+                toolCallId,
+                decision: "deny",
+                rule: "exec.verification_failed",
+                ruleSha256: recordHash({ rule: "exec.verification_failed" }),
+                policyLayers: policy.layers,
+                approval: approvalEvidence,
+                reviewer: reviewerEvidence,
+                autonomy: autonomyEvidence(),
+                command: null,
+                commandArgv,
+                pathTarget: null,
+                sandbox: sandboxProvider?.descriptor ?? NONE_SANDBOX,
+                coverage: "uncovered",
+                coverageBasis: ["policy", "digest"],
+                exitCode: null,
+                durationMs: 0,
+                beforeSha256: null,
+                afterSha256: null,
+                diffSha256: null,
+                outputRef: null,
+                outputSha256: outputSha(issue),
+                outputPreview: issue,
+                emptyResult: null,
+                executor: null,
+              }),
+            );
+            return textResult(`denied: ${issue}`);
+          }
+        }
+
+        const recheckMutation = async (
+          expected: FileSnapshot | null,
+        ): Promise<{ rule: string; reason: string } | null> => {
+          if (!isMutation || target === null || expected === null) {
+            return null;
+          }
           let recheck: FileSnapshot | null = null;
-          let recheckIssue: string | null = null;
+          let issue: string | null = null;
           try {
             recheck = await snapshotFile(target);
           } catch (error) {
-            recheckIssue =
-              error instanceof Error ? error.message : String(error);
+            issue = error instanceof Error ? error.message : String(error);
           }
           if (
-            recheckIssue === null &&
+            issue === null &&
             recheck !== null &&
-            (recheck.exists !== before.exists ||
-              recheck.sha256 !== before.sha256 ||
-              recheck.mode !== before.mode)
+            (recheck.exists !== expected.exists ||
+              recheck.sha256 !== expected.sha256 ||
+              recheck.mode !== expected.mode)
           ) {
-            recheckIssue =
-              "mutation target changed after the approval decision";
+            issue = "mutation target changed after the approval decision";
           }
-          if (recheckIssue !== null) {
-            finalDecision = "deny";
-            finalRule = "path.recheck";
-            finalRuleSha256 = recordHash({ rule: finalRule });
-            finalReason = recheckIssue;
+          return issue === null
+            ? null
+            : { rule: "path.recheck", reason: issue };
+        };
+        const prepareAttempt = async (
+          expected: FileSnapshot | null,
+        ): Promise<{ rule: string; reason: string } | null> => {
+          try {
+            await options.beforeToolHook?.(hookInput);
+          } catch (error) {
+            return {
+              rule: "hook.before_tool",
+              reason: error instanceof Error ? error.message : String(error),
+            };
           }
+          return recheckMutation(expected);
+        };
+        const runAfterHook = async (
+          result: AnyToolResult,
+          executionError: unknown,
+        ): Promise<{ rule: string; reason: string } | null> => {
+          try {
+            await options.afterToolHook?.({
+              ...hookInput,
+              is_error: result.isError === true || executionError !== undefined,
+              output_sha256: sha256Text(canonicalJson(result.content ?? [])),
+              duration_ms: durationMs,
+            });
+            return null;
+          } catch (error) {
+            return {
+              rule: "hook.after_tool",
+              reason: error instanceof Error ? error.message : String(error),
+            };
+          }
+        };
+        const hookIssue = await prepareAttempt(before);
+        if (hookIssue !== null) {
+          finalDecision = "deny";
+          finalRule = hookIssue.rule;
+          finalRuleSha256 = recordHash({ rule: finalRule });
+          finalReason = hookIssue.reason;
         }
 
         if (finalDecision !== "allow") {
           const guidance = approvalEvidence?.guidance;
-          const message = `denied: ${finalRule} (${finalReason})${
-            guidance === undefined ? "" : `\nUser guidance: ${guidance}`
-          }`;
+          const message = `${
+            finalRule.startsWith("hook.")
+              ? `blocked by ${finalRule.slice("hook.".length)} hook: ${finalReason}`
+              : `denied: ${finalRule} (${finalReason})`
+          }${guidance === undefined ? "" : `\nUser guidance: ${guidance}`}`;
           await options.ledger.append(
             baseRecord(options, {
               source: evidenceSource(definition.name),
@@ -1547,54 +1649,6 @@ export async function wrapToolDefinition(
           return textResult(message);
         }
 
-        if (
-          definition.name === "exec" &&
-          commandArgv !== null &&
-          options.verifyExec !== undefined
-        ) {
-          let issue: string | null;
-          try {
-            issue = await options.verifyExec(commandArgv, options.cwd);
-          } catch (error) {
-            issue = `headless exec verification failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`;
-          }
-          if (issue !== null) {
-            await options.ledger.append(
-              baseRecord(options, {
-                source: evidenceSource(definition.name),
-                tool: definition.name,
-                toolCallId,
-                decision: "deny",
-                rule: "exec.verification_failed",
-                ruleSha256: recordHash({ rule: "exec.verification_failed" }),
-                policyLayers: policy.layers,
-                approval: approvalEvidence,
-                reviewer: reviewerEvidence,
-                autonomy: autonomyEvidence(),
-                command: null,
-                commandArgv,
-                pathTarget: null,
-                sandbox: sandboxProvider?.descriptor ?? NONE_SANDBOX,
-                coverage: "uncovered",
-                coverageBasis: ["policy", "digest"],
-                exitCode: null,
-                durationMs: 0,
-                beforeSha256: null,
-                afterSha256: null,
-                diffSha256: null,
-                outputRef: null,
-                outputSha256: outputSha(issue),
-                outputPreview: issue,
-                emptyResult: null,
-                executor: null,
-              }),
-            );
-            return textResult(`denied: ${issue}`);
-          }
-        }
-
         let durationMs = 0;
         const executeOnce = async (): Promise<{
           result: AnyToolResult;
@@ -1623,6 +1677,15 @@ export async function wrapToolDefinition(
         let attempt = await executeOnce();
         let result = attempt.result;
         let executionError = attempt.executionError;
+        let hookFailure = await runAfterHook(result, executionError);
+        if (hookFailure !== null) {
+          executionError = new Error(hookFailure.reason);
+          result = textResult(
+            `blocked by ${hookFailure.rule.slice("hook.".length)} hook: ${
+              hookFailure.reason
+            }`,
+          );
+        }
         let after =
           isMutation && target !== null ? await snapshotFile(target) : null;
         let verifyEvidence: EvidenceRecord["verify"];
@@ -1639,7 +1702,8 @@ export async function wrapToolDefinition(
           target !== null &&
           before !== null &&
           after !== null &&
-          result.isError !== true
+          result.isError !== true &&
+          hookFailure === null
         ) {
           verifyEvidence = await verifyResult({
             tool: definition.name,
@@ -1697,22 +1761,48 @@ export async function wrapToolDefinition(
               reason,
             };
             const retryBefore = after;
-            attempt = await executeOnce();
-            result = attempt.result;
-            executionError = attempt.executionError;
-            after = await snapshotFile(target);
-            if (result.isError !== true) {
-              verifyEvidence = await verifyResult({
-                tool: definition.name,
-                params,
-                target,
-                before: retryBefore,
-                after,
-                result,
-              });
+            const retryIssue = await prepareAttempt(retryBefore);
+            if (retryIssue !== null) {
+              hookFailure = retryIssue;
+              executionError = new Error(retryIssue.reason);
+              result = textResult(
+                retryIssue.rule.startsWith("hook.")
+                  ? `blocked by ${retryIssue.rule.slice("hook.".length)} hook: ${
+                      retryIssue.reason
+                    }`
+                  : `denied: ${retryIssue.rule} (${retryIssue.reason})`,
+              );
+            } else {
+              attempt = await executeOnce();
+              result = attempt.result;
+              executionError = attempt.executionError;
+              hookFailure = await runAfterHook(result, executionError);
+              if (hookFailure !== null) {
+                executionError = new Error(hookFailure.reason);
+                result = textResult(
+                  `blocked by ${hookFailure.rule.slice("hook.".length)} hook: ${
+                    hookFailure.reason
+                  }`,
+                );
+              }
+              after = await snapshotFile(target);
+              if (hookFailure === null && result.isError !== true) {
+                verifyEvidence = await verifyResult({
+                  tool: definition.name,
+                  params,
+                  target,
+                  before: retryBefore,
+                  after,
+                  result,
+                });
+              }
             }
           }
-          if (verifyEvidence.result === "fail") {
+          if (
+            hookFailure === null &&
+            verifyEvidence !== undefined &&
+            verifyEvidence.result === "fail"
+          ) {
             result = textResult(
               `verification failed: ${
                 verifyEvidence.reason ?? "the mutation verifier failed"
@@ -1807,10 +1897,12 @@ export async function wrapToolDefinition(
             source: evidenceSource(definition.name),
             tool: definition.name,
             toolCallId,
-            decision: "allow",
+            decision: hookFailure === null ? "allow" : "deny",
             outcome,
-            rule: finalRule,
-            ruleSha256: finalRuleSha256,
+            rule: hookFailure?.rule ?? finalRule,
+            ruleSha256: recordHash({
+              rule: hookFailure?.rule ?? finalRule,
+            }),
             policyLayers: policy.layers,
             approval: approvalEvidence,
             reviewer: reviewerEvidence,
@@ -1820,11 +1912,14 @@ export async function wrapToolDefinition(
             pathTarget: target,
             sandbox,
             coverage,
-            coverageBasis: isShellTool(definition.name)
-              ? sandboxProvider?.sandboxed === true
-                ? ["policy", "srt"]
-                : ["policy", "unsandboxed"]
-              : ["policy"],
+            coverageBasis:
+              hookFailure !== null
+                ? ["policy", "hook"]
+                : isShellTool(definition.name)
+                  ? sandboxProvider?.sandboxed === true
+                    ? ["policy", "srt"]
+                    : ["policy", "unsandboxed"]
+                  : ["policy"],
             exitCode,
             durationMs,
             beforeSha256: before?.sha256 ?? null,
