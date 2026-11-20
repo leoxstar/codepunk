@@ -686,6 +686,120 @@ function selectedByFilter(id: string, filters: readonly string[]): boolean {
   return filters.some((filter) => filter === id || globMatches(filter, id));
 }
 
+function scopeSegmentMatches(pattern: string, value: string): boolean {
+  let expression = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === "*") {
+      expression += ".*";
+    } else if (character === "?") {
+      expression += ".";
+    } else if (character === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end === -1) {
+        expression += "\\[";
+        continue;
+      }
+      let body = pattern.slice(index + 1, end);
+      if (body.startsWith("!")) {
+        body = `^${body.slice(1)}`;
+      }
+      expression += `[${body.replaceAll("\\", "\\\\")}]`;
+      index = end;
+    } else {
+      expression += character.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    }
+  }
+  try {
+    return new RegExp(`${expression}$`, "iu").test(value);
+  } catch {
+    return false;
+  }
+}
+
+function scopeGlobMatches(pattern: string, value: string): boolean {
+  const patternParts = pattern.split("/");
+  const valueParts = value.split("/");
+  const visited = new Set<string>();
+  const visit = (patternIndex: number, valueIndex: number): boolean => {
+    const key = `${patternIndex}:${valueIndex}`;
+    if (visited.has(key)) {
+      return false;
+    }
+    visited.add(key);
+    if (patternIndex === patternParts.length) {
+      return valueIndex === valueParts.length;
+    }
+    const part = patternParts[patternIndex]!;
+    if (part === "**") {
+      for (let next = valueIndex; next <= valueParts.length; next += 1) {
+        if (visit(patternIndex + 1, next)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (valueIndex >= valueParts.length) {
+      return false;
+    }
+    if (!scopeSegmentMatches(part, valueParts[valueIndex]!)) {
+      return false;
+    }
+    return visit(patternIndex + 1, valueIndex + 1);
+  };
+  return visit(0, 0);
+}
+
+function stripThinkingSuffix(reference: string): string {
+  return reference.replace(/:(off|minimal|low|medium|high|xhigh|max)$/iu, "");
+}
+
+/**
+ * Match a concrete model reference against `model.enabled`.
+ *
+ * Pi's scope resolver only sees chat models, so image models need the same
+ * pattern semantics applied directly. Globs match both `provider/id` and a
+ * bare id, exact references match one of those forms, and `**` spans whole
+ * path segments.
+ */
+export function modelMatchesEnabledScope(
+  model: { provider: string; id: string },
+  enabled: readonly string[],
+): boolean {
+  if (enabled.length === 0) {
+    return true;
+  }
+  const modelId = stripThinkingSuffix(model.id);
+  const full = `${model.provider}/${modelId}`;
+  return enabled.some((pattern) => {
+    const base = stripThinkingSuffix(pattern.trim());
+    if (base.length === 0) {
+      return false;
+    }
+    const hasGlob = /[*?[]/u.test(base);
+    if (!hasGlob) {
+      return base.includes("/")
+        ? base.toLowerCase() === full.toLowerCase()
+        : base.toLowerCase() === modelId.toLowerCase();
+    }
+    return scopeGlobMatches(base, full) || scopeGlobMatches(base, modelId);
+  });
+}
+
+export function parseModelReference(reference: string): {
+  provider: string;
+  id: string;
+} | null {
+  const separator = reference.indexOf("/");
+  if (separator <= 0 || separator === reference.length - 1) {
+    return null;
+  }
+  return {
+    provider: reference.slice(0, separator),
+    id: reference.slice(separator + 1),
+  };
+}
+
 function providerEntry(
   options: ProviderImportOptions,
   models: readonly ProviderModelImport[],

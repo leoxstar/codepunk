@@ -161,6 +161,9 @@ enabled = ["gateway/primary-model", "openai/gpt-5"]
 ```
 
 An empty or absent `enabled` list means no scope restriction.
+Entries accept scope patterns: `*` matches one segment and `**` matches nested
+model IDs, so `openrouter/**` includes
+`openrouter/black-forest-labs/flux.2-pro`.
 
 ## Approval reviewer
 
