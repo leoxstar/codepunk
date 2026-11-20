@@ -29,6 +29,23 @@ export type ThinkingLevel =
   "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type CompactionMode = "auto" | "manual";
 
+export const STATUSLINE_SEGMENTS = [
+  "model",
+  "session",
+  "sandbox",
+  "filesystem",
+  "policy",
+  "budget",
+] as const;
+export type StatuslineSegment = (typeof STATUSLINE_SEGMENTS)[number];
+
+export const KEYMAP_ACTIONS = ["model_cycle", "background"] as const;
+export type KeymapAction = (typeof KEYMAP_ACTIONS)[number];
+export type KeymapBinding = Record<KeymapAction, string>;
+
+const KEY_BINDING = /^(?:off|f(?:[1-9]|1[0-2])|(?:ctrl|alt)\+[a-z0-9])$/u;
+const THEME_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
+
 export const CONFIG_FILE_NAME = "config.toml";
 
 export function configFilePaths(paths: ProjectPaths): {
@@ -47,6 +64,8 @@ export interface CodepunkConfig {
   tui: {
     mode: "fullscreen" | "regular";
     theme: string;
+    statusline: StatuslineSegment[];
+    keymap: KeymapBinding;
     header: boolean;
     footer: boolean;
     status: boolean;
@@ -208,6 +227,7 @@ const KEY_SPECS = new Map<string, KeySpec>([
     { type: "string", allowed: ["fullscreen", "regular"], scope: "any" },
   ],
   ["tui.theme", { type: "string", scope: "any" }],
+  ["tui.statusline", { type: "string-array", scope: "any" }],
   ["tui.header", { type: "boolean", scope: "any" }],
   ["tui.footer", { type: "boolean", scope: "any" }],
   ["tui.status", { type: "boolean", scope: "any" }],
@@ -362,6 +382,8 @@ export function defaultConfig(): CodepunkConfig {
     tui: {
       mode: "fullscreen",
       theme: "codepunk",
+      statusline: [...STATUSLINE_SEGMENTS],
+      keymap: { model_cycle: "f2", background: "off" },
       header: true,
       footer: true,
       status: true,
@@ -633,12 +655,28 @@ function parseLayer(
   }
   const flat = flattenToml(parsed);
   const output = new Map<string, unknown>();
+  const keymap = new Map<KeymapAction, string>();
   for (const [key, raw] of flat) {
     if (key === "policy.write_set") {
       throw new ConfigError(
         "policy.write_set belongs in project policy.toml",
         key,
       );
+    }
+    if (key.startsWith("tui.keymap.")) {
+      const action = key.slice("tui.keymap.".length);
+      if (!(KEYMAP_ACTIONS as readonly string[]).includes(action)) {
+        throw new ConfigError(`unknown config key: ${key}`, key);
+      }
+      if (typeof raw !== "string" || !KEY_BINDING.test(raw)) {
+        throw new ConfigError(
+          `${key} must be off, f1-f12, ctrl+<key>, or alt+<key>`,
+          key,
+        );
+      }
+      keymap.set(action as KeymapAction, raw);
+      output.set(key, raw);
+      continue;
     }
     const spec = KEY_SPECS.get(key);
     if (spec === undefined) {
@@ -656,7 +694,53 @@ function parseLayer(
         key,
       );
     }
-    output.set(key, validateValue(key, raw, spec));
+    const value = validateValue(key, raw, spec);
+    if (key === "tui.theme") {
+      if (typeof value !== "string" || !THEME_NAME.test(value)) {
+        throw new ConfigError(
+          "tui.theme must be a non-empty theme name",
+          "tui.theme",
+        );
+      }
+    }
+    if (key === "tui.statusline") {
+      const segments = value as string[];
+      if (segments.length === 0 || segments.length > 8) {
+        throw new ConfigError(
+          "tui.statusline must contain 1-8 segments",
+          "tui.statusline",
+        );
+      }
+      if (new Set(segments).size !== segments.length) {
+        throw new ConfigError(
+          "tui.statusline contains a duplicate segment",
+          "tui.statusline",
+        );
+      }
+      for (const segment of segments) {
+        if (!(STATUSLINE_SEGMENTS as readonly string[]).includes(segment)) {
+          throw new ConfigError(
+            `tui.statusline has unknown segment ${segment}`,
+            "tui.statusline",
+          );
+        }
+      }
+    }
+    output.set(key, value);
+  }
+  const boundKeys = new Map<string, KeymapAction>();
+  for (const [action, binding] of keymap) {
+    if (binding === "off") {
+      continue;
+    }
+    const previous = boundKeys.get(binding);
+    if (previous !== undefined) {
+      throw new ConfigError(
+        `key ${binding} is assigned to both ${previous} and ${action}`,
+        `tui.keymap.${action}`,
+      );
+    }
+    boundKeys.set(binding, action);
   }
   return output;
 }
@@ -1305,6 +1389,27 @@ export async function loadConfig(
   applyEnvironment(config, environment, warnings);
   applyCliOverrides(config, overrides);
 
+  const boundKeys = new Map<string, KeymapAction>();
+  for (const action of KEYMAP_ACTIONS) {
+    const binding = config.tui.keymap[action];
+    if (binding === "off") {
+      continue;
+    }
+    if (!KEY_BINDING.test(binding)) {
+      throw new ConfigError(
+        `tui.keymap.${action} must be off, f1-f12, ctrl+<key>, or alt+<key>`,
+        `tui.keymap.${action}`,
+      );
+    }
+    const previous = boundKeys.get(binding);
+    if (previous !== undefined) {
+      throw new ConfigError(
+        `key ${binding} is assigned to both ${previous} and ${action}`,
+        `tui.keymap.${action}`,
+      );
+    }
+    boundKeys.set(binding, action);
+  }
   if (config.session.lease_seconds < config.session.heartbeat_seconds) {
     throw new ConfigError(
       "session.lease_seconds must be at least session.heartbeat_seconds",
@@ -2099,6 +2204,7 @@ export function configSummary(
             .join(" / ")
     }`,
     `memory: ${config.memory.enabled ? `on, ${config.memory.max_tokens} tokens, ${config.memory.default_scope}` : "off"}`,
+    `tui: theme ${config.tui.theme}, statusline ${config.tui.statusline.join(" > ")}, keymap ${KEYMAP_ACTIONS.map((action) => `${action}=${config.tui.keymap[action]}`).join(", ")}`,
     `plugins: ${config.plugins.enabled ? "enabled" : "disabled"}`,
     `telemetry: ${config.telemetry.mode}`,
     `retention: sessions ${config.session.retention_days}d/${config.session.retention_count}, evidence ${config.evidence.retention_days}d/${config.evidence.retention_count}`,

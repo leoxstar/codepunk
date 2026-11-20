@@ -1364,3 +1364,116 @@ test("plugin enablement preserves unrelated user config", async () => {
     );
   });
 });
+
+test("TUI statusline and keymap accept explicit user settings", async () => {
+  await withTempDirectory("codepunk-config-tui-", async (root) => {
+    const { paths } = await makeProject(root);
+    await writeFile(
+      path.join(paths.home, "config.toml"),
+      [
+        "[tui]",
+        'theme = "solarized"',
+        'statusline = ["budget", "model", "policy"]',
+        "",
+        "[tui.keymap]",
+        'model_cycle = "ctrl+m"',
+        'background = "f4"',
+        "",
+      ].join("\n"),
+    );
+    const loaded = await core.loadConfig(paths, {});
+    assert.equal(loaded.config.tui.theme, "solarized");
+    assert.deepEqual(loaded.config.tui.statusline, [
+      "budget",
+      "model",
+      "policy",
+    ]);
+    assert.deepEqual(loaded.config.tui.keymap, {
+      model_cycle: "ctrl+m",
+      background: "f4",
+    });
+    assert.match(
+      core.configSummary(loaded.config).join("\n"),
+      /tui: theme solarized, statusline budget > model > policy, keymap model_cycle=ctrl\+m, background=f4/u,
+    );
+  });
+});
+
+test("TUI statusline rejects unknown and duplicate segments", async () => {
+  await withTempDirectory("codepunk-config-tui-invalid-", async (root) => {
+    const { paths } = await makeProject(root);
+    const configPath = path.join(paths.home, "config.toml");
+    await writeFile(configPath, '[tui]\nstatusline = ["model", "unknown"]\n');
+    await assert.rejects(
+      () => core.loadConfig(paths, {}),
+      /unknown segment unknown/u,
+    );
+    await writeFile(configPath, '[tui]\nstatusline = ["model", "model"]\n');
+    await assert.rejects(
+      () => core.loadConfig(paths, {}),
+      /duplicate segment/u,
+    );
+    await writeFile(configPath, "[tui]\nstatusline = []\n");
+    await assert.rejects(() => core.loadConfig(paths, {}), /1-8 segments/u);
+  });
+});
+
+test("TUI keymap rejects unknown actions, bindings, and conflicts", async () => {
+  await withTempDirectory("codepunk-config-keymap-", async (root) => {
+    const { paths } = await makeProject(root);
+    const configPath = path.join(paths.home, "config.toml");
+    await writeFile(configPath, '[tui.keymap]\njump = "f3"\n');
+    await assert.rejects(
+      () => core.loadConfig(paths, {}),
+      /unknown config key: tui\.keymap\.jump/u,
+    );
+    await writeFile(configPath, '[tui.keymap]\nmodel_cycle = "shift+x"\n');
+    await assert.rejects(
+      () => core.loadConfig(paths, {}),
+      /must be off, f1-f12, ctrl\+<key>, or alt\+<key>/u,
+    );
+    await writeFile(
+      configPath,
+      '[tui.keymap]\nmodel_cycle = "f3"\nbackground = "f3"\n',
+    );
+    await assert.rejects(() => core.loadConfig(paths, {}), /assigned to both/u);
+    await writeFile(
+      configPath,
+      '[tui.keymap]\nmodel_cycle = "f3"\nbackground = "off"\n',
+    );
+    await writeFile(
+      path.join(paths.projectConfigDir, "config.toml"),
+      '[tui.keymap]\nbackground = "f3"\n',
+    );
+    await assert.rejects(() => core.loadConfig(paths, {}), /assigned to both/u);
+  });
+});
+
+test("TUI personalization does not alter policy decisions", async () => {
+  await withTempDirectory("codepunk-config-tui-policy-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const plain = core.defaultConfig();
+    const personalized = core.defaultConfig();
+    personalized.tui.theme = "plain";
+    personalized.tui.statusline = ["budget", "policy", "model"];
+    personalized.tui.keymap = { model_cycle: "off", background: "f5" };
+    const request = {
+      tool: "read",
+      args: { path: path.join(projectRoot, "README.md") },
+      cwd: projectRoot,
+      workspaceRoot: projectRoot,
+      codepunkHome: paths.home,
+      mode: "interactive",
+      autonomy: "ask",
+      approvalMode: "ask",
+    };
+    assert.deepEqual(
+      core.decidePolicy({ ...request, ...plain }),
+      core.decidePolicy({ ...request, ...personalized }),
+    );
+    assert.equal(
+      core.permissionBehaviorSummary(plain),
+      core.permissionBehaviorSummary(personalized),
+    );
+  });
+});

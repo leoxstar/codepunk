@@ -147,6 +147,7 @@ import {
   toggleFavoriteModel,
 } from "./model-history.ts";
 import { openSubagentTranscript } from "./subagent-transcript.ts";
+import { renderStatusline } from "./statusline.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
@@ -2814,11 +2815,14 @@ function renderStatus(state: TuiState): string {
   }
   const profile = permissionProfileFor(runtime.config);
   const budget = budgetSnapshot(runtime);
-  return [
-    modelStatus(runtime),
-    `project ${runtime.paths.projectId} · session ${runtime.session.sessionId.slice(0, 12)} · next sandbox ${runtime.config.sandbox.mode} · fs ${runtime.config.filesystem.mode}`,
-    `permissions ${profile} · trust ${trustDisplay(runtime.workspaceTrust)} · shell ${currentShellStatus(runtime)} · evidence ${evidenceCount(runtime)} · ${formatBudgetStatus(budget)}`,
-  ].join("\n");
+  return renderStatusline(runtime.config.tui.statusline, {
+    model: modelStatus(runtime),
+    session: `project ${runtime.paths.projectId} · session ${runtime.session.sessionId.slice(0, 12)}`,
+    sandbox: `next sandbox ${runtime.config.sandbox.mode}`,
+    filesystem: `fs ${runtime.config.filesystem.mode}`,
+    policy: `permissions ${profile} · trust ${trustDisplay(runtime.workspaceTrust)} · shell ${currentShellStatus(runtime)} · evidence ${evidenceCount(runtime)}`,
+    budget: formatBudgetStatus(budget),
+  });
 }
 
 export function modelOnboardingMessage(
@@ -3715,6 +3719,23 @@ function backgroundManager(
     state.backgroundTasks.setSessionId(runtime.session.sessionId);
   }
   return state.backgroundTasks;
+}
+
+async function showBackgroundTasks(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: Pick<ExtensionContext, "ui">,
+): Promise<void> {
+  try {
+    const manager = backgroundManager(state, runtime);
+    await manager.hydrate();
+    context.ui.notify(formatBackgroundTasks(manager.ps()), "info");
+  } catch (error) {
+    context.ui.notify(
+      `/ps failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
 }
 
 function formatBackgroundTasks(
@@ -5809,12 +5830,39 @@ export function createTuiExtension(
           await toggleFavorite(state, context);
         }),
       });
-      pi.registerShortcut("f2", {
-        description: "Cycle through recent models",
-        handler: async (context) => {
-          await cycleRecentModel(state, context);
-        },
-      });
+      const keymap = state.runtime?.config.tui.keymap ?? {
+        model_cycle: "f2",
+        background: "off",
+      };
+      const modelCycle = keymap.model_cycle;
+      if (modelCycle !== "off") {
+        pi.registerShortcut(
+          modelCycle as Parameters<typeof pi.registerShortcut>[0],
+          {
+            description: "Cycle through recent models",
+            handler: async (context) => {
+              await cycleRecentModel(state, context);
+            },
+          },
+        );
+      }
+      const background = keymap.background;
+      if (background !== "off") {
+        pi.registerShortcut(
+          background as Parameters<typeof pi.registerShortcut>[0],
+          {
+            description: "List background tasks",
+            handler: async (context) => {
+              const runtime = state.runtime;
+              if (runtime === null) {
+                context.ui.notify("codepunk runtime is not ready", "error");
+                return;
+              }
+              await showBackgroundTasks(state, runtime, context);
+            },
+          },
+        );
+      }
       pi.registerCommand("budget", {
         description: "Show model token and cost usage against the budget",
         handler: commandContext(state, async (runtime, context) => {
@@ -6227,18 +6275,7 @@ export function createTuiExtension(
             context.ui.notify("usage: /ps", "warning");
             return;
           }
-          try {
-            const manager = backgroundManager(state, runtime);
-            await manager.hydrate();
-            await notify(context, formatBackgroundTasks(manager.ps()));
-          } catch (error) {
-            context.ui.notify(
-              `/ps failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-              "error",
-            );
-          }
+          await showBackgroundTasks(state, runtime, context);
         }),
       });
       pi.registerCommand("logs", {
