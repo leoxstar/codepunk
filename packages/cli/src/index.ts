@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
+import { enableCompileCache } from "node:module";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+
+// Cache compiled bytecode across runs; session startup loads hundreds of
+// dependency modules, and recompiling them on every launch dominates it.
+try {
+  enableCompileCache();
+} catch {
+  // Best effort only; startup must not fail because the cache is unusable.
+}
 import { DAEMON_SCOPES, type DaemonScope } from "codepunk-protocol";
-import {
-  InteractiveMode,
-  createAgentSessionRuntime,
-  runPrintMode,
-  type ExtensionCommandContext,
-} from "@earendil-works/pi-coding-agent";
-import { ProcessTerminal } from "@earendil-works/pi-tui";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   AutonomyController,
   APPROVAL_MODE_NAMES,
@@ -145,22 +148,12 @@ import type {
   DaemonSessionListResult,
   DaemonSessionReadResult,
 } from "codepunk-protocol";
-import {
-  applyReplacedRuntime,
-  TuiApprovalChannel,
-  createTuiExtension,
-  modelOnboardingMessage,
-  setTuiRuntime,
-  type TuiRuntimeReplacement,
-  type TuiSessionTarget,
-  type TuiState,
+import type {
+  TuiRuntimeReplacement,
+  TuiSessionTarget,
+  TuiState,
 } from "./tui.ts";
 import { CodepunkTerminal } from "./branded-terminal.ts";
-import {
-  selectTerminalCheckboxes,
-  selectTerminalChoice,
-  TerminalSelectCancelledError,
-} from "./terminal-select.ts";
 import {
   COMPLETION_SHELLS,
   completionScript,
@@ -1442,6 +1435,13 @@ async function resolveRunWorkspaceTrust(
       : {}),
   };
   let decision: Exclude<TrustChoice, "custom"> | null = null;
+  // Loaded on demand: only the interactive prompt needs the terminal picker,
+  // and its module graph pulls in the TUI stack.
+  const {
+    selectTerminalCheckboxes,
+    selectTerminalChoice,
+    TerminalSelectCancelledError,
+  } = await import("./terminal-select.ts");
   while (decision === null) {
     let choice: TrustChoice;
     try {
@@ -1611,6 +1611,9 @@ async function makeSessionRuntime(
     createRuntime: (target: TuiSessionTarget) => Promise<CodepunkRuntime>;
   },
 ) {
+  const { createAgentSessionRuntime } = await import(
+    "@earendil-works/pi-coding-agent"
+  );
   const initialCwd = runtime.paths.cwd;
   const initialAgentDir = runtime.paths.home;
   const initialSessionManager = runtime.host.sessionManager;
@@ -1754,6 +1757,9 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
       throw new Error(budgetIssue);
     }
     const sessionRuntime = await makeSessionRuntime(runtime);
+    const { runPrintMode } = await import(
+      "@earendil-works/pi-coding-agent"
+    );
     return await runPrintMode(sessionRuntime, {
       mode: options.mode,
       initialMessage: prompt,
@@ -1764,6 +1770,22 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
 }
 
 async function runTui(options: CliOptions): Promise<number> {
+  // The interactive stack is heavy; load it only when a TUI actually starts.
+  const [
+    { InteractiveMode },
+    { ProcessTerminal },
+    {
+      applyReplacedRuntime,
+      createTuiExtension,
+      modelOnboardingMessage,
+      setTuiRuntime,
+      TuiApprovalChannel,
+    },
+  ] = await Promise.all([
+    import("@earendil-works/pi-coding-agent"),
+    import("@earendil-works/pi-tui"),
+    import("./tui.ts"),
+  ]);
   const forkedSessionId = await prepareFork(options);
   const selector =
     forkedSessionId === undefined

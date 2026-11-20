@@ -8,6 +8,18 @@ const execFileAsync = promisify(execFile);
 
 const WINDOWS_PRIVATE_SIDS = new Set(["S-1-5-18", "S-1-5-32-544"]);
 
+/**
+ * Resolve a Windows system tool without searching `PATH`. Git for Windows and
+ * MSYS2 ship their own `whoami`, which precedes `System32` on many machines
+ * and rejects the Windows `/user` argument.
+ */
+function windowsSystemExecutable(name: string): string {
+  const systemRoot =
+    process.env["SystemRoot"] ?? process.env["windir"] ?? "C:\\Windows";
+  const candidate = path.win32.join(systemRoot, "System32", name);
+  return existsSync(candidate) ? candidate : name;
+}
+
 interface WindowsPrivateAclOptions {
   directory: boolean;
 }
@@ -18,7 +30,7 @@ function windowsAce(sid: string, options: WindowsPrivateAclOptions): string {
 
 async function currentWindowsSid(): Promise<string> {
   const { stdout } = await execFileAsync(
-    "whoami",
+    windowsSystemExecutable("whoami.exe"),
     ["/user", "/fo", "csv", "/nh"],
     { windowsHide: true },
   );
@@ -35,9 +47,11 @@ async function icacls(
   args: readonly string[],
 ): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("icacls", [target, ...args], {
-      windowsHide: true,
-    });
+    const { stdout } = await execFileAsync(
+      windowsSystemExecutable("icacls.exe"),
+      [target, ...args],
+      { windowsHide: true },
+    );
     return stdout;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -85,9 +99,13 @@ function trustedWindowsPrincipal(
 }
 
 async function currentWindowsName(): Promise<string> {
-  const { stdout } = await execFileAsync("whoami", [], {
-    windowsHide: true,
-  });
+  const { stdout } = await execFileAsync(
+    windowsSystemExecutable("whoami.exe"),
+    [],
+    {
+      windowsHide: true,
+    },
+  );
   return stdout.trim();
 }
 
@@ -143,10 +161,23 @@ async function ensureWindowsPrivateAcl(
   }
 }
 
+/**
+ * Paths already stamped private in this process. A stamp costs several
+ * `icacls`/`whoami` process spawns, and state writes re-touch the same
+ * paths constantly; re-stamping the exact path and mode is redundant
+ * because the verified stamp ran earlier in this process.
+ */
+const stampedPrivateDirs = new Set<string>();
+const stampedPrivateFiles = new Set<string>();
+
 export async function ensurePrivateDir(directory: string): Promise<void> {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (stampedPrivateDirs.has(directory)) {
+    return;
+  }
   if (process.platform === "win32") {
     await ensureWindowsPrivateAcl(directory, { directory: true });
+    stampedPrivateDirs.add(directory);
     return;
   }
   try {
