@@ -104,10 +104,10 @@ test("real git snapshot yields a deterministic bound structured review", async (
 
     let appended = null;
     const review = await reviewModule.createStructuredReview(snapshot, {
-      session_id: "session-0010",
-      run_id: "run-0010",
+      session_id: "session-review",
+      run_id: "run-review",
       findings: findings(),
-      review_id: "review-0010",
+      review_id: "review-structured",
       now: () => new Date("2026-01-02T03:04:05.000Z"),
       append: (value) => {
         appended = value;
@@ -115,9 +115,9 @@ test("real git snapshot yields a deterministic bound structured review", async (
     });
 
     assert.equal(appended, review);
-    assert.equal(review.review_id, "review-0010");
-    assert.equal(review.session_id, "session-0010");
-    assert.equal(review.run_id, "run-0010");
+    assert.equal(review.review_id, "review-structured");
+    assert.equal(review.session_id, "session-review");
+    assert.equal(review.run_id, "run-review");
     assert.equal(review.created_at, "2026-01-02T03:04:05.000Z");
     assert.equal(
       review.diff_sha256,
@@ -134,8 +134,8 @@ test("real git snapshot yields a deterministic bound structured review", async (
     }
     assert.doesNotThrow(() =>
       reviewModule.validateStructuredReview(review, snapshot, {
-        session_id: "session-0010",
-        run_id: "run-0010",
+        session_id: "session-review",
+        run_id: "run-review",
       }),
     );
 
