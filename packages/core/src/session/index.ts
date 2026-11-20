@@ -493,6 +493,7 @@ export class SessionStore {
   private events: SessionEvent[];
   private meta: SessionMeta;
   private writer: SessionWriter | null = null;
+  private appendTail: Promise<void> = Promise.resolve();
   private readonly now: () => Date;
   private readonly heartbeatMs: number;
   private readonly leaseMs: number;
@@ -644,9 +645,26 @@ export class SessionStore {
     kind: SessionEvent["kind"],
     data: unknown,
   ): Promise<SessionEvent> {
+    const operation = this.appendTail.then(
+      () => this.appendSerialized(kind, data),
+      () => this.appendSerialized(kind, data),
+    );
+    this.appendTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private async appendSerialized(
+    kind: SessionEvent["kind"],
+    data: unknown,
+  ): Promise<SessionEvent> {
     if (this.writer === null) {
       throw new SessionLockedError("session append requires the writer lock");
     }
+    const previousMeta = this.meta;
+    const previousSize = (await fs.stat(this.paths.logPath)).size;
     const event = {
       type: "codepunk/event",
       version: SESSION_EVENT_SCHEMA_VERSION,
@@ -671,7 +689,26 @@ export class SessionStore {
       updated_at: timestamp(this.now),
       log_seq: typed.seq,
     };
-    await writeJsonAtomic(this.paths.metaPath, this.meta);
+    try {
+      await writeJsonAtomic(this.paths.metaPath, this.meta);
+    } catch (error) {
+      this.events.pop();
+      this.meta = previousMeta;
+      try {
+        await fs.truncate(this.paths.logPath, previousSize);
+      } catch (rollbackError) {
+        throw new SessionError(
+          "session event metadata write failed and the log rollback also failed",
+          {
+            cause: new AggregateError(
+              [error, rollbackError],
+              "session append rollback failed",
+            ),
+          },
+        );
+      }
+      throw error;
+    }
     return typed;
   }
 

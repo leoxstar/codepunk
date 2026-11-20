@@ -748,10 +748,23 @@ export {
   type WorkSource,
 } from "./swarm/index.ts";
 export {
+  AcpServer,
   DaemonClient,
   DaemonClientError,
   DaemonServer,
+  ControlApprovalError,
+  ControlNotFoundError,
+  ControlRunError,
+  ControlScopeError,
+  ControlWriteConflictError,
+  RuntimeControlBackend,
   daemonSocketPath,
+  type AcpServerOptions,
   type DaemonClientOptions,
   type DaemonServerOptions,
+  type ControlAction,
+  type ControlApproval,
+  type ControlBackend,
+  type ControlLease,
+  type ControlRun,
 } from "./daemon/index.ts";

@@ -8,6 +8,7 @@ import {
   DaemonRequestSchema,
   DaemonResponseSchema,
   DaemonSessionListResponseSchema,
+  DaemonSessionNewResponseSchema,
   DaemonSessionPinResponseSchema,
   DaemonSessionReadResponseSchema,
   validateSchema,
@@ -16,6 +17,7 @@ import {
   type DaemonRequest,
   type DaemonResponse,
   type DaemonSessionListResult,
+  type DaemonSessionNewResult,
   type DaemonSessionPinResult,
   type DaemonSessionReadResult,
 } from "codepunk-protocol";
@@ -96,6 +98,27 @@ export class DaemonClient {
       );
     }
     return response.result as DaemonSessionListResult;
+  }
+
+  async newSession(): Promise<DaemonSessionNewResult> {
+    const response = await this.send({
+      type: "codepunk/daemon-request",
+      version: DAEMON_PROTOCOL_VERSION,
+      request_id: randomUUID(),
+      method: "session/new",
+      params: {},
+    });
+    if (!response.ok) {
+      throw new DaemonClientError(response.error.code, response.error.message);
+    }
+    const validation = validateSchema(DaemonSessionNewResponseSchema, response);
+    if (!validation.ok) {
+      throw new DaemonClientError(
+        "daemon.invalid_response",
+        "daemon session new response did not match protocol v1",
+      );
+    }
+    return response.result as DaemonSessionNewResult;
   }
 
   async readSession(

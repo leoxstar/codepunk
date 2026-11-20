@@ -4,6 +4,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import { DAEMON_SCOPES, type DaemonScope } from "codepunk-protocol";
 import {
   InteractiveMode,
   createAgentSessionRuntime,
@@ -20,6 +21,8 @@ import {
   DaemonClient,
   DaemonClientError,
   DaemonServer,
+  AcpServer,
+  RuntimeControlBackend,
   allWorkspaceTrustGrants,
   appendRetentionOperation,
   applyGc,
@@ -223,6 +226,7 @@ interface CliOptions {
   dryRun: boolean;
   json: boolean;
   socket: string | undefined;
+  scopes: DaemonScope[] | undefined;
   limit: number | undefined;
   env: string[];
   url: string | undefined;
@@ -257,8 +261,9 @@ function usage(): string {
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
     "  codepunk sign <run-id> --verdict complete|incomplete",
-    "  codepunk daemon [--socket path]",
+    "  codepunk daemon [--socket path] [--scopes daemon:read,...]",
     "  codepunk view [session-id] [--json] [--socket path]",
+    "  codepunk acp",
     "",
     "Retention commands:",
     "  codepunk gc [--dry-run|--apply]",
@@ -380,6 +385,7 @@ function usage(): string {
     "      --limit <n>          search result limit (1-100, default 20)",
     "      --all-projects       search every project under CODEPUNK_HOME",
     "      --socket <path>      daemon socket under CODEPUNK_HOME",
+    "      --scopes <list>      daemon scopes, comma separated",
     "  -h, --help",
     "  -v, --version",
   ].join("\n");
@@ -438,7 +444,14 @@ function subcommandUsage(command: string | undefined): string | undefined {
           "  codepunk sign <run-id> --verdict complete|incomplete [--actor <name>]",
         ];
       case "daemon":
-        return ["usage:", "  codepunk daemon [--socket path]"];
+        return [
+          "usage:",
+          "  codepunk daemon [--socket path] [--scopes daemon:read,...]",
+          `      default: daemon:read,sessions:read,sessions:write`,
+          `      available: ${DAEMON_SCOPES.join(",")}`,
+        ];
+      case "acp":
+        return ["usage:", "  codepunk acp"];
       case "view":
         return [
           "usage:",
@@ -612,6 +625,7 @@ function parseCli(argv: string[]): CliOptions {
       "dry-run": { type: "boolean" },
       json: { type: "boolean" },
       socket: { type: "string" },
+      scopes: { type: "string" },
       limit: { type: "string" },
       env: { type: "string", multiple: true },
       url: { type: "string" },
@@ -931,6 +945,29 @@ function parseCli(argv: string[]): CliOptions {
   ) {
     throw new Error("--limit must be an integer from 1 to 100");
   }
+  const scopes =
+    values.scopes === undefined
+      ? undefined
+      : [
+          ...new Set(
+            values.scopes
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter((entry) => entry.length > 0),
+          ),
+        ];
+  if (scopes !== undefined) {
+    if (scopes.length === 0) {
+      throw new Error("--scopes must contain at least one daemon scope");
+    }
+    for (const scope of scopes) {
+      if (!(DAEMON_SCOPES as readonly string[]).includes(scope)) {
+        throw new Error(
+          `--scopes has unknown scope ${scope}; use ${DAEMON_SCOPES.join(",")}`,
+        );
+      }
+    }
+  }
   const verdict = values.verdict;
   if (
     verdict !== undefined &&
@@ -1001,6 +1038,7 @@ function parseCli(argv: string[]): CliOptions {
     dryRun: values["dry-run"] === true,
     json: values.json === true,
     socket: values.socket,
+    scopes: scopes as DaemonScope[] | undefined,
     limit,
     env: values.env ?? [],
     url: values.url,
@@ -2244,6 +2282,7 @@ async function commandDaemon(options: CliOptions): Promise<number> {
   const server = await DaemonServer.start({
     paths,
     ...(options.socket !== undefined ? { socketPath: options.socket } : {}),
+    ...(options.scopes !== undefined ? { scopes: options.scopes } : {}),
   });
   try {
     const client = new DaemonClient({ socketPath: server.socketPath });
@@ -2263,7 +2302,7 @@ async function commandDaemon(options: CliOptions): Promise<number> {
       );
     } else {
       process.stdout.write(
-        `codepunk daemon ${server.socketPath}\nprotocol v1: session list/read and pin; Ctrl-C to stop\n`,
+        `codepunk daemon ${server.socketPath}\nprotocol v1: ${hello.methods.join(", ")}; Ctrl-C to stop\n`,
       );
     }
     try {
@@ -2276,6 +2315,29 @@ async function commandDaemon(options: CliOptions): Promise<number> {
   } finally {
     await server.close();
   }
+}
+
+async function commandAcp(): Promise<number> {
+  const backend = new RuntimeControlBackend({
+    cwd: process.cwd(),
+    createRuntime: () =>
+      createRuntime({
+        cwd: process.cwd(),
+        environment: process.env,
+        headless: true,
+        newSession: true,
+        bindMode: "print",
+        allowMissingModel: true,
+        allowUnsandboxedShell: false,
+      }),
+  });
+  const server = new AcpServer({
+    backend,
+    input: process.stdin,
+    output: process.stdout,
+  });
+  await server.run();
+  return 0;
 }
 
 async function commandView(options: CliOptions): Promise<number> {
@@ -4309,6 +4371,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "view") {
     return commandView(options);
+  }
+  if (command === "acp") {
+    return commandAcp();
   }
   if (command === "completion") {
     return commandCompletion(options);

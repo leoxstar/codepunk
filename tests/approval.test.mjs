@@ -405,3 +405,86 @@ test("untrusted workspace rejects session and persistent approvals", async () =>
     }
   });
 });
+
+test("a control surface can answer only the matching pending request", async () => {
+  const broker = new core.ApprovalBroker();
+  let pendingRequest;
+  broker.registerChannel({
+    id: "tui-main",
+    kind: "tui",
+    isTTY: true,
+    async ask(request) {
+      pendingRequest = request;
+      return new Promise(() => {});
+    },
+  });
+  const original = broker.request({
+    sessionId: "session-1",
+    workerId: "worker-1",
+    toolCallId: "call-1",
+  });
+  for (
+    let attempt = 0;
+    attempt < 100 && pendingRequest === undefined;
+    attempt++
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.ok(pendingRequest);
+  const wrong = broker.answer(
+    pendingRequest.request_id,
+    `sha256:${"0".repeat(64)}`,
+    true,
+  );
+  assert.equal(wrong.approved, false);
+  assert.equal(wrong.failure, "mismatch");
+  const accepted = broker.answer(
+    pendingRequest.request_id,
+    pendingRequest.nonce_sha256,
+    true,
+  );
+  assert.equal(accepted.approved, true);
+  assert.equal(accepted.evidence.answer, "allow");
+  const delivered = await original;
+  assert.equal(delivered.approved, true);
+  assert.equal(delivered.answer.answer, "allow");
+  assert.equal(delivered.answer.channel, "cli");
+});
+
+test("a control denial settles the original request without a mismatch", async () => {
+  const broker = new core.ApprovalBroker();
+  let pendingRequest;
+  broker.registerChannel({
+    id: "tui-main",
+    kind: "tui",
+    isTTY: true,
+    async ask(request) {
+      pendingRequest = request;
+      return new Promise(() => {});
+    },
+  });
+  const original = broker.request({
+    sessionId: "session-1",
+    workerId: "worker-1",
+    toolCallId: "call-1",
+  });
+  for (
+    let attempt = 0;
+    attempt < 100 && pendingRequest === undefined;
+    attempt++
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  const denied = broker.answer(
+    pendingRequest.request_id,
+    pendingRequest.nonce_sha256,
+    false,
+  );
+  assert.equal(denied.approved, false);
+  assert.equal(denied.failure, null);
+  assert.equal(denied.reason, "approval denied");
+  const delivered = await original;
+  assert.equal(delivered.approved, false);
+  assert.equal(delivered.failure, null);
+  assert.equal(delivered.answer.answer, "deny");
+});
