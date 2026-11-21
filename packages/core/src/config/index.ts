@@ -4,6 +4,11 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AutonomyProfile, PolicyDecision } from "codepunk-protocol";
 import { atomicWriteFile } from "../platform/fs.ts";
 import {
+  CLAIM_LOCK_STALE_MS,
+  CLAIM_LOCK_TIMEOUT_MS,
+  withClaimFileLock,
+} from "../platform/file-lock.ts";
+import {
   assertProjectConfigFileSafe,
   assertProjectConfigSafe,
   type ProjectPaths,
@@ -1628,6 +1633,40 @@ function upsertModelSection(
   return upsertSectionValues(content, "model", requested);
 }
 
+/**
+ * Serialize read-modify-write of the user config so concurrent writes cannot
+ * lose each other's updates. Fails closed when the wait times out.
+ */
+async function withUserConfigLock<T>(
+  paths: ProjectPaths,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockDir = path.join(paths.home, `${CONFIG_FILE_NAME}.lock.d`);
+  return withClaimFileLock(
+    {
+      lockDir,
+      timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
+      staleMs: CLAIM_LOCK_STALE_MS,
+      busyError: () =>
+        new ConfigError(`user config is locked by another process`),
+    },
+    operation,
+  );
+}
+
+async function readUserConfigContent(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "";
+    }
+    throw new ConfigError(
+      `cannot read ${filePath}: ${(error as Error).message}`,
+    );
+  }
+}
+
 export async function writeUserModelSelection(
   paths: ProjectPaths,
   provider: string,
@@ -1635,26 +1674,19 @@ export async function writeUserModelSelection(
   thinking?: ThinkingLevel,
 ): Promise<string> {
   const filePath = path.join(paths.home, CONFIG_FILE_NAME);
-  let content = "";
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new ConfigError(
-        `cannot read ${filePath}: ${(error as Error).message}`,
-      );
-    }
-  }
-  await atomicWriteFile(
-    filePath,
-    upsertModelSection(content, {
-      provider,
-      id,
-      ...(thinking === undefined ? {} : { thinking }),
-    }),
-    0o600,
-  );
-  return filePath;
+  return withUserConfigLock(paths, async () => {
+    let content = await readUserConfigContent(filePath);
+    await atomicWriteFile(
+      filePath,
+      upsertModelSection(content, {
+        provider,
+        id,
+        ...(thinking === undefined ? {} : { thinking }),
+      }),
+      0o600,
+    );
+    return filePath;
+  });
 }
 
 export async function writeUserThinkingSelection(
@@ -1677,26 +1709,19 @@ export async function writeUserThinkingSelection(
     );
   }
   const filePath = path.join(paths.home, CONFIG_FILE_NAME);
-  let content = "";
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new ConfigError(
-        `cannot read ${filePath}: ${(error as Error).message}`,
-      );
-    }
-  }
-  await atomicWriteFile(
-    filePath,
-    upsertSectionValues(
-      content,
-      "model",
-      new Map([["thinking", tomlString(thinking)]]),
-    ),
-    0o600,
-  );
-  return filePath;
+  return withUserConfigLock(paths, async () => {
+    let content = await readUserConfigContent(filePath);
+    await atomicWriteFile(
+      filePath,
+      upsertSectionValues(
+        content,
+        "model",
+        new Map([["thinking", tomlString(thinking)]]),
+      ),
+      0o600,
+    );
+    return filePath;
+  });
 }
 
 export interface PermissionConfigUpdate {
@@ -1982,84 +2007,77 @@ export async function writeUserPermissionSelection(
       ? undefined
       : normalizeNetworkDeny(update.networkDeny);
   const filePath = path.join(paths.home, CONFIG_FILE_NAME);
-  let content = "";
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new ConfigError(
-        `cannot read ${filePath}: ${(error as Error).message}`,
-      );
-    }
-  }
-  if (
-    update.approval !== undefined ||
-    update.reviewer !== undefined ||
-    update.reviewerModel !== undefined ||
-    update.reviewerTimeoutMs !== undefined
-  ) {
-    const approval = new Map<string, string>();
-    if (update.approval !== undefined) {
-      approval.set("mode", tomlString(update.approval));
-    }
-    if (update.reviewer !== undefined) {
-      approval.set("reviewer", tomlString(update.reviewer));
-      if (update.reviewer === "off" && update.reviewerModel === undefined) {
-        // Leaving a model reference behind would make the next loadConfig
-        // reject `reviewer = "off"` as an inconsistent configuration.
-        approval.set("reviewer_model", tomlString("null"));
+  return withUserConfigLock(paths, async () => {
+    let content = await readUserConfigContent(filePath);
+    if (
+      update.approval !== undefined ||
+      update.reviewer !== undefined ||
+      update.reviewerModel !== undefined ||
+      update.reviewerTimeoutMs !== undefined
+    ) {
+      const approval = new Map<string, string>();
+      if (update.approval !== undefined) {
+        approval.set("mode", tomlString(update.approval));
       }
+      if (update.reviewer !== undefined) {
+        approval.set("reviewer", tomlString(update.reviewer));
+        if (update.reviewer === "off" && update.reviewerModel === undefined) {
+          // Leaving a model reference behind would make the next loadConfig
+          // reject `reviewer = "off"` as an inconsistent configuration.
+          approval.set("reviewer_model", tomlString("null"));
+        }
+      }
+      if (update.reviewerModel !== undefined) {
+        approval.set(
+          "reviewer_model",
+          update.reviewerModel === null
+            ? tomlString("null")
+            : tomlString(update.reviewerModel),
+        );
+      }
+      if (update.reviewerTimeoutMs !== undefined) {
+        approval.set("reviewer_timeout_ms", String(update.reviewerTimeoutMs));
+      }
+      content = upsertSectionValues(content, "approval", approval);
     }
-    if (update.reviewerModel !== undefined) {
-      approval.set(
-        "reviewer_model",
-        update.reviewerModel === null
-          ? tomlString("null")
-          : tomlString(update.reviewerModel),
+    if (update.autonomy !== undefined) {
+      const autonomy = new Map([["profile", tomlString(update.autonomy)]]);
+      if (update.scopedRules !== undefined) {
+        autonomy.set("scoped_rules", tomlString(update.scopedRules));
+      }
+      content = upsertSectionValues(content, "autonomy", autonomy);
+    }
+    if (update.sandbox !== undefined) {
+      content = upsertSectionValues(
+        content,
+        "sandbox",
+        new Map([["mode", tomlString(update.sandbox)]]),
       );
     }
-    if (update.reviewerTimeoutMs !== undefined) {
-      approval.set("reviewer_timeout_ms", String(update.reviewerTimeoutMs));
+    if (networkAllow !== undefined) {
+      content = upsertSectionValues(
+        content,
+        "sandbox",
+        new Map([["network_allow", tomlStringArray(networkAllow)]]),
+      );
     }
-    content = upsertSectionValues(content, "approval", approval);
-  }
-  if (update.autonomy !== undefined) {
-    const autonomy = new Map([["profile", tomlString(update.autonomy)]]);
-    if (update.scopedRules !== undefined) {
-      autonomy.set("scoped_rules", tomlString(update.scopedRules));
+    if (networkDeny !== undefined) {
+      content = upsertSectionValues(
+        content,
+        "sandbox",
+        new Map([["network_deny", tomlStringArray(networkDeny)]]),
+      );
     }
-    content = upsertSectionValues(content, "autonomy", autonomy);
-  }
-  if (update.sandbox !== undefined) {
-    content = upsertSectionValues(
-      content,
-      "sandbox",
-      new Map([["mode", tomlString(update.sandbox)]]),
-    );
-  }
-  if (networkAllow !== undefined) {
-    content = upsertSectionValues(
-      content,
-      "sandbox",
-      new Map([["network_allow", tomlStringArray(networkAllow)]]),
-    );
-  }
-  if (networkDeny !== undefined) {
-    content = upsertSectionValues(
-      content,
-      "sandbox",
-      new Map([["network_deny", tomlStringArray(networkDeny)]]),
-    );
-  }
-  if (update.filesystem !== undefined) {
-    content = upsertSectionValues(
-      content,
-      "filesystem",
-      new Map([["mode", tomlString(update.filesystem)]]),
-    );
-  }
-  await atomicWriteFile(filePath, content, 0o600);
-  return filePath;
+    if (update.filesystem !== undefined) {
+      content = upsertSectionValues(
+        content,
+        "filesystem",
+        new Map([["mode", tomlString(update.filesystem)]]),
+      );
+    }
+    await atomicWriteFile(filePath, content, 0o600);
+    return filePath;
+  });
 }
 
 export async function writeUserPluginsEnabled(
@@ -2073,26 +2091,19 @@ export async function writeUserPluginsEnabled(
     );
   }
   const filePath = path.join(paths.home, CONFIG_FILE_NAME);
-  let content = "";
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new ConfigError(
-        `cannot read ${filePath}: ${(error as Error).message}`,
-      );
-    }
-  }
-  await atomicWriteFile(
-    filePath,
-    upsertSectionValues(
-      content,
-      "plugins",
-      new Map([["enabled", enabled ? "true" : "false"]]),
-    ),
-    0o600,
-  );
-  return filePath;
+  return withUserConfigLock(paths, async () => {
+    const content = await readUserConfigContent(filePath);
+    await atomicWriteFile(
+      filePath,
+      upsertSectionValues(
+        content,
+        "plugins",
+        new Map([["enabled", enabled ? "true" : "false"]]),
+      ),
+      0o600,
+    );
+    return filePath;
+  });
 }
 
 export function piSettings(

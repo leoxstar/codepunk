@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ensurePrivateDir } from "./fs.ts";
 
+/**
+ * Shared timeout for cross-process read-modify-write locks.
+ */
+export const CLAIM_LOCK_TIMEOUT_MS = 5_000;
+export const CLAIM_LOCK_STALE_MS = 60_000;
+
 export interface ClaimFileLockOptions {
   lockDir: string;
   timeoutMs?: number;

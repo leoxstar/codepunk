@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -14,28 +14,20 @@ import {
   type McpAuthProvider,
   createMcpAuthProvider,
 } from "@earendil-works/pi-mcp/oauth";
-import { atomicWriteFile, ensurePrivateDir } from "../platform/fs.ts";
+import { atomicWriteFile } from "../platform/fs.ts";
+import {
+  CLAIM_LOCK_STALE_MS,
+  CLAIM_LOCK_TIMEOUT_MS,
+  withClaimFileLock,
+} from "../platform/file-lock.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
 
 export type { McpAuthProvider } from "@earendil-works/pi-mcp/oauth";
 
 const AUTH_VERSION = 1;
-const LOCK_WAIT_MS = 25_000;
-// A waiter must never be able to declare the holder stale before its own
-// deadline: otherwise a refresh longer than this value is stolen while the
-// original process is still rotating the token, and two writers race on a
-// one-time refresh token. Keep stale strictly greater than wait.
-const LOCK_STALE_MS = 60_000;
-const LOCK_RETRY_MS = 100;
-
-/**
- * Exported so the wait/stale ordering is a testable invariant rather than a
- * comment. A refresh lock may only be stolen after every waiter has already
- * given up.
- */
 export const MCP_REFRESH_LOCK_POLICY = {
-  waitMs: LOCK_WAIT_MS,
-  staleMs: LOCK_STALE_MS,
+  waitMs: CLAIM_LOCK_TIMEOUT_MS,
+  staleMs: CLAIM_LOCK_STALE_MS,
 } as const;
 
 export class McpAuthError extends Error {
@@ -84,11 +76,7 @@ function storeKey(server: string, serverUrl: string): string {
 
 function lockPathFor(directory: string, key: string): string {
   const digest = createHash("sha256").update(key).digest("hex").slice(0, 16);
-  return path.join(directory, "mcp-auth-locks", `${digest}.lock`);
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return path.join(directory, "mcp-auth-locks", `${digest}.lock.d`);
 }
 
 async function withLockFile<T>(
@@ -96,47 +84,18 @@ async function withLockFile<T>(
   busyError: () => Error,
   work: () => Promise<T>,
 ): Promise<T> {
-  await ensurePrivateDir(path.dirname(lockPath));
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  const token = randomUUID();
-  let acquired = false;
-  while (!acquired) {
-    try {
-      const handle = await fs.open(lockPath, "wx", 0o600);
-      try {
-        await handle.writeFile(`${token}\n`, "utf8");
-      } finally {
-        await handle.close();
-      }
-      acquired = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      try {
-        const stat = await fs.stat(lockPath);
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          await fs.unlink(lockPath).catch(() => {});
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw busyError();
-      }
-      await sleep(LOCK_RETRY_MS);
-    }
-  }
-  try {
-    return await work();
-  } finally {
-    // Do not remove a lock another process took over after ours went stale.
-    const current = await fs.readFile(lockPath, "utf8").catch(() => null);
-    if (current === `${token}\n`) {
-      await fs.unlink(lockPath).catch(() => {});
-    }
-  }
+  const lockDir = lockPath.endsWith(".lock.d")
+    ? lockPath
+    : `${lockPath}.lock.d`;
+  return withClaimFileLock(
+    {
+      lockDir,
+      timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
+      staleMs: CLAIM_LOCK_STALE_MS,
+      busyError,
+    },
+    work,
+  );
 }
 
 /**
@@ -221,13 +180,17 @@ export class McpAuthStore {
     mutate: (document: AuthDocument) => void,
     options: { tolerateCorrupt?: boolean } = {},
   ): Promise<void> {
-    await withLockFile(
-      `${this.path}.write.lock`,
-      () =>
-        new McpAuthError(
-          "mcp.auth_busy",
-          `${this.path} is locked by another process`,
-        ),
+    await withClaimFileLock(
+      {
+        lockDir: `${this.path}.lock.d`,
+        timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
+        staleMs: CLAIM_LOCK_STALE_MS,
+        busyError: () =>
+          new McpAuthError(
+            "mcp.auth_busy",
+            "MCP auth store is locked by another process",
+          ),
+      },
       async () => {
         const document = await this.read(options);
         mutate(document);

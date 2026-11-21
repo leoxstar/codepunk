@@ -9,6 +9,11 @@ import {
   normalizeAbsolute,
   resolveRealPath,
 } from "../platform/path.ts";
+import {
+  CLAIM_LOCK_STALE_MS,
+  CLAIM_LOCK_TIMEOUT_MS,
+  withClaimFileLock,
+} from "../platform/file-lock.ts";
 import { readJsonFile, writeJsonAtomic } from "../platform/fs.ts";
 import { discoverProjectInstructionFiles } from "../platform/context-files.ts";
 import { sha256Value } from "../platform/hash.ts";
@@ -592,6 +597,31 @@ interface StoredWorkspaceTrustFile {
   workspaces: Record<string, StoredWorkspaceTrustEntry>;
 }
 
+/**
+ * Serialize Codepunk's trust sidecar and Pi's legacy trust store. Pi still
+ * owns the legacy file shape, but this claim lock coordinates all Codepunk
+ * writers without changing that format.
+ */
+async function withWorkspaceTrustLock<T>(
+  home: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockDir = path.join(
+    normalizeAbsolute(home),
+    `${path.basename(workspaceTrustStorePath(home))}.lock.d`,
+  );
+  return withClaimFileLock(
+    {
+      lockDir,
+      timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
+      staleMs: CLAIM_LOCK_STALE_MS,
+      busyError: () =>
+        new Error("workspace trust store is locked by another process"),
+    },
+    operation,
+  );
+}
+
 export interface SavedWorkspaceResourceTrust {
   path: string;
   entry: StoredWorkspaceTrustEntry;
@@ -740,43 +770,55 @@ export async function saveWorkspaceTrustGrants(
   grants: WorkspaceTrustGrants,
   source: "prompt" | "cli" = "cli",
 ): Promise<{ storePath: string; resourceStorePath: string }> {
-  const root = normalizeAbsolute(resolveRealPath(cwd));
-  const resourceStorePath = workspaceResourceTrustStorePath(home);
-  const workspaces = await readResourceTrustStore(home);
-  workspaces[root] = {
-    grants: { ...grants },
-    updated_at: new Date().toISOString(),
-    source,
-  };
-  const store: StoredWorkspaceTrustFile = {
-    version: RESOURCE_TRUST_STORE_VERSION,
-    workspaces,
-  };
+  return withWorkspaceTrustLock(home, async () => {
+    const root = normalizeAbsolute(resolveRealPath(cwd));
+    const resourceStorePath = workspaceResourceTrustStorePath(home);
+    const workspaces = await readResourceTrustStore(home);
+    workspaces[root] = {
+      grants: { ...grants },
+      updated_at: new Date().toISOString(),
+      source,
+    };
+    const store: StoredWorkspaceTrustFile = {
+      version: RESOURCE_TRUST_STORE_VERSION,
+      workspaces,
+    };
 
-  // Pi's store can only express a whole-workspace boolean. Keep it
-  // conservative for partial decisions so removing Codepunk's sidecar cannot
-  // silently widen trust when another Pi entry point reads the same store.
-  const allGranted = WORKSPACE_TRUST_RESOURCE_KINDS.every(
-    (kind) => grants[kind],
-  );
-  const storePath = await saveWorkspaceTrust(home, root, allGranted);
-  try {
-    await writeJsonAtomic(resourceStorePath, store);
-  } catch (error) {
-    // The Pi boolean is already conservative, so a failed sidecar write can
-    // only narrow trust. Report the failure instead of claiming a saved
-    // per-resource decision.
-    throw new Error(
-      `workspace resource trust store ${resourceStorePath} could not be written: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
+    // Pi's store can only express a whole-workspace boolean. Keep it
+    // conservative for partial decisions so removing Codepunk's sidecar cannot
+    // silently widen trust when another Pi entry point reads the same store.
+    const allGranted = WORKSPACE_TRUST_RESOURCE_KINDS.every(
+      (kind) => grants[kind],
     );
-  }
-  return { storePath, resourceStorePath };
+    const storePath = await saveWorkspaceTrustUnlocked(home, root, allGranted);
+    try {
+      await writeJsonAtomic(resourceStorePath, store);
+    } catch (error) {
+      // The Pi boolean is already conservative, so a failed sidecar write can
+      // only narrow trust. Report the failure instead of claiming a saved
+      // per-resource decision.
+      throw new Error(
+        `workspace resource trust store ${resourceStorePath} could not be written: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+    return { storePath, resourceStorePath };
+  });
 }
 
 export async function saveWorkspaceTrust(
+  home: string,
+  cwd: string,
+  decision: boolean,
+): Promise<string> {
+  return withWorkspaceTrustLock(home, async () =>
+    saveWorkspaceTrustUnlocked(home, cwd, decision),
+  );
+}
+
+async function saveWorkspaceTrustUnlocked(
   home: string,
   cwd: string,
   decision: boolean,
