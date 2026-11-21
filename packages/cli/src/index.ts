@@ -1611,9 +1611,8 @@ async function makeSessionRuntime(
     createRuntime: (target: TuiSessionTarget) => Promise<CodepunkRuntime>;
   },
 ) {
-  const { createAgentSessionRuntime } = await import(
-    "@earendil-works/pi-coding-agent"
-  );
+  const { createAgentSessionRuntime } =
+    await import("@earendil-works/pi-coding-agent");
   const initialCwd = runtime.paths.cwd;
   const initialAgentDir = runtime.paths.home;
   const initialSessionManager = runtime.host.sessionManager;
@@ -1757,9 +1756,7 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
       throw new Error(budgetIssue);
     }
     const sessionRuntime = await makeSessionRuntime(runtime);
-    const { runPrintMode } = await import(
-      "@earendil-works/pi-coding-agent"
-    );
+    const { runPrintMode } = await import("@earendil-works/pi-coding-agent");
     return await runPrintMode(sessionRuntime, {
       mode: options.mode,
       initialMessage: prompt,

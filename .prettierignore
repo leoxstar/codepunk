@@ -1,0 +1,34 @@
+# 生成物：格式的权威在生成它的工具，不在 prettier
+pnpm-lock.yaml
+.worktrees/
+
+# 以下沿用 .gitignore 的规则（--ignore-path 只能指定一个文件，故复制）
+node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+.codepunk/
+.deja/
+.pi/
+.pi/**
+/sessions/
+/evidence/
+/artifacts/
+/logs/
+/cache/
+.env
+.env.*
+.env.example
+.env.template
+*.pem
+*.key
+*.log
+*.tmp
+*.tgz
+tmp/
+.DS_Store
+.idea/
+.vscode/
+.test-dist/
