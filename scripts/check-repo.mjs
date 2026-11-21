@@ -109,10 +109,20 @@ const PACKAGE_SPECS = [
       "codepunk-core": ["../core/src/index.ts"],
     },
     external: {
+      "@anthropic-ai/sandbox-runtime": "0.0.82",
+      "@earendil-works/pi-ai": "1.5.2",
       "@earendil-works/pi-coding-agent": "1.5.2",
+      "@earendil-works/pi-mcp": "1.5.2",
       "@earendil-works/pi-tui": "1.5.2",
     },
     internal: ["codepunk-core", "codepunk-protocol"],
+    // Build-only tooling for this package. These are never imported by the
+    // published sources; they exist so the package can produce its own
+    // artifacts. Each entry is still pinned to an exact version and still has
+    // to appear in the reviewed lockfile.
+    buildDevDependencies: {
+      esbuild: "0.25.11",
+    },
   },
 ];
 
@@ -195,7 +205,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "b2843e9f8af164aa1e534b601b766878a1e8f29ee8064ebb2afde09ce8986b27";
+  "942be58596962438573ccd4f81b8581b9b284dd35ba55b71e49cec0636e8d5ce";
 
 const EXPECTED_CI_SHA256 =
   "c99f39055445cadcddebab6d8518edd4dfd49d758fa9ec8cf5be20a2b3ad70dc";
@@ -496,6 +506,23 @@ async function walkFiles(root, directoriesWithTrackedFiles) {
         continue;
       }
       if (directory === root && entry.name === WORKTREES_ROOT_ENTRY) {
+        continue;
+      }
+      // A generated directory that Git ignores is not content: it exists only
+      // on machines that happened to build the product, so scanning it would
+      // make every finding depend on who ran what last. The working-tree
+      // hygiene walk already skips these; the content scans must use the same
+      // view of the tree.
+      //
+      // Only GENERATED_DIRECTORIES is skipped here on purpose. Local state
+      // directories (`.codepunk`, `.deja`, `.pi`) are ignored by Git but still
+      // scanned, because a credential written into them is a real finding.
+      if (
+        entry.isDirectory() &&
+        !directoriesWithTrackedFiles.has(relativePath) &&
+        GENERATED_DIRECTORIES.has(entry.name.toLowerCase()) &&
+        isGitIgnored(root, relativePath)
+      ) {
         continue;
       }
       const absolutePath = path.join(directory, entry.name);
@@ -1535,6 +1562,18 @@ function checkExports(root, spec, manifest, add) {
   }
 }
 
+// The CLI is bundled: its build compiles with tsc and then bundles the entry
+// with esbuild, because the published CLI ships as one file. Every other
+// product package builds with the compiler alone. Both are pinned here so a
+// package cannot quietly change how it builds without this list changing too.
+const CLI_BUILD_SCRIPT = `tsc -p tsconfig.json && esbuild dist/index.js --bundle --platform=node --format=esm --target=node22 --sourcemap --banner:js="import { createRequire as __nodeCreateRequire } from 'node:module'; const require = __nodeCreateRequire(import.meta.url);" --outfile=dist/index.js --allow-overwrite --external:node-pty --external:@anthropic-ai/sandbox-runtime --external:@anthropic-ai/sandbox-runtime/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-codemode --external:@earendil-works/pi-codemode/* --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-coding-agent/* --external:@earendil-works/pi-mcp --external:@earendil-works/pi-mcp/* --external:@earendil-works/pi-schema --external:@earendil-works/pi-schema/* --external:@earendil-works/pi-telemetry --external:@earendil-works/pi-telemetry/* --external:@earendil-works/pi-tui --external:@earendil-works/pi-tui/*`;
+
+function expectedBuildScript(spec) {
+  return spec.dir === "packages/cli"
+    ? CLI_BUILD_SCRIPT
+    : "tsc -p tsconfig.json";
+}
+
 function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   const relativeManifest = `${spec.dir}/package.json`;
   if (manifest.name !== spec.name) {
@@ -1588,7 +1627,7 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   if (manifest.engines?.node !== NODE_ENGINE) {
     add("pkg.manifest", relativeManifest, `Node engine must be ${NODE_ENGINE}`);
   }
-  if (manifest.scripts?.build !== "tsc -p tsconfig.json") {
+  if (manifest.scripts?.build !== expectedBuildScript(spec)) {
     add("pkg.manifest", relativeManifest, "missing canonical build script");
   }
   if (
@@ -1723,16 +1762,41 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
     }
   }
 
-  for (const section of [
-    "devDependencies",
-    "optionalDependencies",
-    "peerDependencies",
-  ]) {
+  for (const section of ["optionalDependencies", "peerDependencies"]) {
     if (ownKeys(manifest[section]).length > 0) {
       add(
         "deps.review",
         relativeManifest,
         `${section} is not approved for product packages`,
+      );
+    }
+  }
+
+  // A product package may declare build-only tooling, but only the reviewed
+  // set for that package, and only at an exact version.
+  const allowedBuildDevDependencies = spec.buildDevDependencies ?? {};
+  const buildDevDependencies = manifest.devDependencies ?? {};
+  for (const name of Object.keys(buildDevDependencies)) {
+    if (!(name in allowedBuildDevDependencies)) {
+      add(
+        "deps.review",
+        relativeManifest,
+        `unreviewed build-only dependency ${name}`,
+      );
+      continue;
+    }
+    const actualVersion = buildDevDependencies[name];
+    if (!isExactVersion(actualVersion)) {
+      add(
+        "deps.review",
+        relativeManifest,
+        `build-only dependency ${name} must use an exact version`,
+      );
+    } else if (actualVersion !== allowedBuildDevDependencies[name]) {
+      add(
+        "deps.review",
+        relativeManifest,
+        `build-only dependency ${name} must be pinned to ${allowedBuildDevDependencies[name]}`,
       );
     }
   }
