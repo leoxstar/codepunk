@@ -71,9 +71,9 @@ explicit policy boundary around file and shell actions.
   exact-commit merges, and bounded workers; there is no `codepunk work` CLI
   yet. The local daemon serves scoped session reads and metadata writes plus
   `run`, `steer`, `stop`, `approve`, `plan`, and `goal` control methods behind
-  writer leases. `codepunk acp` exposes the same control model over
-  newline-delimited JSON-RPC on stdio; the daemon never accepts an arbitrary
-  file-write or session-append method.
+  writer leases. `codepunk acp` wraps the daemon control model with
+  newline-delimited JSON-RPC prompt and cancel methods on stdio; the daemon
+  never accepts an arbitrary file-write or session-append method.
 - `codepunk completion bash|zsh|fish` prints a static completion script for
   the product commands, nested subcommands, and main permission/trust options.
 
