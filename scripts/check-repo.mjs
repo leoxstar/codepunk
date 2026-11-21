@@ -282,8 +282,8 @@ const EXPECTED_ROOT_SCRIPTS = {
     "pnpm --filter codepunk-protocol build && pnpm --filter codepunk-core build && pnpm --filter codepunk-cli build",
   check: "node scripts/check-repo.mjs",
   eval: "node eval/run.mjs",
-  format: "prettier --write . --ignore-path .gitignore",
-  "format:check": "prettier --check . --ignore-path .gitignore",
+  format: "prettier --write . --ignore-path .prettierignore",
+  "format:check": "prettier --check . --ignore-path .prettierignore",
   test: "node --test tests/*.test.mjs",
   typecheck:
     "pnpm --filter codepunk-protocol typecheck && pnpm --filter codepunk-core typecheck && pnpm --filter codepunk-cli typecheck",
