@@ -22,6 +22,7 @@ const ROOT_ENTRIES = new Set([
   ".github",
   ".gitattributes",
   ".gitignore",
+  ".prettierignore",
   "AGENTS.md",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
@@ -44,6 +45,14 @@ const ROOT_ENTRIES = new Set([
 // same shape that persists is still an unreviewed root entry.
 const TRANSIENT_ROOT_ENTRY = /^_tmp_\d+_[a-z0-9]{8}$/u;
 const TRANSIENT_ROOT_SETTLE_MS = 1_000;
+
+// Git worktrees are kept inside the repository root (`.worktrees/<name>`). Each
+// one is a second checkout of the same product with its own working state, so
+// scanning them reports the same content twice and picks up whatever a worktree
+// has in progress. Only this exact root directory is excluded, at the root: a
+// path such as `packages/core/.worktrees` stays in review, and worktree content
+// that is tracked still reaches the tracked-file scans.
+const WORKTREES_ROOT_ENTRY = ".worktrees";
 
 const REQUIRED_PRODUCT_FILES = [
   "README.md",
@@ -486,6 +495,9 @@ async function walkFiles(root, directoriesWithTrackedFiles) {
       if (directory === root && TRANSIENT_ROOT_ENTRY.test(entry.name)) {
         continue;
       }
+      if (directory === root && entry.name === WORKTREES_ROOT_ENTRY) {
+        continue;
+      }
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         await walk(absolutePath, relativePath);
@@ -628,6 +640,13 @@ async function scanWorkingTreeHygiene(root, add, directoriesWithTrackedFiles) {
       ) {
         continue;
       }
+      if (
+        !relativeDirectory &&
+        entry.isDirectory() &&
+        entry.name === WORKTREES_ROOT_ENTRY
+      ) {
+        continue;
+      }
       if (entry.isDirectory()) {
         if (
           !insideGenerated &&
@@ -682,6 +701,9 @@ async function checkRootEntries(root, add) {
 
   for (const entry of entries) {
     if (entry === ".git") {
+      continue;
+    }
+    if (entry === WORKTREES_ROOT_ENTRY) {
       continue;
     }
     if (ROOT_ENTRIES.has(entry)) {
