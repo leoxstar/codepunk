@@ -1,19 +1,199 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import http from "node:http";
 import path from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
+import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
 import { importCore } from "./support/core.mjs";
 import { sandboxTempBase, windowsSrtSkipReason } from "./support/helpers.mjs";
 
 const core = await importCore();
 const TESTS_DIR = import.meta.dirname;
 const REPO_ROOT = path.resolve(TESTS_DIR, "..");
+const execFileAsync = promisify(execFile);
+const CHILD_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "TMPDIR",
+  "SystemRoot",
+  "PATHEXT",
+  "USERNAME",
+];
 const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
 const PTY_RUNNER =
   process.platform === "win32"
     ? [process.execPath, path.join(TESTS_DIR, "support", "pty-run.mjs")]
     : ["python3", path.join(TESTS_DIR, "support", "pty-run.py")];
+
+async function runProbe(command, args, env, cwd = REPO_ROOT) {
+  const child = spawn(command, args, {
+    cwd,
+    env: {
+      ...childEnv(env),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  const result = await new Promise((resolve) => {
+    child.on("close", (code, signal) => resolve({ code, signal }));
+  });
+  return { ...result, stdout, stderr };
+}
+
+function childEnv(env) {
+  return {
+    ...Object.fromEntries(
+      CHILD_ENV_KEYS.flatMap((key) =>
+        process.env[key] === undefined ? [] : [[key, process.env[key]]],
+      ),
+    ),
+    ...env,
+  };
+}
+
+async function startModelServer() {
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      const send = (value) => {
+        response.write(`data: ${JSON.stringify(value)}\n\n`);
+      };
+      send({
+        id: "terminal-print-response",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "local-test",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: "terminal print response" },
+            finish_reason: null,
+          },
+        ],
+      });
+      send({
+        id: "terminal-print-response",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "local-test",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 3,
+          completion_tokens: 4,
+          total_tokens: 7,
+        },
+      });
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return { server, baseUrl: `http://127.0.0.1:${address.port}/v1` };
+}
+
+function startPty(command, args, { cwd, env }) {
+  const pidFile = path.join(
+    env.CODEPUNK_HOME,
+    `pty-child-${process.pid}-${Date.now()}.pid`,
+  );
+  const child = spawn(
+    PTY_RUNNER[0],
+    [...PTY_RUNNER.slice(1), command, ...args],
+    {
+      cwd,
+      env: { ...env, PTY_RUN_PID_FILE: pidFile },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk.toString("utf8");
+  });
+  const exited = new Promise((resolve) => {
+    child.on("close", (code, signal) => resolve({ code, signal }));
+  });
+  return { child, exited, pidFile, output: () => output };
+}
+
+async function killPtyGroup(session) {
+  let pid;
+  try {
+    pid = Number.parseInt(await fs.readFile(session.pidFile, "utf8"), 10);
+  } catch {
+    return;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return;
+  }
+  if (process.platform === "win32") {
+    await new Promise((resolve) => {
+      execFile(
+        "taskkill",
+        ["/PID", String(pid), "/T", "/F"],
+        { windowsHide: true },
+        () => resolve(),
+      );
+    });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+  }
+}
+
+async function stopPty(session) {
+  try {
+    await killPtyGroup(session);
+    if (session.child.exitCode !== null || session.child.signalCode !== null) {
+      return;
+    }
+    session.child.kill("SIGTERM");
+    let timer;
+    const result = await Promise.race([
+      session.exited,
+      new Promise((resolve) => {
+        timer = setTimeout(
+          () => resolve({ code: "timeout", signal: null }),
+          2_000,
+        );
+      }),
+    ]);
+    clearTimeout(timer);
+    if (result.code === "timeout") {
+      session.child.kill("SIGKILL");
+      await session.exited;
+    }
+  } finally {
+    await fs.rm(session.pidFile, { force: true });
+  }
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -50,6 +230,13 @@ async function waitForOutput(output, mark, marker, label) {
   );
 }
 
+async function waitForPtyOutput(session, marker, label) {
+  return waitFor(
+    () => (session.output().includes(marker) ? true : null),
+    label,
+  );
+}
+
 async function readEvidence(evidencePath) {
   try {
     return (await core.readEvidenceFile(evidencePath)).records;
@@ -67,6 +254,208 @@ async function readSessionEvents(sessionPath) {
     .filter((line) => line.length > 0);
   return lines.slice(1).map((line) => JSON.parse(line));
 }
+
+test("terminal capability detection covers truecolor and explicit override", async () => {
+  await withTempDirectory("codepunk-terminal-truecolor-", async (root) => {
+    const home = path.join(root, "home");
+    await fs.mkdir(home, { recursive: true });
+    const probe = [
+      "--input-type=module",
+      "-e",
+      [
+        "import * as tui from " +
+          JSON.stringify(
+            path.join(
+              REPO_ROOT,
+              "packages",
+              "cli",
+              "node_modules",
+              "@earendil-works",
+              "pi-tui",
+              "dist",
+              "index.js",
+            ),
+          ) +
+          ";",
+        "const capabilities = tui.detectCapabilities(() => false);",
+        "process.stdout.write(JSON.stringify({",
+        "  trueColor: capabilities.trueColor,",
+        "  colorMode: tui.getTerminalColorMode(capabilities),",
+        "}));",
+      ].join("\n"),
+    ];
+
+    const detected = await runProbe(process.execPath, probe, {
+      ...childEnv({
+        CODEPUNK_HOME: home,
+        COLORTERM: "truecolor",
+        TERM: "xterm-256color",
+      }),
+    });
+    assert.equal(detected.code, 0, detected.stderr);
+    assert.deepEqual(JSON.parse(detected.stdout), {
+      trueColor: true,
+      colorMode: "truecolor",
+    });
+
+    const override = await runProbe(process.execPath, probe, {
+      ...childEnv({
+        CODEPUNK_HOME: home,
+        COLORTERM: "truecolor",
+        PI_TRUE_COLOR: "0",
+        TERM: "xterm-256color",
+      }),
+    });
+    assert.equal(override.code, 0, override.stderr);
+    assert.deepEqual(JSON.parse(override.stdout), {
+      trueColor: false,
+      colorMode: "256color",
+    });
+  });
+});
+
+test("ANSI styling is enabled on a real PTY and disabled by NO_COLOR", async () => {
+  await withTempDirectory("codepunk-terminal-noninteractive-", async (root) => {
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(
+      path.join(project, "AGENTS.md"),
+      "TERMINAL_ANSI_SENTINEL\n",
+    );
+    const cli = await ensureBuilt();
+    const startPtyWithColor = (color) =>
+      startPty(process.execPath, [cli], {
+        cwd: project,
+        env: childEnv({
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          ...(color
+            ? { TERM: "xterm-256color" }
+            : { NO_COLOR: "1", TERM: "dumb" }),
+        }),
+      });
+    const session = startPtyWithColor(true);
+    let promptRendered = false;
+    try {
+      await waitForPtyOutput(session, "Project trust", "colored trust prompt");
+      promptRendered = true;
+      const output = session.output();
+      assert.match(
+        output,
+        /\u001b\[[34]6m[^\r\n]+\u001b\[0m/u,
+        "expected ANSI color SGR output",
+      );
+    } finally {
+      await stopPty(session);
+      assert.equal(promptRendered, true);
+    }
+
+    const plainSession = startPtyWithColor(false);
+    let plainPromptRendered = false;
+    try {
+      await waitForPtyOutput(
+        plainSession,
+        "Project trust",
+        "NO_COLOR trust prompt",
+      );
+      plainPromptRendered = true;
+      assert.doesNotMatch(
+        plainSession.output(),
+        /\u001b\[(?!0m)[0-9;]*m/u,
+        "expected NO_COLOR to disable non-reset SGR output",
+      );
+    } finally {
+      await stopPty(plainSession);
+      assert.equal(plainPromptRendered, true);
+    }
+  });
+});
+
+test("interactive selection refuses a non-TTY", async () => {
+  await withTempDirectory("codepunk-terminal-selection-", async (root) => {
+    const home = path.join(root, "home");
+    await fs.mkdir(home, { recursive: true });
+
+    const cli = await ensureBuilt();
+    const result = await runProbe(
+      process.execPath,
+      [cli, "sign", "run", "--verdict", "complete"],
+      childEnv({
+        CODEPUNK_HOME: home,
+        NO_COLOR: "1",
+      }),
+    );
+    assert.equal(result.code, 1);
+    assert.equal(result.signal, null);
+    assert.match(result.stderr, /sign requires a top-level TTY/u);
+    assert.equal(result.stdout.trim(), "");
+  });
+});
+
+test("noninteractive stdin degrades to print mode", async () => {
+  await withTempDirectory("codepunk-terminal-print-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await fs.writeFile(
+      path.join(home, "auth.json"),
+      JSON.stringify({ local: { type: "api_key", key: "test-key" } }),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(path.join(project, "a.txt"), "unchanged\n");
+    const modelServer = await startModelServer();
+    try {
+      await fs.writeFile(
+        path.join(home, "models.json"),
+        JSON.stringify({
+          providers: {
+            local: {
+              baseUrl: modelServer.baseUrl,
+              apiKey: "test-key",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "local-test",
+                  name: "Local Test",
+                  api: "openai-completions",
+                  contextWindow: 2_000,
+                  maxTokens: 200,
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const cli = await ensureBuilt();
+      const result = await runProbe(
+        process.execPath,
+        [cli, "hello", "--model", "local/local-test"],
+        childEnv({
+          CODEPUNK_HOME: home,
+          NO_COLOR: "1",
+          PI_OFFLINE: "1",
+          TERM: "dumb",
+        }),
+        project,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /terminal print response/u);
+      assert.equal(
+        await fs.readFile(path.join(project, "a.txt"), "utf8"),
+        "unchanged\n",
+      );
+    } finally {
+      await new Promise((resolve) => modelServer.server.close(resolve));
+    }
+  });
+});
 
 test(
   "real pty gates !, records /compact, and exits without a Pi banner",
