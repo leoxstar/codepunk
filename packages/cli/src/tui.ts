@@ -473,7 +473,7 @@ export function codepunkHelp(): string {
     "  /ps                        list background tasks",
     "  /logs <id>                 show bounded background task logs",
     "  /stop <id>                 stop a background task",
-    "  /plan                      show the current plan",
+    "  /plan [request]            show the current plan, or plan a request read-only",
     "  /plan-mode [status|on|approve|off]",
     "                             show, enter, approve, or exit plan mode",
     "  /preset [list|use <name>]  apply a user preset to this session",
@@ -1268,6 +1268,20 @@ export function buildInitPrompt(
     "",
     "When finished, reply with the target path, the sections you wrote, and",
     "any command you could not verify.",
+  ].join("\n");
+}
+
+export function buildPlanRoundPrompt(request: string): string {
+  return [
+    "Plan the request below before changing anything. Use read-only tools to",
+    "inspect the repository, then record the full ordered plan with the plan tool,",
+    "keeping at most one step in_progress.",
+    "",
+    "Do not implement the request. Stop after the plan is recorded and reply",
+    "with a short summary; the user approves it with /plan-mode approve.",
+    "",
+    "Request:",
+    request,
   ].join("\n");
 }
 
@@ -6537,10 +6551,43 @@ export function createTuiExtension(
         }),
       });
       pi.registerCommand("plan", {
-        description: "Show the current plan",
-        handler: commandContext(state, async (runtime, context) => {
-          const work = readWorkState(runtime.session.allEvents);
-          await notify(context, formatPlan(work.plan));
+        description:
+          "Show the current plan, or plan a request in read-only plan mode",
+        handler: commandContext(state, async (runtime, context, args) => {
+          const request = args.trim();
+          if (request.length === 0) {
+            const work = readWorkState(runtime.session.allEvents);
+            await notify(context, formatPlan(work.plan));
+            return;
+          }
+          if (physicalModel(runtime) === undefined) {
+            context.ui.notify(
+              modelOnboardingMessage(runtime) ??
+                "No model selected. Use /model to choose one.",
+              "warning",
+            );
+            return;
+          }
+          try {
+            if (runtime.planMode.state()?.mode !== "planning") {
+              await runtime.planMode.enter();
+              context.ui.notify(
+                [
+                  "Plan mode: planning",
+                  "Only read-only tools are available. Approve the recorded plan with /plan-mode approve.",
+                ].join("\n"),
+                "info",
+              );
+            }
+            await runtime.host.session.prompt(buildPlanRoundPrompt(request));
+          } catch (error) {
+            context.ui.notify(
+              `/plan failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "error",
+            );
+          }
         }),
       });
       pi.registerCommand("plan-mode", {

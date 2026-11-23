@@ -7,7 +7,10 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-No changes have been recorded yet.
+### Added
+
+- `/plan <request>` enters read-only plan mode and submits the request as a
+  planning round; `/plan` without arguments still shows the recorded plan.
 
 ## [0.1.0]
 

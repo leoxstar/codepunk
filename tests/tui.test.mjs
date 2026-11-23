@@ -232,6 +232,109 @@ async function startReviewModelServer(responses, options = {}) {
   };
 }
 
+async function startPlanRoundModelServer() {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      const body = JSON.parse(raw);
+      requests.push(body);
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      const send = (value) => {
+        response.write(`data: ${JSON.stringify(value)}\n\n`);
+      };
+      const hasToolResult = body.messages.some(
+        (message) => message.role === "tool",
+      );
+      if (!hasToolResult) {
+        send({
+          id: "plan-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-plan",
+                    type: "function",
+                    function: {
+                      name: "plan",
+                      arguments: JSON.stringify({
+                        plan: [
+                          {
+                            step: "inspect the repository",
+                            status: "in_progress",
+                          },
+                          {
+                            step: "implement the health check",
+                            status: "pending",
+                          },
+                        ],
+                      }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "plan-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        });
+      } else {
+        send({
+          id: "plan-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "PLAN_RECORDED" },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "plan-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        });
+      }
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return {
+    server,
+    requests,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  };
+}
+
 async function startWriteModelServer({ path: targetPath, content }) {
   const requests = [];
   const server = http.createServer((request, response) => {
@@ -712,7 +815,10 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /\/favorite\s+toggle the current model in favorites/u);
   assert.match(help, /F2 cycles through recent models/u);
   assert.match(help, /\/permissions why -- <cmd>/u);
-  assert.match(help, /\/plan\s+show the current plan/u);
+  assert.match(
+    help,
+    /\/plan \[request\]\s+show the current plan, or plan a request read-only/u,
+  );
   assert.match(help, /\/plan-mode \[status\|on\|approve\|off\]/u);
   assert.match(help, /show, enter, approve, or exit plan mode/u);
   assert.match(help, /\/goal \[text\|status\|pause\|resume\|clear\]/u);
@@ -1396,6 +1502,109 @@ test("a real pty covers the plan mode command surface", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+    }
+  });
+});
+
+test("a real pty plans a requested task in plan mode", async () => {
+  await withTempDirectory("codepunk-tui-plan-request-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const model = await startPlanRoundModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(
+        session,
+        "/plan add a health check",
+        "Plan mode: planning",
+      );
+      await waitForOutput(session, "PLAN_RECORDED", "plan request");
+      await runCommandAfter(session, "/plan", "[>] inspect the repository");
+      await runCommandAfter(
+        session,
+        "/plan-mode status",
+        "Plan mode: planning",
+      );
+
+      const sent = JSON.stringify(model.requests[0]);
+      assert.match(sent, /add a health check/u);
+      assert.match(sent, /plan tool/u);
+
+      const eventFiles = (await fs.readdir(home, { recursive: true })).filter(
+        (entry) => entry.endsWith("session.jsonl"),
+      );
+      assert.equal(eventFiles.length, 1);
+      const events = (await fs.readFile(path.join(home, eventFiles[0]), "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      const planEvents = events.filter((entry) => entry.kind === "plan/update");
+      assert.equal(planEvents.length, 1);
+      assert.deepEqual(
+        planEvents[0].data.steps.map((step) => step.step),
+        ["inspect the repository", "implement the health check"],
+      );
+      assert.equal(
+        events.filter((entry) => entry.kind === "plan_mode/update").at(-1).data
+          .mode,
+        "planning",
+      );
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
     }
   });
 });
