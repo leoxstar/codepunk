@@ -942,6 +942,32 @@ test("session tree shows sibling branches, labels, and the active leaf", async (
   });
 });
 
+test("an empty session tree output hides internal engine branding", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const store = await createStore(rootDir, {
+      projectId: "empty-tree-project",
+    });
+    const writer = await store.acquireWriter();
+    await store.saveAgentState(
+      {
+        type: "session",
+        id: "pi-empty-tree",
+        cwd: "/workspace",
+        timestamp: "2026-11-12T00:00:00.000Z",
+      },
+      [],
+    );
+    await writer.release();
+
+    const tree = await core.readSessionTree(store);
+    assert.ok(tree);
+    assert.deepEqual(tree.entries, []);
+    const text = core.formatSessionTree(tree);
+    assert.match(text, /No saved session entries\./u);
+    assert.doesNotMatch(text, /\bPi\b|pi update|pi\.dev/u);
+  });
+});
+
 test("session graph orders children by their fork point", async () => {
   await withTempDirectory(async (rootDir) => {
     const parent = await core.SessionStore.create({

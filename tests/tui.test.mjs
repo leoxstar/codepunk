@@ -734,9 +734,9 @@ test("the Codepunk help lists the real command surface", async () => {
 });
 
 test("user-visible TUI text blocks internal engine branding", async () => {
-  const { assertUserVisibleTuiText } = await importSource(
-    "packages/cli/src/branded-interactive.ts",
-  );
+  const { assertUserVisibleTuiText, BrandedInteractiveMode } =
+    await importSource("packages/cli/src/branded-interactive.ts");
+  const base = Object.create(BrandedInteractiveMode.prototype);
 
   assertUserVisibleTuiText("Codepunk session ready");
   assertUserVisibleTuiText("Search all models");
@@ -748,6 +748,18 @@ test("user-visible TUI text blocks internal engine branding", async () => {
     () => assertUserVisibleTuiText("https://pi.dev/changelog"),
     /internal engine brand/u,
   );
+
+  let rendered = "";
+  base.chatContainer = {
+    addChild: (component) => {
+      rendered += typeof component === "string" ? component : "";
+    },
+  };
+  base.ui = { requestRender: () => {} };
+  BrandedInteractiveMode.prototype.showNewVersionNotification.call(base, {
+    version: "1.6.0",
+  });
+  assert.equal(rendered, "");
 });
 
 test("MCP login target selection rejects unsafe or ambiguous servers", async () => {
