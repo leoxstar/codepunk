@@ -7,6 +7,7 @@ export function isCompletionShell(value: string): value is CompletionShell {
 }
 
 const COMMANDS: ReadonlyArray<readonly [string, string]> = [
+  ["resume", "reopen a saved session"],
   ["sessions", "list, graph, inspect, or prune sessions"],
   ["export", "export a session transcript"],
   ["pin", "pin or unpin a session"],

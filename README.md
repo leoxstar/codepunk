@@ -32,7 +32,12 @@ explicit policy boundary around file and shell actions.
   `--all-projects` scans every project store under `CODEPUNK_HOME`, labels each
   match with its project id, and applies the same bounded result cap. In the TUI,
   `/resume <id|latest|text>` falls back to the same search, shows a chooser when
-  several sessions match, and resumes the selected session in place. A
+  several sessions match, and resumes the selected session in place.
+  `codepunk resume [id|latest|text]` resolves the same argument from the shell
+  and opens the TUI on the chosen session; with no argument it shows a picker.
+  Quitting an interactive session that has a conversation prints
+  `To resume this session: codepunk resume <id>` after the terminal is
+  restored. A
   checkpoint is evidence about the compaction boundary, not a user-visible
   session rewind. The first prompt seeds a redacted title, later Pi title
   changes are mirrored, and `pin <id> [--unpin]` controls retention. The

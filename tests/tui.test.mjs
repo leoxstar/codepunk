@@ -1454,6 +1454,11 @@ test("a real pty shows the working tree diff", async () => {
         ),
       ]);
       assert.deepEqual(result, { code: 0, signal: null });
+      // Commands alone are not a conversation, so no resume hint is printed.
+      assert.doesNotMatch(
+        stripAnsi(session.output()),
+        /To resume this session/u,
+      );
     } finally {
       await stopPty(session);
     }
@@ -1602,6 +1607,17 @@ test("a real pty plans a requested task in plan mode", async () => {
         ),
       ]);
       assert.deepEqual(result, { code: 0, signal: null });
+      // A session with a conversation ends with Codepunk's resume command,
+      // written after Pi has restored the terminal.
+      assert.ok(
+        events.some((entry) => entry.kind === "user/input"),
+        "the plan request records a conversation",
+      );
+      const sessionId = path.basename(path.dirname(eventFiles[0]));
+      assert.match(
+        stripAnsi(session.output()),
+        new RegExp(`To resume this session: codepunk resume ${sessionId}`, "u"),
+      );
     } finally {
       await stopPty(session);
       model.server.close();

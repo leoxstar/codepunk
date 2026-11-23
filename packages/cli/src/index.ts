@@ -154,6 +154,8 @@ import type {
   TuiState,
 } from "./tui.ts";
 import { CodepunkTerminal } from "./branded-terminal.ts";
+import { ResumeHint } from "./exit-hint.ts";
+import { resolveResumeTarget, resumeChoiceLabel } from "./session-resume.ts";
 import {
   COMPLETION_SHELLS,
   completionScript,
@@ -252,6 +254,8 @@ function usage(): string {
     "  --parent-session-id <id>  record the parent of a new child session",
     "",
     "Session commands:",
+    "  codepunk resume [session-id|latest|text]",
+    "      open a picker, the newest session, an id or prefix, or a search match",
     "  codepunk sessions [--include-archived]",
     "  codepunk sessions [prune] [--apply]",
     "      sessions prune is dry-run only; --apply is refused, use codepunk gc --apply",
@@ -400,6 +404,16 @@ function usage(): string {
 function subcommandUsage(command: string | undefined): string | undefined {
   const lines = (() => {
     switch (command) {
+      case "resume":
+        return [
+          "usage:",
+          "  codepunk resume                 pick from this project's sessions",
+          "  codepunk resume latest          reopen the newest session",
+          "  codepunk resume <id|prefix>     reopen a session by id or unique prefix",
+          "  codepunk resume <text>          reopen the session whose title or events match",
+          "      interactive only; options such as --model or --permission-mode still apply",
+          "      cannot be combined with --print, --session, --continue, --fork, or --new-session",
+        ];
       case "sessions":
       case "prune":
         return [
@@ -1775,6 +1789,7 @@ async function runTui(options: CliOptions): Promise<number> {
       createTuiExtension,
       modelOnboardingMessage,
       setTuiRuntime,
+      stopRunningSubagents,
       TuiApprovalChannel,
     },
     { BrandedInteractiveMode },
@@ -1801,7 +1816,11 @@ async function runTui(options: CliOptions): Promise<number> {
     shuttingDown: false,
     hostCommands: new Set(),
     childHostArgv: [process.execPath, fileURLToPath(import.meta.url)],
+    resumeHint: new ResumeHint(),
   };
+  // Pi's quit path ends in process.exit, so the hint is written from an exit
+  // listener once the shutdown handler has armed it.
+  state.resumeHint?.installOnExit();
   const extension = createTuiExtension(state, channel);
   const project = await findDeliveryRoot(process.cwd());
   const workspaceTrust = await resolveRunWorkspaceTrust(options, project, true);
@@ -2013,18 +2032,73 @@ async function runTui(options: CliOptions): Promise<number> {
       buildWatch = undefined;
       state.buildWatch = undefined;
     }
-    const running = [...(state.subagents?.values() ?? [])].filter(
-      (record) => record.status === "running",
-    );
-    for (const record of running) {
-      record.controller.abort();
-    }
-    await Promise.race([
-      Promise.allSettled(running.map((record) => record.promise)),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
+    await stopRunningSubagents(state);
     await currentRuntime?.dispose();
   }
+}
+
+async function commandResume(options: CliOptions): Promise<number> {
+  const conflicting = [
+    options.print ? "--print" : undefined,
+    options.session !== undefined ? "--session" : undefined,
+    options.continueSession ? "--continue" : undefined,
+    options.fork !== undefined ? "--fork" : undefined,
+    options.newSession ? "--new-session" : undefined,
+    options.newSessionId !== undefined ? "--new-session-id" : undefined,
+    options.parentSessionId !== undefined ? "--parent-session-id" : undefined,
+  ].filter((flag): flag is string => flag !== undefined);
+  if (conflicting.length > 0) {
+    throw new Error(`resume cannot be combined with ${conflicting.join(", ")}`);
+  }
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    throw new Error(
+      "resume needs an interactive terminal; use codepunk -p --session <id> <prompt> for print mode",
+    );
+  }
+  const project = await findDeliveryRoot(process.cwd());
+  const paths = projectPaths(project);
+  const entries = await listProjectSessions(paths.home, paths.projectId);
+  const resolution = await resolveResumeTarget(
+    entries,
+    options.positionals.slice(1).join(" "),
+    async (query) => {
+      const result = await searchProjectSessions({
+        rootDir: paths.home,
+        projectId: paths.projectId,
+        query,
+        limit: 60,
+      });
+      for (const warning of result.warnings) {
+        process.stderr.write(`codepunk: ${warning}\n`);
+      }
+      return result.matches.map((hit) => hit.session_id);
+    },
+  );
+  if (resolution.kind === "none") {
+    throw new Error(resolution.message);
+  }
+  let sessionId: string;
+  if (resolution.kind === "session") {
+    sessionId = resolution.entry.id;
+  } else {
+    const { selectTerminalChoice, TerminalSelectCancelledError } =
+      await import("./terminal-select.ts");
+    try {
+      sessionId = await selectTerminalChoice<string>(
+        resolution.title,
+        resolution.entries.map((entry) => ({
+          label: resumeChoiceLabel(entry),
+          value: entry.id,
+        })),
+      );
+    } catch (error) {
+      if (error instanceof TerminalSelectCancelledError) {
+        throw new Error("resume cancelled; no session was selected");
+      }
+      throw error;
+    }
+  }
+  return runTui({ ...options, session: sessionId, positionals: [] });
 }
 
 async function commandSessions(options: CliOptions): Promise<number> {
@@ -4465,6 +4539,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "backup") {
     return commandBackup(options);
+  }
+  if (command === "resume") {
+    return commandResume(options);
   }
   if (command === "sessions" || command === "prune") {
     return commandSessions(options);

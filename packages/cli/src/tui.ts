@@ -164,6 +164,8 @@ import {
   recordRecentModel,
   toggleFavoriteModel,
 } from "./model-history.ts";
+import type { ResumeHint } from "./exit-hint.ts";
+import { matchSessionChoice } from "./session-resume.ts";
 import { openSubagentTranscript } from "./subagent-transcript.ts";
 import { renderStatusline } from "./statusline.ts";
 
@@ -195,6 +197,8 @@ export interface TuiState {
    */
   hostCommands: Set<string>;
   replaceRuntime?: (target: TuiSessionTarget) => Promise<TuiRuntimeReplacement>;
+  /** Armed on quit; prints the resume command after Pi restores the terminal. */
+  resumeHint?: ResumeHint;
 }
 
 export interface TuiSessionTarget {
@@ -1470,18 +1474,6 @@ function sessionChoiceLabel(
   return `${entry.id === currentId ? "*" : " "} ${entry.id}  ${entry.updated_at}  ${
     entry.title ?? "(untitled)"
   }${entry.parent_session_id === null ? "" : `  from ${entry.parent_session_id}`}`;
-}
-
-function matchSessionChoice(
-  entries: Awaited<ReturnType<typeof listProjectSessions>>,
-  query: string,
-): Awaited<ReturnType<typeof listProjectSessions>>[number] | null {
-  const exact = entries.find((entry) => entry.id === query);
-  if (exact !== undefined) {
-    return exact;
-  }
-  const matches = entries.filter((entry) => entry.id.startsWith(query));
-  return matches.length === 1 ? matches[0]! : null;
 }
 
 function sessionSearchChoiceLabels(
@@ -5707,6 +5699,37 @@ async function discardSubagent(
   }
 }
 
+/**
+ * Abort running child hosts and wait briefly for them to settle. Pi's quit
+ * path exits the process right after `session_shutdown`, so this runs from
+ * that handler while the parent session can still record child results, and
+ * again from the TUI runner's `finally`, where it normally finds nothing.
+ */
+export async function stopRunningSubagents(
+  state: TuiState,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const running = [...(state.subagents?.values() ?? [])].filter(
+    (record) => record.status === "running",
+  );
+  if (running.length === 0) {
+    return;
+  }
+  for (const record of running) {
+    record.controller.abort();
+  }
+  let expire = () => {};
+  const timer = setTimeout(() => expire(), timeoutMs);
+  timer.unref();
+  await Promise.race([
+    Promise.allSettled(running.map((record) => record.promise)),
+    new Promise<void>((resolve) => {
+      expire = () => resolve();
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
 const SUBAGENT_STREAM_LIMIT = 1_200;
 const SUBAGENT_WIDGET_LINES = 6;
 const SUBAGENT_WIDGET_INTERVAL_MS = 120;
@@ -6470,12 +6493,16 @@ export function createTuiExtension(
         }
         if (event.reason === "quit" && state.runtime !== null) {
           state.shuttingDown = true;
-          await persistPiDefaultModel(state.runtime);
-          // Pi's /quit path can terminate the process without returning to the
-          // caller's finally block. Release the session writer here so the
-          // next codepunk process can resume immediately instead of waiting
-          // for the lock lease to expire.
-          await state.runtime.dispose().catch(() => undefined);
+          const runtime = state.runtime;
+          // Pi's quit path (/quit, Ctrl+D, double Ctrl+C, SIGTERM) calls
+          // process.exit after this handler, so the caller's finally block
+          // never runs. Everything a clean exit needs happens here.
+          await stopRunningSubagents(state);
+          await persistPiDefaultModel(runtime);
+          state.resumeHint?.arm(runtime.session);
+          // Release the session writer so the next codepunk process can
+          // resume immediately instead of waiting for the lock lease.
+          await runtime.dispose().catch(() => undefined);
         }
       });
       pi.registerCommand("help", {
