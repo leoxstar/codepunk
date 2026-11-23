@@ -1,0 +1,3 @@
+usage:
+  codepunk trust [status|grant|revoke] [path] [--resources config,policy,skills,instructions] [--json]
+  status is the default; grant and revoke save a decision for future sessions

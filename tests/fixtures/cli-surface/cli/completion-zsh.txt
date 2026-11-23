@@ -1,0 +1,88 @@
+#compdef codepunk
+_codepunk() {
+  local -a commands
+  commands=(
+    'resume:reopen a saved session'
+    'sessions:list, graph, inspect, or prune sessions'
+    'export:export a session transcript'
+    'pin:pin or unpin a session'
+    'sign:sign a run verdict'
+    'memory:manage user and project memory'
+    'models:list, test, select, import, or remove models'
+    'config:inspect effective configuration and paths'
+    'doctor:check runtime dependencies'
+    'permissions:inspect or change policy settings'
+    'trust:inspect or change workspace trust'
+    'capabilities:list MCP servers, skills, and plugins'
+    'mcp:manage user-scope MCP servers'
+    'skills:manage skills'
+    'plugins:manage opt-in plugins'
+    'daemon:serve the read-only local protocol'
+    'view:read sessions through the daemon'
+    'completion:print shell completion'
+    'install:install the package'
+    'upgrade:upgrade the package'
+    'uninstall:uninstall the package'
+  )
+  _arguments -s -C \
+    '--print[single-shot print mode]'
+    '--mode[text or json print output]:value:'
+    '--continue[resume the latest session]'
+    '--session[resume a session by id]:value:'
+    '--fork[clone a session into a child]:value:'
+    '--new-session[force a new session]'
+    '--model[select provider/model]:value:'
+    '--provider[select a provider]:value:'
+    '--thinking[set the thinking level]:value:'
+    '--tools[limit enabled tools]:value:'
+    '--model-fallback[set a fallback chain]:value:'
+    '--permission-mode[set the permission profile]:value:'
+    '--approval[set the approval mode]:value:'
+    '--approval-reviewer[configure the model reviewer]:value:'
+    '--reviewer-model[select the reviewer model]:value:'
+    '--autonomy[set the autonomy mode]:value:'
+    '--sandbox[set sandbox coverage]:value:'
+    '--filesystem[set the filesystem scope]:value:'
+    '--add-dir[add an extra file root]:file:_files'
+    '--allow-unsandboxed-shell[allow explicit unsandboxed shell]'
+    '--dangerously-bypass-approvals-and-sandbox[bypass all guards]'
+    '--trust[trust all resources for one run]'
+    '--no-trust[deny all resources for one run]'
+    '--trust-resources[trust named resource groups for one run]:value:'
+    '--bare[disable optional context surfaces]'
+    '--no-skills[skip skills]'
+    '--no-plugins[skip user plugins]'
+    '--no-mcp[skip user MCP servers]'
+    '--memory[enable or disable memory]:value:'
+    '--headless-policy[load a headless exec policy]:file:_files'
+    '--verdict[set the sign-off verdict]:value:'
+    '--actor[set the sign-off label]:value:'
+    '--json[emit machine-readable output]'
+    '--limit[search result limit]:value:'
+    '--all-projects[search every project store]'
+    '--socket[set the daemon socket]:file:_files'
+    '--help[show help]'
+    '--version[show version and build identity]' \
+    '1:command:->command' \
+    '*::arg:->args'
+  case $state in
+    command)
+      _describe 'command' commands
+      ;;
+    args)
+      case $words[1] in
+        completion) _values 'shell' bash zsh fish ;;
+        sessions) _values 'session command' tree graph prune search ;;
+        trust) _values 'trust command' status grant revoke ;;
+        permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules why ;;
+        mcp) _values 'mcp command' list add remove test login logout status ;;
+        skills) _values 'skills command' list add remove ;;
+        plugins) _values 'plugins command' list add remove enable disable ;;
+        memory) _values 'memory command' list search add edit delete archive export ;;
+        models) _values 'models command' list test set remove import ;;
+        config) _values 'config command' show path ;;
+      esac
+      ;;
+  esac
+}
+_codepunk "$@"

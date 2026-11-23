@@ -1,0 +1,4 @@
+usage:
+  codepunk gc [--dry-run|--apply]
+      dry-run is the default; --apply backs up candidates before deleting
+      only artifacts are deleted; sessions, evidence, verdicts, and checkpoints stay

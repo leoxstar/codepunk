@@ -1,0 +1,4 @@
+usage:
+  codepunk daemon [--socket path] [--scopes daemon:read,...]
+      default: daemon:read,sessions:read,sessions:write
+      available: daemon:read,sessions:read,sessions:write,runs:write,approvals:write,plan:write,goal:write

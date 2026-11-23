@@ -1,0 +1,10 @@
+usage:
+  codepunk mcp [list] [--json]
+  codepunk mcp add <name> [--cwd <dir>] [--env KEY=VALUE] [--force]
+      -- <command> [args...]
+  codepunk mcp add <name> --url <url> [--header 'Name: value'] [--force]
+  codepunk mcp remove <name>
+  codepunk mcp test [name]
+  codepunk mcp login [name]
+  codepunk mcp logout <name>
+  codepunk mcp status [name] [--json]

@@ -1,0 +1,3 @@
+usage:
+  codepunk config [show] [--json] [--trust|--no-trust]
+  codepunk config path [--json]

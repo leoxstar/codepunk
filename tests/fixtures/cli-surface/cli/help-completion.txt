@@ -1,0 +1,2 @@
+usage:
+  codepunk completion bash|zsh|fish

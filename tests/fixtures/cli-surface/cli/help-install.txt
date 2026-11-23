@@ -1,0 +1,4 @@
+usage:
+  codepunk install [--prefix <dir>] [--package-version <v>] [--dry-run]
+  codepunk upgrade [--prefix <dir>] [--dry-run]
+  codepunk uninstall [--prefix <dir>] [--dry-run]

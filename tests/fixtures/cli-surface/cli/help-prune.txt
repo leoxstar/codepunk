@@ -1,0 +1,18 @@
+usage:
+  codepunk sessions [--include-archived]
+  codepunk sessions prune [--apply]
+      prune is dry-run only; --apply is refused, use codepunk gc --apply
+  codepunk sessions tree [session-id] [--json]
+  codepunk sessions graph [--json]
+  codepunk sessions search <query> [--limit n] [--all-projects] [--json]
+  codepunk sessions rename <session-id> <title>
+  codepunk sessions archive|unarchive <session-id>
+  codepunk sessions delete <session-id> --confirm
+  codepunk sessions export <session-id> [--output path]
+  codepunk sessions import <bundle.json>
+  codepunk export [session-id] [--output path]
+  codepunk pin <session-id>
+  codepunk pin <session-id> --unpin
+  codepunk sign <run-id> --verdict complete|incomplete
+  codepunk daemon [--socket path]
+  codepunk view [session-id] [--json] [--socket path]

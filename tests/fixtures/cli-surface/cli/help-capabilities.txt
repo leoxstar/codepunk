@@ -1,0 +1,3 @@
+usage:
+  codepunk capabilities [--json]
+      list user MCP servers, skills, and opt-in plugins

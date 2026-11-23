@@ -1,0 +1,8 @@
+usage:
+  codepunk memory list [--scope user|project]
+  codepunk memory search <query> [--scope user|project]
+  codepunk memory add <text> [--scope user|project]
+  codepunk memory edit <id> <text> [--scope user|project]
+  codepunk memory delete <id> [--scope user|project]
+  codepunk memory archive <id> [--scope user|project]
+  codepunk memory export [--scope user|project] [--output path]

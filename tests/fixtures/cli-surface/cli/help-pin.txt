@@ -1,0 +1,2 @@
+usage:
+  codepunk pin <session-id> [--unpin]

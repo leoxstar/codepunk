@@ -1,0 +1,2 @@
+usage:
+  codepunk view [session-id] [--json] [--socket path]

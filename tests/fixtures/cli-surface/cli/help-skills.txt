@@ -1,0 +1,4 @@
+usage:
+  codepunk skills [list] [--json]
+  codepunk skills add <dir> [--scope user|project] [--force]
+  codepunk skills remove <name> [--scope user|project]

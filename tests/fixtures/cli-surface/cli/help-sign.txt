@@ -1,0 +1,2 @@
+usage:
+  codepunk sign <run-id> --verdict complete|incomplete [--actor <name>]

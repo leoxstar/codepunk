@@ -1,0 +1,4 @@
+usage:
+  codepunk migrate [--check|--apply]
+      --check is the default and exits 1 when a migration is required
+      --apply backs up state-version.json and restores it on failure

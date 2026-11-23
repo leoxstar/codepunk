@@ -1,0 +1,7 @@
+usage:
+  codepunk resume                 pick from this project's sessions
+  codepunk resume latest          reopen the newest session
+  codepunk resume <id|prefix>     reopen a session by id or unique prefix
+  codepunk resume <text>          reopen the session whose title or events match
+      interactive only; options such as --model or --permission-mode still apply
+      cannot be combined with --print, --session, --continue, --fork, or --new-session
