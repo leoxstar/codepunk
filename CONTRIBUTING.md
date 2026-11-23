@@ -8,8 +8,14 @@ Use Node.js `>=22.19.0` and pnpm `12.18.0`.
 corepack enable
 corepack prepare pnpm@12.18.0 --activate
 pnpm install --frozen-lockfile --ignore-scripts
-pnpm run verify
+pnpm run build
 ```
+
+Day-to-day changes run targeted checks: `pnpm run typecheck`,
+`pnpm run check`, `pnpm run format:check`, and `node --test` on the test files
+that cover the change. Rebuild with `pnpm run build` when a change affects
+build output or a test runs the built CLI. The full `pnpm run verify` chain runs
+on release commits; see [`docs/RELEASING.md`](docs/RELEASING.md).
 
 The repository uses a pnpm workspace defined by `pnpm-workspace.yaml`, ESM, and
 TypeScript strict mode. `pnpm-lock.yaml` is committed; CI installs with

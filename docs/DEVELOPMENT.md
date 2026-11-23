@@ -33,6 +33,15 @@ The repository pins pnpm through `packageManager` and
 `pnpm run verify` runs formatting, repository checks, type checking, tests, the
 build, and the built-entry-point check.
 
+Check tiers:
+
+- Day-to-day changes run `pnpm run typecheck`, `pnpm run check`,
+  `pnpm run format:check`, and `node --test` on the test files that cover the
+  change. Changes that affect build output also run `pnpm run build` and
+  `node scripts/check-repo.mjs --require-built`.
+- Release commits run `pnpm run verify` and the release checklist below.
+- The push-triggered fast CI runs the full Ubuntu test suite on `main`.
+
 ## Deterministic eval
 
 `pnpm run eval` runs `eval/run.mjs`, the single entry point for deterministic
