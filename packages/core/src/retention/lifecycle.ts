@@ -12,6 +12,43 @@ import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 import { readLock, staleLockReason } from "../session/index.ts";
 
 export const STATE_VERSION = 1;
+
+/** Thrown when state-version.json records a version newer than this build (spec 0016 C2). */
+export class NewerStateVersionError extends Error {
+  readonly saved: number;
+  readonly supported: number;
+
+  constructor(saved: number) {
+    super(
+      `codepunk home state version ${saved} is newer than supported ${STATE_VERSION}; upgrade codepunk before running maintenance commands`,
+    );
+    this.name = "NewerStateVersionError";
+    this.saved = saved;
+    this.supported = STATE_VERSION;
+  }
+}
+
+export interface StateVersionInfo {
+  current: number;
+  supported: number;
+  newer: boolean;
+}
+
+export async function readStateVersionInfo(
+  homeInput: string,
+): Promise<StateVersionInfo> {
+  const current = await stateVersion(normalizeAbsolute(homeInput));
+  return { current, supported: STATE_VERSION, newer: current > STATE_VERSION };
+}
+
+export async function assertSupportedStateVersion(
+  homeInput: string,
+): Promise<void> {
+  const info = await readStateVersionInfo(homeInput);
+  if (info.newer) {
+    throw new NewerStateVersionError(info.current);
+  }
+}
 const BACKUP_DIR = "backups";
 const RETENTION_DIR = "retention";
 const DEFAULT_ROOTS = ["projects", "artifacts"];
@@ -503,6 +540,7 @@ export async function restoreBackup(
 ): Promise<BackupManifest> {
   const home = normalizeAbsolute(homeInput);
   const manifest = await loadBackup(home, id);
+  await assertSupportedStateVersion(home);
   const contents = await verifyBackup(home, manifest);
   const now = options.now?.() ?? new Date();
   const writers = await liveWriters(home, now, 120_000);
@@ -648,6 +686,9 @@ export async function applyGc(
   options: { dryRun?: boolean; now?: Date; olderThanMs?: number } = {},
 ): Promise<GcResult> {
   const home = normalizeAbsolute(homeInput);
+  if (options.dryRun === false) {
+    await assertSupportedStateVersion(home);
+  }
   const candidates = await planGc(home, options);
   if (options.dryRun !== false) {
     return {
@@ -786,6 +827,7 @@ export async function applyMigration(
   options: { failAfterWrites?: number; now?: Date } = {},
 ): Promise<{ status: MigrationStatus; backup_id: string | null }> {
   const home = normalizeAbsolute(homeInput);
+  await assertSupportedStateVersion(home);
   const status = await checkMigration(home);
   if (!status.required) {
     return { status, backup_id: null };

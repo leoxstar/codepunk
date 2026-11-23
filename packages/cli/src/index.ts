@@ -63,6 +63,7 @@ import {
   importSession,
   inspectSavedWorkspaceTrust,
   initializeStateVersion,
+  readStateVersionInfo,
   installSkill,
   installPackage,
   installUserPlugin,
@@ -1188,6 +1189,15 @@ async function resolveProject(options: CliOptions): Promise<{
   });
   const paths = projectPaths(project, initialPaths.home, additionalRoots);
   await initializeStateVersion(paths.home);
+  // Spec 0016 C2: a newer state-version.json keeps sessions readable but
+  // maintenance commands refuse; warn once here so interactive and print
+  // sessions surface it without blocking.
+  const stateVersion = await readStateVersionInfo(paths.home);
+  if (stateVersion.newer) {
+    process.stderr.write(
+      `warning: codepunk home state version ${stateVersion.current} is newer than supported ${stateVersion.supported}; sessions stay readable, but upgrade codepunk before running maintenance commands\n`,
+    );
+  }
   await ensureProjectRegistration(project, paths);
   const workspaceTrust = await resolveWorkspaceTrust({
     cwd: project.cwd,

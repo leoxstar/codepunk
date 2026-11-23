@@ -462,10 +462,12 @@ export {
 } from "./retention/index.ts";
 export {
   STATE_VERSION,
+  NewerStateVersionError,
   RetentionLifecycleError,
   appendRetentionOperation,
   applyGc,
   applyMigration,
+  assertSupportedStateVersion,
   checkMigration,
   createBackup,
   hasLiveWriter,
@@ -474,6 +476,7 @@ export {
   loadBackup,
   planGc,
   readRetentionOperations,
+  readStateVersionInfo,
   restoreBackup,
   type BackupFile,
   type BackupManifest,
@@ -484,6 +487,7 @@ export {
   type LiveWriter,
   type MigrationStatus,
   type RestoreOptions,
+  type StateVersionInfo,
 } from "./retention/lifecycle.ts";
 export {
   formatDoctor,

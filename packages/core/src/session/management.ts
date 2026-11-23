@@ -15,6 +15,7 @@ import { ensurePrivateDir } from "../platform/fs.ts";
 import { sha256Bytes, sha256Text, sha256Value } from "../platform/hash.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 import {
+  assertSupportedStateVersion,
   createBackup,
   loadBackup,
   restoreBackup,
@@ -311,6 +312,7 @@ export async function deleteSession(
       "session delete requires explicit confirmation",
     );
   }
+  await assertSupportedStateVersion(options.rootDir);
   const store = await resolveSession(options);
   const { home, sessionDir } = await managementPaths(store);
   const initial = await listSessionTree(sessionDir);

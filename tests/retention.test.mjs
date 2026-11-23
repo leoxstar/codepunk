@@ -6,7 +6,6 @@ import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import { chainRecords, readRecord } from "./support/fixtures.mjs";
 import {
-  assertPrivateFile,
   makeProject,
   withTempDirectory,
   writeFile,
@@ -580,5 +579,105 @@ test("fresh homes are current and legacy homes still require migration", async (
       target: core.STATE_VERSION,
       required: true,
     });
+  });
+});
+
+test("newer state-version refuses maintenance but keeps sessions readable (spec 0016 C2)", async () => {
+  await withTempDirectory("codepunk-state-version-", async (root) => {
+    const { paths } = await makeProject(root);
+    const store = await createSession(paths, "2026-11-01T00:00:00.000Z");
+    const statePath = path.join(paths.home, "state-version.json");
+    await core.initializeStateVersion(paths.home);
+
+    const relative = path
+      .relative(paths.home, path.join(paths.artifactsDir, "file.txt"))
+      .split(path.sep)
+      .join("/");
+    await writeFile(path.join(paths.artifactsDir, "file.txt"), "original");
+    const backup = await core.createBackup(paths.home, { files: [relative] });
+
+    const original = `${JSON.stringify({ version: core.STATE_VERSION + 1 }, null, 2)}\n`;
+    await fs.writeFile(statePath, original, "utf8");
+
+    const info = await core.readStateVersionInfo(paths.home);
+    assert.deepEqual(info, {
+      current: core.STATE_VERSION + 1,
+      supported: core.STATE_VERSION,
+      newer: true,
+    });
+    await assert.rejects(
+      () => core.assertSupportedStateVersion(paths.home),
+      (error) =>
+        error.name === "NewerStateVersionError" &&
+        error.saved === core.STATE_VERSION + 1 &&
+        error.supported === core.STATE_VERSION &&
+        new RegExp(
+          `state version ${core.STATE_VERSION + 1} is newer than supported ${core.STATE_VERSION}`,
+          "u",
+        ).test(error.message) &&
+        /upgrade codepunk/u.test(error.message),
+    );
+
+    // gc: dry-run stays readable, --apply refuses.
+    const dryRun = await core.applyGc(paths.home, {
+      dryRun: true,
+      now: new Date("2026-11-20T00:00:00.000Z"),
+    });
+    assert.equal(dryRun.dry_run, true);
+    await assert.rejects(
+      () =>
+        core.applyGc(paths.home, {
+          dryRun: false,
+          now: new Date("2026-11-20T00:00:00.000Z"),
+        }),
+      (error) => error.name === "NewerStateVersionError",
+    );
+
+    // migrate --apply refuses.
+    await assert.rejects(
+      () => core.applyMigration(paths.home),
+      (error) => error.name === "NewerStateVersionError",
+    );
+
+    // backup restore refuses.
+    await assert.rejects(
+      () => core.restoreBackup(paths.home, backup.id),
+      (error) => error.name === "NewerStateVersionError",
+    );
+
+    // sessions delete refuses.
+    await assert.rejects(
+      () =>
+        core.deleteSession({
+          rootDir: paths.home,
+          cwd: paths.cwd,
+          projectRoot: paths.deliveryRoot,
+          projectId: paths.projectId,
+          sessionId: store.sessionId,
+          confirmed: true,
+        }),
+      (error) => error.name === "NewerStateVersionError",
+    );
+
+    // Nothing was written: state-version.json is byte-identical, the artifact
+    // and the session are intact and still readable.
+    assert.equal(await fs.readFile(statePath, "utf8"), original);
+    assert.equal(
+      await fs.readFile(path.join(paths.artifactsDir, "file.txt"), "utf8"),
+      "original",
+    );
+    const sessions = await core.listProjectSessions(
+      paths.home,
+      paths.projectId,
+    );
+    assert.equal(sessions.length, 1);
+    const reopened = await core.SessionStore.open({
+      rootDir: paths.home,
+      cwd: paths.cwd,
+      projectRoot: paths.deliveryRoot,
+      projectId: paths.projectId,
+      sessionId: store.sessionId,
+    });
+    assert.equal(reopened.sessionId, store.sessionId);
   });
 });
