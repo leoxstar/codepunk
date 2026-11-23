@@ -749,17 +749,34 @@ test("user-visible TUI text blocks internal engine branding", async () => {
     /internal engine brand/u,
   );
 
-  let rendered = "";
+  const brandedChildren = [];
+  const brandedRenders = [];
   base.chatContainer = {
-    addChild: (component) => {
-      rendered += typeof component === "string" ? component : "";
-    },
+    addChild: (component) => brandedChildren.push(component),
   };
-  base.ui = { requestRender: () => {} };
+  base.ui = { requestRender: () => brandedRenders.push(null) };
   BrandedInteractiveMode.prototype.showNewVersionNotification.call(base, {
     version: "1.6.0",
   });
-  assert.equal(rendered, "");
+  BrandedInteractiveMode.prototype.showPackageUpdateNotification.call(base, [
+    "example@2.0.0",
+  ]);
+  assert.deepEqual(brandedChildren, []);
+  assert.deepEqual(brandedRenders, []);
+
+  const upstreamChildren = [];
+  const upstreamRenders = [];
+  const upstream = Object.create(
+    Object.getPrototypeOf(BrandedInteractiveMode.prototype),
+  );
+  upstream.chatContainer = {
+    addChild: (component) => upstreamChildren.push(component),
+  };
+  upstream.ui = { requestRender: () => upstreamRenders.push(null) };
+  upstream.showNewVersionNotification({ version: "1.6.0" });
+  upstream.showPackageUpdateNotification(["example@2.0.0"]);
+  assert.ok(upstreamChildren.length > 0);
+  assert.ok(upstreamRenders.length > 0);
 });
 
 test("MCP login target selection rejects unsafe or ambiguous servers", async () => {

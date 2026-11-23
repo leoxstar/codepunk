@@ -1769,7 +1769,6 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
 async function runTui(options: CliOptions): Promise<number> {
   // The interactive stack is heavy; load it only when a TUI actually starts.
   const [
-    { InteractiveMode: BrandedInteractiveMode },
     { ProcessTerminal },
     {
       applyReplacedRuntime,
@@ -1778,10 +1777,11 @@ async function runTui(options: CliOptions): Promise<number> {
       setTuiRuntime,
       TuiApprovalChannel,
     },
+    { BrandedInteractiveMode },
   ] = await Promise.all([
-    import("@earendil-works/pi-coding-agent"),
     import("@earendil-works/pi-tui"),
     import("./tui.ts"),
+    import("./branded-interactive.ts"),
   ]);
   const forkedSessionId = await prepareFork(options);
   const selector =
