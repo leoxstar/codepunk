@@ -706,6 +706,7 @@ test("untrusted TUI approval selector", async () => {
 test("the Codepunk help lists the real command surface", async () => {
   const { codepunkHelp } = await importSource("packages/cli/src/tui.ts");
   const help = codepunkHelp();
+  assert.doesNotMatch(help, /\bPi\b|pi update|pi\.dev/u);
   assert.match(help, /\/model \[query\]/u);
   assert.match(help, /\/models\s+pick from recent or favorite models/u);
   assert.match(help, /\/favorite\s+toggle the current model in favorites/u);
@@ -730,6 +731,23 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /\/status\s+show model, session, permissions/u);
   assert.match(help, /\/help\s+show this command list/u);
   assert.doesNotMatch(help, /\/share/u);
+});
+
+test("user-visible TUI text blocks internal engine branding", async () => {
+  const { assertUserVisibleTuiText } = await importSource(
+    "packages/cli/src/branded-interactive.ts",
+  );
+
+  assertUserVisibleTuiText("Codepunk session ready");
+  assertUserVisibleTuiText("Search all models");
+  assert.throws(
+    () => assertUserVisibleTuiText("Run pi update for Pi 1.6"),
+    /internal engine brand/u,
+  );
+  assert.throws(
+    () => assertUserVisibleTuiText("https://pi.dev/changelog"),
+    /internal engine brand/u,
+  );
 });
 
 test("MCP login target selection rejects unsafe or ambiguous servers", async () => {
@@ -5180,12 +5198,12 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       );
       assert.match(
         session.output(),
-        /Type \/help for the available Codepunk and Pi commands\./u,
+        /Type \/help for the available Codepunk commands\./u,
       );
       await runCommandAfter(
         session,
         "/help",
-        "Pi commands that would bypass the Codepunk session",
+        "Host commands that would bypass the Codepunk session",
       );
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([

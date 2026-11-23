@@ -938,6 +938,7 @@ test("session tree shows sibling branches, labels, and the active leaf", async (
     assert.match(text, /\*\s+entry-active\s+message:assistant\s+\(leaf\)/u);
     assert.match(text, /-\s+entry-sibling\s+message:user \[experiment\]/u);
     assert.match(text, /leaf: entry-active/u);
+    assert.doesNotMatch(text, /\bPi\b|pi update|pi\.dev/u);
   });
 });
 

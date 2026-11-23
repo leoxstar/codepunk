@@ -375,7 +375,7 @@ export function formatSessionTree(tree: SessionTree): string {
     `entries: ${tree.entries.length}`,
   ];
   if (tree.entries.length === 0) {
-    lines.push("No saved Pi entries.");
+    lines.push("No saved session entries.");
     return lines.join("\n");
   }
   for (const entry of tree.entries) {

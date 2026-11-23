@@ -442,16 +442,16 @@ export function parsePermissionWhyCommand(argument: string): string | null {
 export function codepunkHelp(): string {
   return [
     "Codepunk commands",
-    "cp- marks a Codepunk command whose name would otherwise collide with a Pi builtin",
+    "cp- marks a Codepunk command whose name would otherwise collide with a host command",
     "",
     "Models and providers",
-    "  /model [query]             open Pi's fuzzy model picker",
+    "  /model [query]             open the searchable model picker",
     "                             Enter is session-only; Ctrl+S saves the default",
     "                             an exact provider/id or unique bare id saves immediately",
     "  /models                    pick from recent or favorite models",
     "  /favorite                  toggle the current model in favorites",
     "                             F2 cycles through recent models",
-    "  /login, /logout            manage Pi provider credentials",
+    "  /login, /logout            manage provider credentials",
     "  /thinking                  choose the reasoning level; saved to config",
     "  /scoped-models             explain the file-backed model scope",
     "  /roles [status]            show role models and subagent model pools",
@@ -502,7 +502,7 @@ export function codepunkHelp(): string {
     "  /cp-sessions, /session     list sessions or show the current one",
     "  /resume [id|latest|text]   switch by id, latest, or a title/content match",
     "  /fork [entry-id], /clone   fork at the leaf or entry and switch to the child",
-    "  /tree                      open Pi's branch selector",
+    "  /tree                      open the session branch selector",
     "  /tree list|<entry-id>      print the tree or move directly to an entry",
     "  /evidence, /budget         show evidence and model usage",
     "  /cp-export, /export        write a redacted transcript and manifest",
@@ -516,12 +516,12 @@ export function codepunkHelp(): string {
     "  /capabilities              summarize skills, MCP servers, and plugins",
     "  /remember, /memory         write, search, archive, or delete memory",
     "  /doctor, /policy           run diagnostics or print effective policy",
-    "  /compact                   ask Pi to compact the current context",
+    "  /compact                   compact the current context",
     "  /reload                    reload config, plugins, skills, and user MCP servers",
     "  /help                      show this command list",
     "  /quit                      exit",
     "",
-    "Pi commands that would bypass the Codepunk session, evidence, or redaction boundary are intercepted with guidance.",
+    "Host commands that would bypass the Codepunk session, evidence, or redaction boundary are intercepted with guidance.",
   ].join("\n");
 }
 
@@ -1757,7 +1757,7 @@ async function navigateSessionTree(
   const entryId = argument.trim();
   if (entryId.length === 0) {
     context.ui.notify(
-      "usage: /tree (Pi branch selector) | /tree list | /tree <entry-id>",
+      "usage: /tree (session branch selector) | /tree list | /tree <entry-id>",
       "warning",
     );
     return;
@@ -6261,7 +6261,7 @@ function setupChrome(state: TuiState, context: ExtensionContext): void {
             context.ui.notify(
               [
                 `Unknown command /${commandName}.`,
-                "Type /help for the available Codepunk and Pi commands.",
+                "Type /help for the available Codepunk commands.",
               ].join("\n"),
               "warning",
             );

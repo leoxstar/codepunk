@@ -1769,7 +1769,7 @@ async function runPrint(options: CliOptions, prompt: string): Promise<number> {
 async function runTui(options: CliOptions): Promise<number> {
   // The interactive stack is heavy; load it only when a TUI actually starts.
   const [
-    { InteractiveMode },
+    { InteractiveMode: BrandedInteractiveMode },
     { ProcessTerminal },
     {
       applyReplacedRuntime,
@@ -1940,7 +1940,7 @@ async function runTui(options: CliOptions): Promise<number> {
           ]
         : []),
     ];
-    const interactive = new InteractiveMode(sessionRuntime, {
+    const interactive = new BrandedInteractiveMode(sessionRuntime, {
       terminal: new CodepunkTerminal(new ProcessTerminal()),
       startupDiagnostics,
       ...(modelFallbackMessage === undefined ? {} : { modelFallbackMessage }),
