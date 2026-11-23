@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   AgentStateSchema,
+  AGENT_STATE_SCHEMA_VERSION,
   ProtocolError,
   SESSION_EVENT_SCHEMA_VERSION,
   SessionEventSchema,
@@ -19,6 +20,7 @@ import {
   type SessionHeader,
   type SessionMeta,
 } from "codepunk-protocol";
+import { FormatVersionError, checkFormatVersion } from "../compat/index.ts";
 import {
   appendFileSynced,
   atomicWriteFile,
@@ -942,18 +944,41 @@ export class SessionStore {
     if (raw === null) {
       return null;
     }
+    // Spec 0016 C1: decide compatibility by format versions before the schema
+    // check so the rejection names the offending field and both numbers
+    // (the schema would otherwise reject a newer `version` as generically
+    // invalid, and would admit a zero `session_version`).
+    if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+      const record = raw as Record<string, unknown>;
+      try {
+        checkFormatVersion(
+          "agent-state",
+          "version",
+          record["version"],
+          AGENT_STATE_SCHEMA_VERSION,
+        );
+        checkFormatVersion(
+          "agent-state",
+          "session_version",
+          record["session_version"],
+          PI_SESSION_VERSION_CURRENT,
+        );
+      } catch (error) {
+        if (error instanceof FormatVersionError) {
+          throw new ProtocolError(
+            "agent-state",
+            typeof error.saved === "number" ? error.saved : -1,
+            error.message,
+          );
+        }
+        throw error;
+      }
+    }
     const validation = validateSchema(AgentStateSchema, raw);
     if (!validation.ok) {
       throw new SessionCorruptError("agent-state.json is invalid");
     }
     const state = raw as AgentState;
-    if (state.session_version > PI_SESSION_VERSION_CURRENT) {
-      throw new ProtocolError(
-        "agent-state",
-        state.session_version,
-        `agent-state session_version ${state.session_version} is newer than supported ${PI_SESSION_VERSION_CURRENT}`,
-      );
-    }
     if (state.session_id !== this.sessionId) {
       throw new SessionCorruptError(
         "agent-state session_id does not match the session",

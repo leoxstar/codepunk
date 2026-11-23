@@ -29,6 +29,7 @@ import {
   type UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentState, PlanStep, TodoItem } from "codepunk-protocol";
+import { AGENT_STATE_SCHEMA_VERSION } from "codepunk-protocol";
 import { redactOutputPreview } from "../../artifacts/index.ts";
 import { canonicalJson, createUlid, sha256Text } from "../../platform/hash.ts";
 import { normalizeAbsolute } from "../../platform/path.ts";
@@ -38,6 +39,7 @@ import {
   type ContextBundle,
 } from "../../context/index.ts";
 import { outputSha } from "../../evidence/index.ts";
+import { FormatVersionError, checkFormatVersion } from "../../compat/index.ts";
 import { redactMemoryContent, type MemoryManager } from "../../memory/index.ts";
 import {
   readWorkState,
@@ -62,11 +64,7 @@ import {
   summarizeModelUsage,
   summarizeSessionModelUsage,
 } from "../../model/index.ts";
-import {
-  PI_VERSION,
-  type SessionStore,
-  type SessionWriter,
-} from "../../session/index.ts";
+import { type SessionStore, type SessionWriter } from "../../session/index.ts";
 import { GoalCorruptError, goalModelContext } from "../../session/goal.ts";
 import { normalizeSessionTitle } from "../../session/ops.ts";
 import {
@@ -308,15 +306,26 @@ function sessionEntryId(entry: unknown): string | null {
 }
 
 function restoreEntries(state: AgentState, cwd: string): RestoredPiEntries {
-  if (state.pi_version !== PI_VERSION) {
-    throw new HostIsolationError(
-      `agent-state Pi version ${state.pi_version} does not match ${PI_VERSION}`,
+  // Spec 0016 C1: compatibility is decided by format versions, not by the
+  // pinned Pi package version. `pi_version` stays written for diagnostics.
+  try {
+    checkFormatVersion(
+      "agent-state",
+      "version",
+      state.version,
+      AGENT_STATE_SCHEMA_VERSION,
     );
-  }
-  if (state.session_version > CURRENT_SESSION_VERSION) {
-    throw new HostIsolationError(
-      "agent-state Pi session version is newer than the pinned host",
+    checkFormatVersion(
+      "agent-state",
+      "session_version",
+      state.session_version,
+      CURRENT_SESSION_VERSION,
     );
+  } catch (error) {
+    if (error instanceof FormatVersionError) {
+      throw new HostIsolationError(error.message);
+    }
+    throw error;
   }
   const header = state.header;
   if (header === null || typeof header !== "object" || Array.isArray(header)) {

@@ -549,6 +549,164 @@ test("corrupt or newer agent state stops resume", async () => {
   });
 });
 
+test("agent-state saved by another Pi version still resumes (spec 0016 C1)", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const store = await createStore(rootDir);
+    const writer = await store.acquireWriter();
+    await store.append("user/input", { run_id: "run-1", text: "hello" });
+    await store.saveAgentState({ id: "pi-header" }, []);
+    await writer.release();
+
+    const saved = JSON.parse(await readFile(store.paths.statePath, "utf8"));
+    saved.pi_version = "1.4.0";
+    await writeFile(
+      store.paths.statePath,
+      `${JSON.stringify(saved)}\n`,
+      "utf8",
+    );
+
+    const reopened = await core.SessionStore.open({
+      rootDir,
+      cwd: "/workspace",
+      sessionId: store.sessionId,
+    });
+    const resumed = await reopened.resume();
+    assert.equal(resumed.state.pi_version, "1.4.0");
+  });
+});
+
+test("runtime restore does not gate on the pinned Pi version (spec 0016 C1)", async () => {
+  await withTempDirectory(async (root) => {
+    const { projectRoot, paths } = await makeProject(
+      await fsPromises.realpath(root),
+    );
+    const projectId = core.projectIdFor(projectRoot);
+    const store = await core.SessionStore.create({
+      rootDir: paths.home,
+      cwd: projectRoot,
+      projectId,
+      now: fixedClock(),
+      heartbeatMs: 60_000,
+    });
+    const writer = await store.acquireWriter();
+    await store.append("user/input", {
+      run_id: "run-1",
+      text: "committed",
+    });
+    await store.saveAgentState(
+      { type: "session", id: store.sessionId, cwd: projectRoot },
+      [],
+    );
+    await store.append("user/input", {
+      run_id: "run-1",
+      text: "uncommitted",
+    });
+    await writer.release();
+
+    const saved = JSON.parse(await readFile(store.paths.statePath, "utf8"));
+    saved.pi_version = "1.4.0";
+    await writeFile(
+      store.paths.statePath,
+      `${JSON.stringify(saved)}\n`,
+      "utf8",
+    );
+
+    // The restore path must pass the Pi-version a mismatch used to block on
+    // and fail only on the unrelated crash-window guard.
+    await assert.rejects(
+      () =>
+        core.createRuntime({
+          cwd: projectRoot,
+          environment: { ...process.env, CODEPUNK_HOME: paths.home },
+          sessionId: store.sessionId,
+          allowMissingModel: true,
+        }),
+      (error) =>
+        /refusing to resume with a stale model transcript/u.test(
+          error.message,
+        ) && !/does not match/u.test(error.message),
+    );
+  });
+});
+
+test("agent-state format versions reject with the field and both numbers (spec 0016 C1)", async () => {
+  await withTempDirectory(async (rootDir) => {
+    const store = await createStore(rootDir);
+    const writer = await store.acquireWriter();
+    await store.append("user/input", { run_id: "run-1", text: "hello" });
+    await store.saveAgentState({ id: "pi-header" }, []);
+    await writer.release();
+
+    const original = await readFile(store.paths.statePath, "utf8");
+    const saved = JSON.parse(original);
+    const cases = [
+      {
+        name: "newer schema version",
+        patch: { version: saved.version + 1 },
+        pattern: new RegExp(
+          `agent-state version ${saved.version + 1} is newer than supported ${saved.version}`,
+          "u",
+        ),
+      },
+      {
+        name: "zero schema version",
+        patch: { version: 0 },
+        pattern: /agent-state version is missing or not a positive integer/u,
+      },
+      {
+        name: "missing schema version",
+        patch: { version: undefined },
+        pattern: /agent-state version is missing or not a positive integer/u,
+      },
+      {
+        name: "zero session version",
+        patch: { session_version: 0 },
+        pattern:
+          /agent-state session_version is missing or not a positive integer/u,
+      },
+      {
+        name: "newer session version",
+        patch: { session_version: core.PI_SESSION_VERSION_CURRENT + 1 },
+        pattern: new RegExp(
+          `agent-state session_version ${core.PI_SESSION_VERSION_CURRENT + 1} is newer than supported ${core.PI_SESSION_VERSION_CURRENT}`,
+          "u",
+        ),
+      },
+    ];
+
+    for (const { name, patch, pattern } of cases) {
+      const rewritten = { ...saved, ...patch };
+      if (Object.hasOwn(patch, "version") && patch.version === undefined) {
+        delete rewritten.version;
+      }
+      await writeFile(
+        store.paths.statePath,
+        `${JSON.stringify(rewritten)}\n`,
+        "utf8",
+      );
+      await assert.rejects(
+        () => store.resume(),
+        (error) =>
+          error.name === "ProtocolError" && pattern.test(error.message),
+        `expected ${name} to reject with ${pattern}`,
+      );
+      assert.equal(
+        await readFile(store.paths.statePath, "utf8"),
+        `${JSON.stringify(rewritten)}\n`,
+        `${name} must leave the file byte-identical`,
+      );
+    }
+
+    await writeFile(store.paths.statePath, original, "utf8");
+    const reopened = await core.SessionStore.open({
+      rootDir,
+      cwd: "/workspace",
+      sessionId: store.sessionId,
+    });
+    await reopened.resume();
+  });
+});
+
 test("the store creates no Pi session file", async () => {
   await withTempDirectory(async (rootDir) => {
     const store = await createStore(rootDir);
