@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import {
   McpOAuthAuthorizationRequiredError,
   McpRefreshLockBusyError,
@@ -145,11 +146,36 @@ export class McpAuthStore {
         { cause: error },
       );
     }
+    // Spec 0016 C3: refuse (do not rewrite) a version that is missing, not
+    // a positive integer, or newer than this build; older versions read.
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
+      try {
+        checkStoreVersion(
+          "mcp auth store",
+          (parsed as Record<string, unknown>)["version"],
+          AUTH_VERSION,
+        );
+      } catch (error) {
+        if (options.tolerateCorrupt === true) {
+          return emptyDocument();
+        }
+        if (error instanceof FormatVersionError) {
+          throw new McpAuthError(
+            "mcp.auth_corrupt",
+            `${this.path}: ${error.message}; remove it and sign in again`,
+          );
+        }
+        throw error;
+      }
+    }
     if (
       parsed === null ||
       typeof parsed !== "object" ||
       Array.isArray(parsed) ||
-      (parsed as Record<string, unknown>)["version"] !== AUTH_VERSION ||
       (parsed as Record<string, unknown>)["servers"] === null ||
       typeof (parsed as Record<string, unknown>)["servers"] !== "object" ||
       Array.isArray((parsed as Record<string, unknown>)["servers"])

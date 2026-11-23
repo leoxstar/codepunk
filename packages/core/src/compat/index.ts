@@ -55,3 +55,12 @@ export function checkFormatVersion(
   }
   return saved;
 }
+
+/** Convenience for persisted stores whose compatibility field is `version`. */
+export function checkStoreVersion(
+  store: string,
+  saved: unknown,
+  current: number,
+): number {
+  return checkFormatVersion(store, "version", saved, current);
+}

@@ -775,11 +775,11 @@ export interface MigrationStatus {
 }
 
 async function stateVersion(home: string): Promise<number> {
+  let parsed: { version?: unknown };
   try {
-    const parsed = JSON.parse(
+    parsed = JSON.parse(
       await fs.readFile(path.join(home, "state-version.json"), "utf8"),
     ) as { version?: unknown };
-    return typeof parsed.version === "number" ? parsed.version : 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       for (const entry of LEGACY_STATE_ENTRIES) {
@@ -791,6 +791,17 @@ async function stateVersion(home: string): Promise<number> {
     }
     return 0;
   }
+  // Spec 0016 C3: a persisted version that is not a non-negative integer
+  // must refuse instead of being silently treated as migratable.
+  if (
+    typeof parsed.version === "number" &&
+    (!Number.isInteger(parsed.version) || parsed.version < 0)
+  ) {
+    throw new Error(
+      `state-version.json version is not a non-negative integer (found ${JSON.stringify(parsed.version)}); refusing to read or migrate this home`,
+    );
+  }
+  return typeof parsed.version === "number" ? parsed.version : 0;
 }
 
 export async function initializeStateVersion(homeInput: string) {

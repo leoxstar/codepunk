@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import {
   atomicWriteBytes,
   ensurePrivateDir,
@@ -173,9 +174,20 @@ function validEntry(value: unknown): value is CheckpointEntry {
 }
 
 function parseIndex(value: unknown): CheckpointIndex {
+  if (!isRecord(value)) {
+    throw new CheckpointError("checkpoint index is invalid");
+  }
+  // Spec 0016 C3: name the saved and current versions instead of a generic
+  // rejection; older indexes read, unacceptable ones refuse without rewrite.
+  try {
+    checkStoreVersion("checkpoint index", value["version"], CHECKPOINT_VERSION);
+  } catch (error) {
+    if (error instanceof FormatVersionError) {
+      throw new CheckpointError(error.message);
+    }
+    throw error;
+  }
   if (
-    !isRecord(value) ||
-    value["version"] !== CHECKPOINT_VERSION ||
     !Array.isArray(value["undo_stack"]) ||
     !Array.isArray(value["checkpoints"]) ||
     !value["checkpoints"].every(validEntry) ||

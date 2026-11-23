@@ -20,7 +20,11 @@ import {
   type SessionHeader,
   type SessionMeta,
 } from "codepunk-protocol";
-import { FormatVersionError, checkFormatVersion } from "../compat/index.ts";
+import {
+  FormatVersionError,
+  checkFormatVersion,
+  checkStoreVersion,
+} from "../compat/index.ts";
 import {
   appendFileSynced,
   atomicWriteFile,
@@ -219,6 +223,26 @@ function parseSessionLog(content: string): {
   let header: SessionHeader;
   try {
     const parsed: unknown = JSON.parse(nonEmpty[0]!);
+    // Spec 0016 C3: name the version field and both numbers instead of the
+    // schema's generic rejection when the header version is unacceptable.
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
+      try {
+        checkStoreVersion(
+          "session header",
+          (parsed as Record<string, unknown>)["version"],
+          SESSION_EVENT_SCHEMA_VERSION,
+        );
+      } catch (error) {
+        if (error instanceof FormatVersionError) {
+          throw new SessionCorruptError(error.message);
+        }
+        throw error;
+      }
+    }
     const validation = validateSchema(SessionHeaderSchema, parsed);
     if (!validation.ok) {
       throw new SessionCorruptError("session header is invalid");
@@ -234,6 +258,27 @@ function parseSessionLog(content: string): {
   for (let index = 1; index < nonEmpty.length; index += 1) {
     try {
       const parsed: unknown = JSON.parse(nonEmpty[index]!);
+      // Spec 0016 C3: name the version field and both numbers instead of
+      // the schema's generic rejection when the event version is
+      // unacceptable.
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
+        try {
+          checkStoreVersion(
+            `session event ${index}`,
+            (parsed as Record<string, unknown>)["version"],
+            SESSION_EVENT_SCHEMA_VERSION,
+          );
+        } catch (error) {
+          if (error instanceof FormatVersionError) {
+            throw new SessionCorruptError(error.message);
+          }
+          throw error;
+        }
+      }
       const validation = validateSchema(SessionEventSchema, parsed);
       if (!validation.ok) {
         const unknownKind = unsupportedEventKind(parsed);

@@ -3,9 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   EvidenceRecordSchema,
+  EVIDENCE_SCHEMA_VERSION,
   validateSchema,
   type EvidenceRecord,
 } from "codepunk-protocol";
+import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import { appendFileSynced, ensurePrivateDir } from "../platform/fs.ts";
 import { canonicalJson, recordHash, sha256Text } from "../platform/hash.ts";
 
@@ -52,6 +54,26 @@ function parseLines(content: string): {
     }
     try {
       const parsed: unknown = JSON.parse(line);
+      // Spec 0016 C3: name the saved and current versions instead of the
+      // schema's generic rejection when the record version is unacceptable.
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
+        try {
+          checkStoreVersion(
+            `evidence record at line ${index + 1}`,
+            (parsed as Record<string, unknown>)["version"],
+            EVIDENCE_SCHEMA_VERSION,
+          );
+        } catch (error) {
+          if (error instanceof FormatVersionError) {
+            throw new EvidenceError(error.message);
+          }
+          throw error;
+        }
+      }
       const validation = validateSchema(EvidenceRecordSchema, parsed);
       if (!validation.ok) {
         throw new EvidenceError(

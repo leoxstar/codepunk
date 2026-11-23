@@ -66,7 +66,11 @@ export {
   type CheckpointSnapshot,
   type CheckpointStoreOptions,
 } from "./checkpoints/index.ts";
-export { FormatVersionError, checkFormatVersion } from "./compat/index.ts";
+export {
+  FormatVersionError,
+  checkFormatVersion,
+  checkStoreVersion,
+} from "./compat/index.ts";
 export {
   collectCapabilities,
   formatCapabilities,

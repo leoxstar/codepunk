@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { finished } from "node:stream/promises";
 import type { EvidenceRecord } from "codepunk-protocol";
+import { checkStoreVersion } from "../compat/index.ts";
 import { EvidenceLedger } from "../evidence/index.ts";
 import { atomicWriteFile, ensurePrivateDir } from "../platform/fs.ts";
 import { createUlid, sha256Text } from "../platform/hash.ts";
@@ -168,8 +169,19 @@ function parsePersistedSnapshot(
     return null;
   }
   const snapshot = value as Partial<BackgroundTaskSnapshot>;
+  // Spec 0016 C3: accept older snapshot versions, but refuse (skip) the
+  // object when the version is missing, not a positive integer, or newer
+  // than this build. Skipping never rewrites the persisted file.
+  try {
+    checkStoreVersion(
+      "background task store",
+      snapshot.version,
+      BACKGROUND_TASK_VERSION,
+    );
+  } catch {
+    return null;
+  }
   if (
-    snapshot.version !== BACKGROUND_TASK_VERSION ||
     snapshot.id !== id ||
     typeof snapshot.session_id !== "string" ||
     typeof snapshot.title !== "string" ||

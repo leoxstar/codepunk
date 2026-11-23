@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import { ensurePrivateDir, atomicWriteFile } from "../platform/fs.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 
@@ -106,10 +107,20 @@ export class ClaimStore {
       const parsed = JSON.parse(
         await fs.readFile(this.filePath, "utf8"),
       ) as unknown;
+      if (parsed === null || typeof parsed !== "object") {
+        throw new Error("claim store is corrupt");
+      }
+      // Spec 0016 C3: refuse (do not rewrite) a version that is missing, not
+      // a positive integer, or newer than this build; older versions read.
+      try {
+        checkStoreVersion("claim store", (parsed as ClaimFile).version, 1);
+      } catch (error) {
+        if (error instanceof FormatVersionError) {
+          throw new Error(error.message);
+        }
+        throw error;
+      }
       if (
-        parsed === null ||
-        typeof parsed !== "object" ||
-        (parsed as ClaimFile).version !== 1 ||
         !Number.isSafeInteger((parsed as ClaimFile).next_fence) ||
         (parsed as ClaimFile).next_fence < 0 ||
         (parsed as ClaimFile).claims === null ||
