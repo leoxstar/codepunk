@@ -53,6 +53,29 @@ const THEME_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 
 export const CONFIG_FILE_NAME = "config.toml";
 
+export type DeprecatedConfigKeyAction = "renamed" | "removed";
+
+/**
+ * A config key that still loads but is scheduled for removal. `renamed` keys
+ * map onto `replacement`; `removed` keys are read, warned about, and ignored.
+ * Keeping an entry past `removableIn` is a bug: the key may only disappear
+ * together with the entry.
+ */
+export interface DeprecatedConfigKey {
+  key: string;
+  action: DeprecatedConfigKeyAction;
+  replacement: string | null;
+  deprecatedSince: string;
+  removableIn: string;
+}
+
+/**
+ * Empty until the first key is renamed or dropped. Every entry must name both
+ * the release that started warning and the earliest release that may delete
+ * it, so an old config keeps starting instead of failing on an unknown key.
+ */
+export const DEPRECATED_CONFIG_KEYS: DeprecatedConfigKey[] = [];
+
 export function configFilePaths(paths: ProjectPaths): {
   user: string;
   project: string;
@@ -645,9 +668,117 @@ function validateValue(key: string, raw: TomlValue, spec: KeySpec): unknown {
   throw valueError(key, "a supported value");
 }
 
+function deprecatedKeyNotice(entry: DeprecatedConfigKey): string {
+  const tail =
+    entry.action === "renamed"
+      ? `use ${entry.replacement ?? "its replacement"}`
+      : "ignoring it";
+  return `${entry.key} is deprecated since ${entry.deprecatedSince} and may be removed in ${entry.removableIn}; ${tail}`;
+}
+
+/**
+ * Stores one key after checking its spec. Returns false when the key has no
+ * spec, which lets the caller try the deprecation table before refusing it.
+ */
+function storeConfigValue(
+  key: string,
+  raw: TomlValue,
+  source: "user" | "project" | "local",
+  output: Map<string, unknown>,
+): boolean {
+  const spec = KEY_SPECS.get(key);
+  if (spec === undefined) {
+    return false;
+  }
+  if (spec.scope === "user" && source === "project") {
+    throw new ConfigError(
+      `${key} is user/CLI-only and cannot appear in project config`,
+      key,
+    );
+  }
+  if (spec.scope === "user" && source === "local") {
+    throw new ConfigError(
+      `${key} is user/CLI-only and cannot appear in .codepunk/local.toml; use the user config or an explicit CLI flag`,
+      key,
+    );
+  }
+  const value = validateValue(key, raw, spec);
+  if (key === "tui.theme") {
+    if (typeof value !== "string" || !THEME_NAME.test(value)) {
+      throw new ConfigError(
+        "tui.theme must be a non-empty theme name",
+        "tui.theme",
+      );
+    }
+  }
+  if (key === "tui.statusline") {
+    const segments = value as string[];
+    if (segments.length === 0 || segments.length > 8) {
+      throw new ConfigError(
+        "tui.statusline must contain 1-8 segments",
+        "tui.statusline",
+      );
+    }
+    if (new Set(segments).size !== segments.length) {
+      throw new ConfigError(
+        "tui.statusline contains a duplicate segment",
+        "tui.statusline",
+      );
+    }
+    for (const segment of segments) {
+      if (!(STATUSLINE_SEGMENTS as readonly string[]).includes(segment)) {
+        throw new ConfigError(
+          `tui.statusline has unknown segment ${segment}`,
+          "tui.statusline",
+        );
+      }
+    }
+  }
+  output.set(key, value);
+  return true;
+}
+
+/**
+ * Applies a deprecated key: warns once per load and either maps the value onto
+ * its replacement or drops it. Returns false when the key is not deprecated.
+ */
+function storeDeprecatedConfigValue(
+  key: string,
+  raw: TomlValue,
+  source: "user" | "project" | "local",
+  output: Map<string, unknown>,
+  warnings: string[],
+): boolean {
+  const entry = DEPRECATED_CONFIG_KEYS.find((item) => item.key === key);
+  if (entry === undefined) {
+    return false;
+  }
+  const notice = deprecatedKeyNotice(entry);
+  if (!warnings.includes(notice)) {
+    warnings.push(notice);
+  }
+  if (entry.action === "removed") {
+    return true;
+  }
+  if (entry.replacement === null) {
+    throw new ConfigError(
+      `deprecated config key ${key} has no replacement`,
+      key,
+    );
+  }
+  if (!storeConfigValue(entry.replacement, raw, source, output)) {
+    throw new ConfigError(
+      `deprecated config key ${key} maps to unknown key ${entry.replacement}`,
+      key,
+    );
+  }
+  return true;
+}
+
 function parseLayer(
   content: string,
   source: "user" | "project" | "local",
+  warnings: string[],
 ): Map<string, unknown> {
   let parsed;
   try {
@@ -683,55 +814,13 @@ function parseLayer(
       output.set(key, raw);
       continue;
     }
-    const spec = KEY_SPECS.get(key);
-    if (spec === undefined) {
-      throw new ConfigError(`unknown config key: ${key}`, key);
+    if (storeConfigValue(key, raw, source, output)) {
+      continue;
     }
-    if (spec.scope === "user" && source === "project") {
-      throw new ConfigError(
-        `${key} is user/CLI-only and cannot appear in project config`,
-        key,
-      );
+    if (storeDeprecatedConfigValue(key, raw, source, output, warnings)) {
+      continue;
     }
-    if (spec.scope === "user" && source === "local") {
-      throw new ConfigError(
-        `${key} is user/CLI-only and cannot appear in .codepunk/local.toml; use the user config or an explicit CLI flag`,
-        key,
-      );
-    }
-    const value = validateValue(key, raw, spec);
-    if (key === "tui.theme") {
-      if (typeof value !== "string" || !THEME_NAME.test(value)) {
-        throw new ConfigError(
-          "tui.theme must be a non-empty theme name",
-          "tui.theme",
-        );
-      }
-    }
-    if (key === "tui.statusline") {
-      const segments = value as string[];
-      if (segments.length === 0 || segments.length > 8) {
-        throw new ConfigError(
-          "tui.statusline must contain 1-8 segments",
-          "tui.statusline",
-        );
-      }
-      if (new Set(segments).size !== segments.length) {
-        throw new ConfigError(
-          "tui.statusline contains a duplicate segment",
-          "tui.statusline",
-        );
-      }
-      for (const segment of segments) {
-        if (!(STATUSLINE_SEGMENTS as readonly string[]).includes(segment)) {
-          throw new ConfigError(
-            `tui.statusline has unknown segment ${segment}`,
-            "tui.statusline",
-          );
-        }
-      }
-    }
-    output.set(key, value);
+    throw new ConfigError(`unknown config key: ${key}`, key);
   }
   const boundKeys = new Map<string, KeymapAction>();
   for (const [action, binding] of keymap) {
@@ -1348,7 +1437,7 @@ export async function loadConfig(
 
   const userContent = await readOptional(userPath);
   if (userContent !== null) {
-    applyLayer(config, parseLayer(userContent, "user"));
+    applyLayer(config, parseLayer(userContent, "user", warnings));
   }
   const userFloor = structuredClone(config);
   const projectSafety = projectSharesUserConfig
@@ -1377,12 +1466,16 @@ export async function loadConfig(
   }
   const projectLayer = new Map<string, unknown>();
   if (projectContent !== null) {
-    for (const [key, value] of parseLayer(projectContent, "project")) {
+    for (const [key, value] of parseLayer(
+      projectContent,
+      "project",
+      warnings,
+    )) {
       projectLayer.set(key, value);
     }
   }
   if (localContent !== null) {
-    for (const [key, value] of parseLayer(localContent, "local")) {
+    for (const [key, value] of parseLayer(localContent, "local", warnings)) {
       if (projectLayer.has(key) && projectLayer.get(key) !== value) {
         warnings.push(`local.toml overrides ${key}`);
       }

@@ -1477,3 +1477,66 @@ test("TUI personalization does not alter policy decisions", async () => {
     );
   });
 });
+
+test("the deprecation table loads renamed and removed keys with one warning each", async () => {
+  await withTempDirectory("codepunk-config-deprecated-", async (root) => {
+    const { paths } = await makeProject(root);
+    const configPath = path.join(paths.home, "config.toml");
+    await writeFile(
+      configPath,
+      ["[tui]", 'not_a_real_key = "x"', "renamed_key = true", ""].join("\n"),
+    );
+    core.DEPRECATED_CONFIG_KEYS.push(
+      {
+        key: "tui.renamed_key",
+        action: "renamed",
+        replacement: "tui.theme",
+        deprecatedSince: "0.1.0",
+        removableIn: "0.2.0",
+      },
+      {
+        key: "tui.not_a_real_key",
+        action: "removed",
+        replacement: null,
+        deprecatedSince: "0.1.0",
+        removableIn: "0.2.0",
+      },
+    );
+    try {
+      await writeFile(
+        configPath,
+        ["[tui]", 'theme = "plain"', 'renamed_key = "deleted"', ""].join("\n"),
+      );
+      const renamed = await core.loadConfig(paths, {});
+      assert.equal(renamed.config.tui.theme, "deleted");
+      assert.equal(
+        renamed.warnings.filter((warning) =>
+          warning.includes("tui.renamed_key is deprecated"),
+        ).length,
+        1,
+      );
+      await writeFile(
+        configPath,
+        ["[tui]", 'theme = "plain"', "not_a_real_key = true", ""].join("\n"),
+      );
+      const removed = await core.loadConfig(paths, {});
+      assert.equal(removed.config.tui.theme, "plain");
+      assert.equal(
+        removed.warnings.filter((warning) =>
+          warning.includes("tui.not_a_real_key is deprecated"),
+        ).length,
+        1,
+      );
+      await writeFile(
+        configPath,
+        ["[tui]", "still_unknown = 1", ""].join("\n"),
+      );
+      await assert.rejects(
+        () => core.loadConfig(paths, {}),
+        /unknown config key: tui\.still_unknown/u,
+      );
+    } finally {
+      core.DEPRECATED_CONFIG_KEYS.splice(0);
+    }
+  });
+});
