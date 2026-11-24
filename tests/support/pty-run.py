@@ -18,10 +18,12 @@ def main() -> int:
         return 2
 
     master, slave = pty.openpty()
+    rows = int(os.environ.get("PTY_RUN_ROWS", "40"))
+    cols = int(os.environ.get("PTY_RUN_COLS", "120"))
     fcntl.ioctl(
         slave,
         termios.TIOCSWINSZ,
-        struct.pack("HHHH", 40, 120, 0, 0),
+        struct.pack("HHHH", rows, cols, 0, 0),
     )
     child = subprocess.Popen(
         sys.argv[1:],
