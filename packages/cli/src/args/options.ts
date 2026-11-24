@@ -1,0 +1,78 @@
+import type { DaemonScope } from "codepunk-protocol";
+import type {
+  FilesystemMode,
+  PermissionProfile,
+  WorkspaceTrustResourceKind,
+} from "codepunk-core";
+
+export interface CliOptions {
+  print: boolean;
+  mode: "text" | "json";
+  continueSession: boolean;
+  session: string | undefined;
+  fork: string | undefined;
+  newSessionId: string | undefined;
+  parentSessionId: string | undefined;
+  newSession: boolean;
+  model: string | undefined;
+  provider: string | undefined;
+  thinking: string | undefined;
+  tools: string[] | undefined;
+  modelFallback: string[] | undefined;
+  fallbackAllowCrossProvider: boolean;
+  appendSystemPrompt: string | undefined;
+  permissionMode: PermissionProfile | undefined;
+  approval: "ask" | "deny" | "auto" | "allow" | undefined;
+  reviewer: "off" | "model" | undefined;
+  reviewerModel: string | undefined;
+  reviewerTimeoutMs: number | undefined;
+  autonomy: "read-only" | "ask" | "scoped" | undefined;
+  scopedRules: string | undefined;
+  allowUnsandboxedShell: boolean;
+  dangerouslyBypass: boolean;
+  sandbox: "required" | "uncovered" | undefined;
+  filesystem: FilesystemMode | undefined;
+  networkAllow: string[] | undefined;
+  networkDeny: string[] | undefined;
+  trust: "trusted" | "untrusted" | undefined;
+  trustResources: WorkspaceTrustResourceKind[] | undefined;
+  resources: WorkspaceTrustResourceKind[] | undefined;
+  memory: boolean | undefined;
+  allowPlugins: boolean;
+  noMcp: boolean;
+  noSkills: boolean;
+  noPlugins: boolean;
+  bare: boolean;
+  headlessPolicy: string | undefined;
+  apply: boolean;
+  check: boolean;
+  unpin: boolean;
+  allProjects: boolean;
+  includeArchived: boolean;
+  confirm: boolean;
+  verdict: "complete" | "incomplete" | undefined;
+  actor: string | undefined;
+  output: string | undefined;
+  scope: "user" | "project" | undefined;
+  prefix: string | undefined;
+  packageVersion: string | undefined;
+  baseUrl: string | undefined;
+  api: string | undefined;
+  apiKey: string | undefined;
+  authHeader: boolean;
+  dryRun: boolean;
+  json: boolean;
+  socket: string | undefined;
+  scopes: DaemonScope[] | undefined;
+  limit: number | undefined;
+  env: string[];
+  url: string | undefined;
+  headers: string[];
+  cwd: string | undefined;
+  additionalDirs: string[];
+  force: boolean;
+  guardedHostLaunch: boolean;
+  help: boolean;
+  version: boolean;
+  positionals: string[];
+}

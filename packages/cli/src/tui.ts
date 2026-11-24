@@ -134,7 +134,6 @@ import {
   type PluginReloadResult,
   type SkillReloadResult,
   type SideTaskRecord,
-  type SubagentHostResult,
   type SubagentToolMask,
   type SubagentStreamEvent,
   type SessionSearchHit,
@@ -151,11 +150,8 @@ import type {
   ApprovalScope,
   BudgetExceededEvent,
   GoalState,
-  MergeRecord,
   SessionEvent,
   StructuredReview,
-  TaskHandoff,
-  Verdict,
 } from "codepunk-protocol";
 import { appendBuildDoctorCheck, inspectCliBuild } from "./build-info.ts";
 import {
@@ -164,52 +160,17 @@ import {
   recordRecentModel,
   toggleFavoriteModel,
 } from "./model-history.ts";
-import type { ResumeHint } from "./exit-hint.ts";
 import { matchSessionChoice } from "./session-resume.ts";
 import { openSubagentTranscript } from "./subagent-transcript.ts";
 import { renderStatusline } from "./statusline.ts";
+import type { BackgroundSubagent, TuiState } from "./tui/state.ts";
 
-export interface TuiState {
-  runtime: CodepunkRuntime | null;
-  context: ExtensionContext | null;
-  channel: TuiApprovalChannel;
-  lastRunId: string | null;
-  lastEvidence: number;
-  warningsShown: boolean;
-  modelSelected: boolean;
-  modelOnboardingShown?: boolean;
-  ready: boolean;
-  childHostArgv: readonly string[];
-  shuttingDown: boolean;
-  titleTimers?: NodeJS.Timeout[];
-  buildWatch?: NodeJS.Timeout | undefined;
-  subagents?: Map<string, BackgroundSubagent>;
-  backgroundTasks?: BackgroundTaskManager;
-  sideQueue?: SideTaskQueue;
-  sideQueueSessionId?: string;
-  modelPool?: SubagentModelPoolManager;
-  activeToolsBeforePreset?: string[];
-  /**
-   * Slash command names the Pi host will accept in this session. Pi's builtin
-   * table is not exported from the package root, and `pi.getCommands()` covers
-   * only extensions, prompts, and skills, so the accepted set is loaded from
-   * the installed host module at session start.
-   */
-  hostCommands: Set<string>;
-  replaceRuntime?: (target: TuiSessionTarget) => Promise<TuiRuntimeReplacement>;
-  /** Armed on quit; prints the resume command after Pi restores the terminal. */
-  resumeHint?: ResumeHint;
-}
-
-export interface TuiSessionTarget {
-  sessionId?: string;
-  newSession?: boolean;
-}
-
-export interface TuiRuntimeReplacement {
-  runtime: CodepunkRuntime;
-  context: ExtensionCommandContext;
-}
+export type {
+  BackgroundSubagent,
+  TuiRuntimeReplacement,
+  TuiSessionTarget,
+  TuiState,
+} from "./tui/state.ts";
 
 interface PiBuiltinSlashCommand {
   name: string;
@@ -291,34 +252,6 @@ async function persistPiDefaultModel(
 
 function isSlashCommand(text: string, name: string): boolean {
   return text === name || text.startsWith(`${name} `);
-}
-
-export interface BackgroundSubagent {
-  childSessionId: string;
-  prompt: string;
-  profile: string | null;
-  isolation: "shared" | "worktree";
-  startedAt: number;
-  status: "running" | "completed" | "failed" | "stopped";
-  result: SubagentHostResult | null;
-  error: string | null;
-  worktree: string | null;
-  transcriptPath: string | null;
-  streamTail: string;
-  lastTool: string | null;
-  lastStreamUpdate: number;
-  delivery: BackgroundSubagentDelivery | null;
-  controller: AbortController;
-  promise: Promise<void>;
-}
-
-interface BackgroundSubagentDelivery {
-  state: "signed" | "signed-incomplete" | "merged" | "discarded";
-  verdict: Verdict;
-  handoff?: TaskHandoff;
-  handoffPath?: string;
-  merge?: MergeRecord;
-  mergeRecordPath?: string;
 }
 
 interface Renderable {
