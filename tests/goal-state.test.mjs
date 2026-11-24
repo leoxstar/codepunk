@@ -218,7 +218,22 @@ test("a failed metadata write rolls back the goal event", async () => {
     await rm(store.paths.metaPath, { force: true });
     await mkdir(store.paths.metaPath);
 
-    await assert.rejects(() => controller.pause(), /EISDIR|ENOTDIR|directory/u);
+    await assert.rejects(
+      () => controller.pause(),
+      (error) => {
+        if (/EISDIR|ENOTDIR|directory/u.test(error.message)) {
+          return true;
+        }
+        // Windows reports a rename onto an existing directory as EPERM.
+        return (
+          process.platform === "win32" &&
+          error.code === "EPERM" &&
+          error.syscall === "rename" &&
+          /session-meta\.json/u.test(error.message)
+        );
+      },
+      "goal pause must fail closed when the session metadata cannot be written",
+    );
     assert.equal(goalModule.readGoalState(store.allEvents)?.status, "active");
     const lines = (await readFile(store.paths.logPath, "utf8"))
       .split("\n")
