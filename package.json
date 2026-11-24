@@ -20,8 +20,8 @@
     "verify": "pnpm run format:check && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.2",
-    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
     "@types/node": "22.19.1",
     "node-pty": "1.1.0",
     "prettier": "3.10.1",

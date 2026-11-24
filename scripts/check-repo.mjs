@@ -94,9 +94,9 @@ const PACKAGE_SPECS = [
     },
     external: {
       "@anthropic-ai/sandbox-runtime": "0.0.82",
-      "@earendil-works/pi-ai": "1.5.2",
-      "@earendil-works/pi-coding-agent": "1.5.2",
-      "@earendil-works/pi-mcp": "1.5.2",
+      "@earendil-works/pi-ai": "1.6.0",
+      "@earendil-works/pi-coding-agent": "1.6.0",
+      "@earendil-works/pi-mcp": "1.6.0",
     },
     internal: ["codepunk-protocol"],
   },
@@ -110,10 +110,10 @@ const PACKAGE_SPECS = [
     },
     external: {
       "@anthropic-ai/sandbox-runtime": "0.0.82",
-      "@earendil-works/pi-ai": "1.5.2",
-      "@earendil-works/pi-coding-agent": "1.5.2",
-      "@earendil-works/pi-mcp": "1.5.2",
-      "@earendil-works/pi-tui": "1.5.2",
+      "@earendil-works/pi-ai": "1.6.0",
+      "@earendil-works/pi-coding-agent": "1.6.0",
+      "@earendil-works/pi-mcp": "1.6.0",
+      "@earendil-works/pi-tui": "1.6.0",
     },
     internal: ["codepunk-core", "codepunk-protocol"],
     // Build-only tooling for this package. These are never imported by the
@@ -129,8 +129,8 @@ const PACKAGE_SPECS = [
 const PACKAGE_BY_NAME = new Map(PACKAGE_SPECS.map((spec) => [spec.name, spec]));
 
 const ROOT_DEV_DEPENDENCIES = {
-  "@earendil-works/pi-ai": "1.5.2",
-  "@earendil-works/pi-coding-agent": "1.5.2",
+  "@earendil-works/pi-ai": "1.6.0",
+  "@earendil-works/pi-coding-agent": "1.6.0",
   "@types/node": "22.19.1",
   "node-pty": "1.1.0",
   prettier: "3.10.1",
@@ -143,7 +143,7 @@ const REVIEWED_EXTERNAL_VERSIONS = new Map([
 ]);
 
 const REVIEWED_INSTALL_SCRIPTS = new Map([
-  ["@google/genai@2.21.0", "no-op preinstall; install scripts remain disabled"],
+  ["@google/genai@2.32.0", "no-op preinstall; install scripts remain disabled"],
   ["koffi@3.3.8", "native prebuild/build; install scripts remain disabled"],
   ["node-pty@1.1.0", "native prebuild/build; install scripts remain disabled"],
   ["protobufjs@7.6.6", "postinstall script; install scripts remain disabled"],
@@ -217,7 +217,7 @@ const CLI_SIZE_EXEMPTIONS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "942be58596962438573ccd4f81b8581b9b284dd35ba55b71e49cec0636e8d5ce";
+  "19720cd67c3e2d0a3335cf7b9f5095044f1d60d3433ae81578acd3862b173abd";
 
 const EXPECTED_CI_SHA256 =
   "c99f39055445cadcddebab6d8518edd4dfd49d758fa9ec8cf5be20a2b3ad70dc";
@@ -249,7 +249,7 @@ const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "0cdb147a052243de048e102a81c31481ca4c6561557a773924a37b27d5eed382";
+  "2981e34a98c5318f579c9b674088954c40b41017a3d88c6cb980d501891d87e7";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -1340,7 +1340,7 @@ async function checkDocumentationContract(root, add) {
   for (const requiredValue of [
     "`>=22.19.0`",
     "`12.18.0`",
-    "`1.5.2`",
+    "`1.6.0`",
     "`0.0.82`",
     "`1.3.27`",
     "`22.19.1`",
