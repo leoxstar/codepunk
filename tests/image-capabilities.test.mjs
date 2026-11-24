@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
@@ -196,7 +196,15 @@ test("image generation requires an adapter, policy, and evidence", async () => {
       evidence[0].prompt_sha256,
       digest(Buffer.from(base.prompt, "utf8")),
     );
-    assert.equal((await fs.stat(generated.path)).mode & 0o777, 0o600);
+    const generatedStat = await fs.stat(generated.path);
+    if (process.platform === "win32") {
+      // Windows does not model POSIX permission bits; stat reports 0o666 for
+      // ordinary files, so only existence and readability are guaranteed here.
+      assert.equal(generatedStat.isFile(), true);
+      await fs.access(generated.path, fsConstants.R_OK);
+    } else {
+      assert.equal(generatedStat.mode & 0o777, 0o600);
+    }
     const duplicate = await core.generateImage({
       ...base,
       appendEvidence(record) {
