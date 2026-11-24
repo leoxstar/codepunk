@@ -30,6 +30,12 @@ const { DiffView, diffViewLines } = await importSource(
 const { ApprovalCard } = await importSource(
   "packages/cli/src/tui/components/approval-card.ts",
 );
+const {
+  codepunkToolRendererResolver,
+  planRenderers,
+  searchRenderers,
+  todoRenderers,
+} = await importSource("packages/cli/src/tui/renderers/index.ts");
 
 const WIDTHS = [1, 2, 8, 12, 20, 40, 80, 120];
 const THEME = {
@@ -549,4 +555,303 @@ test("ApprovalCard keeps CJK, emoji, ANSI, and long argv within width", () => {
     assertWidthSafe(card.render(width), width);
     card.invalidate();
   }
+});
+
+function rendererContext(args, { argsComplete = true, isError = false } = {}) {
+  return {
+    args,
+    argsComplete,
+    cwd: "/workspace",
+    isError,
+    lastComponent: undefined,
+  };
+}
+
+function rendererResult(structuredContent, text = "", isError = false) {
+  return {
+    content: [{ type: "text", text }],
+    details: {},
+    structuredContent,
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+function plainRendererText(component, width = 120) {
+  return stripTerminalSequences(component.render(width).join("\n"));
+}
+
+test("Codepunk tool renderer resolver matches only search, plan, and todo", () => {
+  const resolver = codepunkToolRendererResolver();
+  const fallback = { renderCall: () => null };
+  for (const name of ["search", "plan", "todo"]) {
+    const renderers = resolver(name, () => {
+      throw new Error(`${name} must not delegate to the next resolver`);
+    });
+    assert.ok(renderers?.renderCall);
+    assert.ok(renderers?.renderResult);
+  }
+  let nextCalls = 0;
+  assert.equal(
+    resolver("bash", () => {
+      nextCalls += 1;
+      return fallback;
+    }),
+    fallback,
+  );
+  assert.equal(nextCalls, 1);
+});
+
+test("Codepunk tool renderers stay width-safe and summarize results", () => {
+  const cases = [
+    {
+      renderer: searchRenderers,
+      args: {
+        mode: "grep",
+        query: "中文🙂",
+        path: "src",
+        glob: "*.ts",
+        regex: true,
+      },
+      result: rendererResult({
+        output:
+          "/workspace/src/中文🙂.ts:12:first line\n/workspace/src/b.ts:3:second line\n",
+        empty_result: false,
+        truncated: true,
+      }),
+      call: /search · grep "中文🙂" in src \(\*\.ts\) regex/u,
+      resultText: /search · 2 matches · src\/中文🙂\.ts · truncated/u,
+    },
+    {
+      renderer: planRenderers,
+      args: {
+        plan: [
+          { step: "inspect the repository", status: "in_progress" },
+          { step: "implement the health check", status: "pending" },
+        ],
+      },
+      result: rendererResult({
+        sha256: `sha256:${"a".repeat(64)}`,
+        steps: [
+          { step: "inspect the repository", status: "completed" },
+          { step: "implement the health check", status: "in_progress" },
+        ],
+      }),
+      call: /plan · 2 steps · in progress: inspect the repository/u,
+      resultText: /plan · 2 steps · 1 completed · sha a{12}…/u,
+      absent: /implement the health check/u,
+    },
+    {
+      renderer: todoRenderers,
+      args: {
+        todos: [
+          { content: "inspect the repository", status: "in_progress" },
+          { content: "implement the health check", status: "pending" },
+        ],
+      },
+      result: rendererResult({
+        todos: [
+          { content: "inspect the repository", status: "completed" },
+          { content: "implement the health check", status: "in_progress" },
+        ],
+      }),
+      call: /todo · 2 items · in progress: inspect the repository/u,
+      resultText: /todo · 2 items · 1 in progress · 1 completed/u,
+    },
+  ];
+  for (const item of cases) {
+    const context = rendererContext(item.args);
+    const call = item.renderer.renderCall(item.args, THEME, context);
+    const result = item.renderer.renderResult(
+      item.result,
+      { expanded: false, isPartial: false },
+      THEME,
+      context,
+    );
+    for (const width of WIDTHS) {
+      assertWidthSafe(call.render(width), width);
+      assertWidthSafe(result.render(width), width);
+      call.invalidate();
+      result.invalidate();
+    }
+    assert.match(plainRendererText(call), item.call);
+    assert.match(plainRendererText(result), item.resultText);
+    if (item.absent !== undefined) {
+      assert.doesNotMatch(plainRendererText(result), item.absent);
+    }
+  }
+});
+
+test("Codepunk tool renderers cover streaming, errors, and empty states", () => {
+  assert.match(
+    plainRendererText(
+      searchRenderers.renderCall(
+        { mode: "grep" },
+        THEME,
+        rendererContext({ mode: "grep" }, { argsComplete: false }),
+      ),
+    ),
+    /search · grep "…" · …/u,
+  );
+  assert.match(
+    plainRendererText(
+      planRenderers.renderCall(
+        {},
+        THEME,
+        rendererContext({}, { argsComplete: false }),
+      ),
+    ),
+    /plan · …/u,
+  );
+  assert.match(
+    plainRendererText(
+      todoRenderers.renderCall(
+        {},
+        THEME,
+        rendererContext({}, { argsComplete: false }),
+      ),
+    ),
+    /todo · …/u,
+  );
+
+  const searchEmpty = searchRenderers.renderResult(
+    rendererResult({
+      output: "",
+      empty_result: true,
+    }),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ mode: "grep" }),
+  );
+  assert.match(plainRendererText(searchEmpty), /search · no matches/u);
+
+  const searchError = searchRenderers.renderResult(
+    rendererResult({}, "rg is not installed", true),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ mode: "grep" }, { isError: true }),
+  );
+  assert.match(
+    plainRendererText(searchError),
+    /search failed · rg is not installed/u,
+  );
+
+  const planError = planRenderers.renderResult(
+    rendererResult({}, "denied: invalid plan", true),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ plan: [] }, { isError: true }),
+  );
+  assert.match(
+    plainRendererText(planError),
+    /plan failed · denied: invalid plan/u,
+  );
+
+  const todoCleared = todoRenderers.renderResult(
+    rendererResult({ todos: [] }),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ todos: [] }),
+  );
+  assert.match(plainRendererText(todoCleared), /todo · cleared/u);
+});
+
+test("Codepunk tool renderers handle the host result shape", () => {
+  const hostResult = (text, details) => ({
+    content: [{ type: "text", text }],
+    details,
+  });
+  const search = searchRenderers.renderResult(
+    hostResult("f note.txt", { binary: null, executor: "node:fs" }),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ mode: "ls", query: "note", path: "." }),
+  );
+  assert.match(plainRendererText(search), /search · 1 entry · note\.txt/u);
+
+  const plan = planRenderers.renderResult(
+    hostResult(
+      "Plan:\n[>] inspect the repository\n[ ] implement the health check",
+      { sha256: `sha256:${"b".repeat(64)}`, steps: 2 },
+    ),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ plan: [] }),
+  );
+  assert.match(plainRendererText(plan), /plan · 2 steps · sha b{12}…/u);
+  assert.doesNotMatch(plainRendererText(plan), /implement the health check/u);
+
+  const todo = todoRenderers.renderResult(
+    hostResult(
+      "Todos:\n[>] inspect the repository\n[ ] implement the health check",
+      { sha256: `sha256:${"c".repeat(64)}`, items: 2 },
+    ),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ todos: [] }),
+  );
+  assert.match(
+    plainRendererText(todo),
+    /todo · 2 items · 1 in progress · 0 completed/u,
+  );
+});
+
+test("Codepunk search summary does not replay unbounded output", () => {
+  const output = [
+    `/workspace/src/${"long🙂".repeat(2_000)}.ts:1:${"x".repeat(5_000)}`,
+    `TAIL_MARKER_${"y".repeat(5_000)}`,
+  ].join("\n");
+  const component = searchRenderers.renderResult(
+    rendererResult({
+      output,
+      empty_result: false,
+      truncated: false,
+    }),
+    { expanded: false, isPartial: false },
+    THEME,
+    rendererContext({ mode: "grep" }),
+  );
+  const text = plainRendererText(component);
+  assert.match(text, /search · 1 match/u);
+  assert.doesNotMatch(text, /TAIL_MARKER/u);
+  assert.ok(component.render(40).length <= 8);
+});
+
+test("the TUI extension registers the Codepunk tool renderer resolver", async () => {
+  const { createTuiExtension } = await importSource("packages/cli/src/tui.ts");
+  const resolvers = [];
+  const pi = {
+    on() {
+      return () => {};
+    },
+    registerCommand() {},
+    registerShortcut() {},
+    registerToolRenderer(resolver) {
+      resolvers.push(resolver);
+    },
+    getCommands() {
+      return [];
+    },
+  };
+  const state = {
+    runtime: null,
+    context: null,
+    channel: { attach() {} },
+    lastRunId: null,
+    lastEvidence: 0,
+    warningsShown: false,
+    modelSelected: false,
+    ready: false,
+    shuttingDown: false,
+    hostCommands: new Set(),
+    childHostArgv: [],
+  };
+  const extension = createTuiExtension(state, { attach() {} });
+  await extension.factory(pi);
+  assert.equal(resolvers.length, 1);
+  const fallback = { renderCall: () => null };
+  assert.equal(
+    resolvers[0]("bash", () => fallback),
+    fallback,
+  );
+  assert.ok(resolvers[0]("search", () => fallback) !== fallback);
 });

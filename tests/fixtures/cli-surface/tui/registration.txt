@@ -5,6 +5,7 @@ on thinking_level_select
 on agent_start
 on agent_settled
 on session_shutdown
+registerToolRenderer
 registerCommand help	Show the Codepunk command list
 registerCommand init	Create or update AGENTS.md from repository evidence
 registerCommand diff	Show staged and unstaged working tree changes

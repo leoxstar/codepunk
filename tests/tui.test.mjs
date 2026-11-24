@@ -349,6 +349,126 @@ async function startPlanRoundModelServer() {
   };
 }
 
+async function startToolProjectionModelServer() {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      const body = JSON.parse(raw);
+      requests.push(body);
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      const send = (value) => {
+        response.write(`data: ${JSON.stringify(value)}\n\n`);
+      };
+      const toolResults = body.messages.filter(
+        (message) => message.role === "tool",
+      ).length;
+      const calls = [
+        {
+          id: "call-search",
+          name: "search",
+          arguments: JSON.stringify({ mode: "ls", query: "note", path: "." }),
+        },
+        {
+          id: "call-todo",
+          name: "todo",
+          arguments: JSON.stringify({
+            todos: [
+              { content: "inspect the repository", status: "in_progress" },
+              { content: "implement the health check", status: "pending" },
+            ],
+          }),
+        },
+        {
+          id: "call-plan",
+          name: "plan",
+          arguments: JSON.stringify({
+            plan: [
+              { step: "inspect the repository", status: "in_progress" },
+              { step: "implement the health check", status: "pending" },
+            ],
+          }),
+        },
+      ];
+      const call = calls[toolResults];
+      if (call !== undefined) {
+        send({
+          id: "projection-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: call.id,
+                    type: "function",
+                    function: {
+                      name: call.name,
+                      arguments: call.arguments,
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "projection-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        });
+      } else {
+        send({
+          id: "projection-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "TOOLS_PROJECTED" },
+              finish_reason: null,
+            },
+          ],
+        });
+        send({
+          id: "projection-response",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "local-test",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        });
+      }
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address);
+  return {
+    server,
+    requests,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  };
+}
+
 async function startWriteModelServer({ path: targetPath, content }) {
   const requests = [];
   const server = http.createServer((request, response) => {
@@ -636,6 +756,7 @@ test("image input records failure instead of completion when dispatch fails", as
         commands.set(name, command);
       },
       registerShortcut() {},
+      registerToolRenderer() {},
       getCommands() {
         return [];
       },
@@ -746,6 +867,7 @@ test("image input reports evidence failure after a successful dispatch", async (
         commands.set(name, command);
       },
       registerShortcut() {},
+      registerToolRenderer() {},
       getCommands() {
         return [];
       },
@@ -2094,6 +2216,12 @@ test("a real pty plans a requested task in plan mode", async () => {
         "Plan mode: planning",
       );
       await waitForOutput(session, "PLAN_RECORDED", "plan request");
+      const planOutput = stripAnsi(session.output());
+      assert.match(
+        planOutput,
+        /plan · 2 steps · in progress: inspect the repository/u,
+      );
+      assert.match(planOutput, /plan · 2 steps · sha [0-9a-f]{12}…/u);
       await runCommandAfter(session, "/plan", "[>] inspect the repository");
       await runCommandAfter(
         session,
@@ -3821,6 +3949,90 @@ test("/init refuses to overwrite an existing root instruction file", async () =>
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+    }
+  });
+});
+
+test("a real pty projects search, todo, and plan tool output", async () => {
+  await withTempDirectory("codepunk-tui-tool-projection-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(project, "note.txt"), "projection target\n");
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const model = await startToolProjectionModelServer();
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          local: {
+            name: "Local",
+            baseUrl: model.baseUrl,
+            api: "openai-completions",
+            apiKey: "test",
+            models: [
+              {
+                id: "local-test",
+                name: "Local Test",
+                api: "openai-completions",
+                contextWindow: 128000,
+                maxTokens: 1024,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(
+      process.execPath,
+      [cli, "--model", "local/local-test"],
+      {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    try {
+      await waitForOutput(session, "codepunk · local/local-test", "startup");
+      session.child.stdin.write("project the tools\r");
+      await waitForOutput(session, "TOOLS_PROJECTED", "tool projections");
+      const output = stripAnsi(session.output());
+      assert.match(output, /search · ls \. "note"/u);
+      assert.match(output, /search · 1 entry · note\.txt/u);
+      assert.match(
+        output,
+        /todo · 2 items · in progress: inspect the repository/u,
+      );
+      assert.match(output, /todo · 2 items · 1 in progress · 0 completed/u);
+      assert.match(
+        output,
+        /plan · 2 steps · in progress: inspect the repository/u,
+      );
+      assert.match(output, /plan · 2 steps · sha [0-9a-f]{12}…/u);
+      assert.doesNotMatch(output, /implement the health check/u);
+
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+      model.server.close();
     }
   });
 });

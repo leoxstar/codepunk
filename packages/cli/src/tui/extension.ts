@@ -54,6 +54,7 @@ import {
 } from "./commands/project.ts";
 import type { TuiCommand } from "./define-command.ts";
 import { registerTuiEvents } from "./events.ts";
+import { codepunkToolRendererResolver } from "./renderers/index.ts";
 import type { TuiState } from "./state.ts";
 
 const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
@@ -111,6 +112,7 @@ export function createTuiExtension(
     hidden: true,
     factory: (pi) => {
       registerTuiEvents(pi, state, channel);
+      pi.registerToolRenderer(codepunkToolRendererResolver());
       const commands = COMMAND_FACTORIES.map((factory) => factory(state));
       for (const command of commands) {
         pi.registerCommand(command.name, {
