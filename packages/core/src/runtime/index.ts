@@ -111,6 +111,7 @@ import {
 } from "../sandbox/index.ts";
 import {
   SessionStore,
+  isBenignTailEventKind,
   type SessionStore as SessionStoreType,
 } from "../session/index.ts";
 import {
@@ -1106,9 +1107,22 @@ async function createRuntimeInner(
         }`,
       );
     });
-    if (resumed.uncommittedEvents.length > 0) {
+    if (
+      resumed.uncommittedEvents.some(
+        (event) => !isBenignTailEventKind(event.kind),
+      )
+    ) {
       throw new Error(
         `session has ${resumed.uncommittedEvents.length} uncommitted event(s) after the last agent-state snapshot; refusing to resume with a stale model transcript. Export the session log and start a new session.`,
+      );
+    }
+    if (
+      resumed.uncommittedEvents.length > 0 &&
+      (resumed.state.entries === undefined ||
+        resumed.state.leaf_id === undefined)
+    ) {
+      throw new Error(
+        "session has benign uncommitted events but the agent-state entry tree is incomplete; refusing to resume without a complete Pi transcript",
       );
     }
     state = resumed.state;

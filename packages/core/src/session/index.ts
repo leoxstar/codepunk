@@ -126,6 +126,19 @@ export interface ResumeResult {
   uncommittedEvents: SessionEvent[];
 }
 
+const BENIGN_TAIL_EVENT_KINDS = new Set([
+  "context/loaded",
+  "autonomy/profile",
+  "autonomy/revoked",
+  "trust/decision",
+  "memory/write",
+  "verdict/sign_off",
+]);
+
+export function isBenignTailEventKind(kind: string): boolean {
+  return BENIGN_TAIL_EVENT_KINDS.has(kind);
+}
+
 export interface SessionIndexEntry {
   sessionId: string;
   path: string;
@@ -206,6 +219,18 @@ function unsupportedEventKind(value: unknown): string | null {
   return typeof kind === "string" && !SESSION_EVENT_KINDS.has(kind)
     ? kind
     : null;
+}
+
+function contiguityIssue(
+  events: readonly SessionEvent[],
+): { actual: number; expected: number } | null {
+  for (let index = 0; index < events.length; index += 1) {
+    const expected = index + 1;
+    if (events[index]!.seq !== expected) {
+      return { actual: events[index]!.seq, expected };
+    }
+  }
+  return null;
 }
 
 function parseSessionLog(content: string): {
@@ -676,6 +701,10 @@ export class SessionStore {
     return this.events.at(-1)?.seq ?? 0;
   }
 
+  hasContiguousEventSeqs(): boolean {
+    return contiguityIssue(this.events) === null;
+  }
+
   get allEvents(): readonly SessionEvent[] {
     return this.events;
   }
@@ -1060,6 +1089,52 @@ export class SessionStore {
       committedEvents,
       uncommittedEvents,
     };
+  }
+
+  async refreshFromDisk(): Promise<void> {
+    if (this.writer === null) {
+      throw new SessionLockedError("session refresh requires the writer lock");
+    }
+    const loaded = await readSessionLog(this.paths.logPath);
+    if (
+      loaded.header.id !== this.sessionId ||
+      loaded.header.project_id !== this.projectId ||
+      loaded.header.cwd !== this.header.cwd
+    ) {
+      throw new SessionCorruptError(
+        "session header changed while acquiring the writer lock",
+      );
+    }
+    const issue = contiguityIssue(loaded.events);
+    if (issue !== null) {
+      throw new SessionCorruptError(
+        `session event seq ${issue.actual} is not contiguous; expected ${issue.expected}`,
+      );
+    }
+    const metaValue = await readJsonFile<unknown>(this.paths.metaPath);
+    if (metaValue === null) {
+      throw new SessionCorruptError("session meta is missing");
+    }
+    const validation = validateSchema(SessionMetaSchema, metaValue);
+    if (!validation.ok) {
+      throw new SessionCorruptError("session meta is invalid");
+    }
+    const meta = metaValue as SessionMeta;
+    const lastSeq = loaded.events.at(-1)?.seq ?? 0;
+    if (meta.log_seq > lastSeq) {
+      throw new SessionCorruptError(
+        "session meta log_seq is ahead of the session log",
+      );
+    }
+    if (meta.state_covers_seq > lastSeq) {
+      throw new SessionCorruptError(
+        "session meta state_covers_seq is ahead of the session log",
+      );
+    }
+    this.events = loaded.events;
+    // A crash can leave log_seq behind the durable log. Normalize it in memory;
+    // the next successful append or snapshot writes the corrected value.
+    this.meta = { ...meta, log_seq: lastSeq };
   }
 
   async writeMeta(meta: Partial<SessionMeta>): Promise<void> {

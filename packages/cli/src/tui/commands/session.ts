@@ -2,6 +2,7 @@ import {
   LOCK_LEASE_MS,
   SessionStore,
   forkLiveSession,
+  isBenignTailEventKind,
   listProjectSessions,
   readLock,
   searchProjectSessions,
@@ -43,9 +44,29 @@ export async function sessionResumeIssue(
         ? null
         : `session ${sessionId} has events but no agent-state.json`;
     }
+    if (!store.hasContiguousEventSeqs()) {
+      return `session ${sessionId} event log seqs are not contiguous`;
+    }
+    if (
+      store.metadata.log_seq > store.lastSeq ||
+      store.metadata.state_covers_seq > store.lastSeq
+    ) {
+      return `session ${sessionId} metadata is ahead of its event log`;
+    }
     const resumed = await store.resume();
-    if (resumed.uncommittedEvents.length > 0) {
+    if (
+      resumed.uncommittedEvents.some(
+        (event) => !isBenignTailEventKind(event.kind),
+      )
+    ) {
       return `session ${sessionId} has ${resumed.uncommittedEvents.length} uncommitted event(s) after the last agent-state snapshot`;
+    }
+    if (
+      resumed.uncommittedEvents.length > 0 &&
+      (resumed.state.entries === undefined ||
+        resumed.state.leaf_id === undefined)
+    ) {
+      return `session ${sessionId} has benign uncommitted events but the agent-state entry tree is incomplete`;
     }
     return null;
   } catch (error) {

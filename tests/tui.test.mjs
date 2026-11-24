@@ -1050,6 +1050,59 @@ test("resume preflight rejects a session held by a live writer", async () => {
   });
 });
 
+test("resume preflight accepts benign tails and rejects semantic tails", async () => {
+  const { sessionResumeIssue } = await importSource("packages/cli/src/tui.ts");
+  await withTempDirectory("codepunk-resume-tail-", async (root) => {
+    const projectRoot = path.join(root, "project");
+    await fs.mkdir(path.join(projectRoot, ".git"), { recursive: true });
+    const home = path.join(root, "home");
+    const projectId = "resume-tail";
+    const store = await core.SessionStore.create({
+      rootDir: home,
+      cwd: projectRoot,
+      projectRoot,
+      projectId,
+      sessionId: core.createUlid(),
+    });
+    const writer = await store.acquireWriter();
+    await store.saveAgentState(
+      { type: "session", id: store.sessionId, cwd: projectRoot },
+      [],
+      { entries: [], leafId: null },
+    );
+    await store.append("context/loaded", {
+      sources: [],
+      warnings: [],
+      total_bytes: 0,
+      truncated: false,
+    });
+    await writer.release();
+    const runtime = {
+      paths: { home, cwd: projectRoot, deliveryRoot: projectRoot, projectId },
+    };
+    assert.equal(await sessionResumeIssue(runtime, store.sessionId), null);
+
+    const semanticWriter = await store.acquireWriter();
+    await store.append("approval/answer", {
+      request_id: "request-1",
+      answer: "deny",
+      channel: "test",
+      channel_id: "channel-1",
+      nonce_sha256: `sha256:${"0".repeat(64)}`,
+      worker_id: "worker-1",
+      session_id: store.sessionId,
+      tool_call_id: "tool-call-1",
+      answered_at: "2026-11-24T00:00:00.000Z",
+    });
+    await semanticWriter.release();
+    const issue = await sessionResumeIssue(runtime, store.sessionId);
+    assert.match(
+      issue ?? "",
+      /2 uncommitted event\(s\) after the last agent-state snapshot/u,
+    );
+  });
+});
+
 test("the Pi builtin command table is loaded from the installed host", async () => {
   const { loadPiBuiltinSlashCommands } = await importSource(
     "packages/cli/src/tui.ts",

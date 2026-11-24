@@ -234,6 +234,7 @@ export {
   SessionUnsupportedEventError,
   SessionNotFoundError,
   SessionStore,
+  isBenignTailEventKind,
   listSessionIndex,
   readLock,
   readSessionSnapshot,

@@ -64,7 +64,11 @@ import {
   summarizeModelUsage,
   summarizeSessionModelUsage,
 } from "../../model/index.ts";
-import { type SessionStore, type SessionWriter } from "../../session/index.ts";
+import {
+  isBenignTailEventKind,
+  type SessionStore,
+  type SessionWriter,
+} from "../../session/index.ts";
 import { GoalCorruptError, goalModelContext } from "../../session/goal.ts";
 import { normalizeSessionTitle } from "../../session/ops.ts";
 import {
@@ -1667,6 +1671,37 @@ export async function createPiHost(
   try {
     if (store !== null) {
       writer = await store.acquireWriter();
+      await store.refreshFromDisk();
+    }
+    let recoverBenignTail = false;
+    if (
+      store !== null &&
+      options.restore !== undefined &&
+      options.restore !== null
+    ) {
+      const coveredSeq = store.metadata.state_covers_seq;
+      const lastSeq = store.lastSeq;
+      if (coveredSeq > lastSeq) {
+        throw new HostIsolationError(
+          "benign tail recovery found a snapshot ahead of the session log",
+        );
+      }
+      if (coveredSeq < lastSeq) {
+        const recoveryEvents = store.allEvents.filter(
+          (event) => event.seq > coveredSeq,
+        );
+        if (
+          recoveryEvents.length === 0 ||
+          recoveryEvents.some((event) => !isBenignTailEventKind(event.kind))
+        ) {
+          throw new HostIsolationError(
+            "benign tail recovery cannot verify the session snapshot coverage",
+          );
+        }
+        recoverBenignTail = true;
+      }
+    }
+    if (store !== null) {
       await appendEvent("context/loaded", {
         sources: context.sources,
         warnings,
@@ -1996,8 +2031,20 @@ export async function createPiHost(
       },
     });
     validate();
-    if (restored?.migratedHeaderId === true && store !== null) {
+    if (
+      store !== null &&
+      (recoverBenignTail || restored?.migratedHeaderId === true)
+    ) {
+      await eventAppendTail;
       await saveHostAgentState();
+      if (
+        recoverBenignTail &&
+        store.metadata.state_covers_seq !== store.metadata.log_seq
+      ) {
+        throw new HostIsolationError(
+          "benign tail recovery did not cover the current session log",
+        );
+      }
     }
 
     const wrappedToolNames = wrapped.map((definition) => definition.name);
