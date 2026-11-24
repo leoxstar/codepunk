@@ -4,10 +4,15 @@ import {
   runSideTask,
   showBackgroundTasks,
 } from "../format/background.ts";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { notify } from "../format/notify.ts";
 import { listPresets, usePreset } from "../format/presets.ts";
 import { recapRange, formatRecap } from "../format/recap.ts";
-import { runSubagent, manageSubagents } from "../format/subagents.ts";
+import {
+  formatSubagents,
+  runSubagent,
+  manageSubagents,
+} from "../format/subagents.ts";
 import { createSessionRecap } from "codepunk-core";
 import type { TuiCommand } from "../define-command.ts";
 import { commandContext } from "../command-context.ts";
@@ -96,9 +101,39 @@ export function agentsCommand(state: TuiState): TuiCommand {
     name: "agents",
     description: "Review, sign, merge, or discard background subagents",
     handler: commandContext(state, async (runtime, context, args) => {
+      if (args.trim().length === 0) {
+        await showAgentsTable(state, context);
+        return;
+      }
       await manageSubagents(state, runtime, context, args);
     }),
   });
+}
+
+async function showAgentsTable(
+  state: TuiState,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  try {
+    const [{ createTableScreen }, { agentsTableOptions }] = await Promise.all([
+      import("../components/table-screen.ts"),
+      import("../components/agents-table.ts"),
+    ]);
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createTableScreen(
+        {
+          title: "Background subagents",
+          table: agentsTableOptions(state),
+          footer: "esc close",
+        },
+        theme,
+        keybindings,
+        done,
+      ),
+    );
+  } catch {
+    context.ui.notify(formatSubagents(state), "info");
+  }
 }
 
 export function psCommand(state: TuiState): TuiCommand {

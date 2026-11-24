@@ -1,11 +1,15 @@
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import {
-  truncateToWidth,
-  visibleWidth,
-  type Component,
-} from "@earendil-works/pi-tui";
+  BORDERED_MIN_WIDTH,
+  frameLines,
+  isCloseInput,
+  type PanelKeybindings,
+  type PanelTheme,
+  type PanelTone,
+} from "./frame.ts";
 import { TextBlock } from "./text.ts";
 
-export type PanelTone = "default" | "muted" | "warning" | "error";
+export type { PanelKeybindings, PanelTheme, PanelTone } from "./frame.ts";
 
 export interface PanelSection {
   readonly label: string;
@@ -17,18 +21,6 @@ export interface PanelOptions {
   readonly title: string;
   readonly sections: readonly PanelSection[];
   readonly footer?: string;
-}
-
-export interface PanelTheme {
-  bold(text: string): string;
-  fg(
-    color: "text" | "muted" | "warning" | "error" | "accent" | "border",
-    text: string,
-  ): string;
-}
-
-export interface PanelKeybindings {
-  matches(data: string, keybinding: "tui.select.cancel"): boolean;
 }
 
 const TONE_COLOR: Record<PanelTone, "text" | "muted" | "warning" | "error"> = {
@@ -71,17 +63,24 @@ export class Panel implements Component {
     if (this.cachedWidth === safeWidth) {
       return this.cachedLines;
     }
-    const rendered =
-      safeWidth < 12
-        ? this.renderNarrow(safeWidth)
-        : this.renderBordered(safeWidth);
+    const rendered = frameLines(
+      {
+        title: this.options.title,
+        body: this.bodyLines(safeWidth),
+        ...(this.options.footer === undefined
+          ? {}
+          : { footer: this.options.footer }),
+      },
+      safeWidth,
+      this.theme,
+    );
     this.cachedWidth = safeWidth;
     this.cachedLines = rendered;
     return rendered;
   }
 
   handleInput(data: string): void {
-    if (this.keybindings.matches(data, "tui.select.cancel") || data === "q") {
+    if (isCloseInput(data, this.keybindings)) {
       this.onClose();
     }
   }
@@ -94,107 +93,25 @@ export class Panel implements Component {
     }
   }
 
-  private renderBordered(width: number): string[] {
-    const lines: string[] = [this.topBorder(width)];
-    this.options.sections.forEach((section, index) => {
-      if (index > 0) {
-        lines.push(this.frameLine("", width));
-      }
-      lines.push(
-        this.frameLine(
-          this.theme.bold(this.theme.fg("accent", section.label)),
-          width,
-        ),
-      );
+  private bodyLines(width: number): string[] {
+    const inner = Math.max(1, width - (width < BORDERED_MIN_WIDTH ? 2 : 4));
+    const lines: string[] = [];
+    for (const [index, section] of this.options.sections.entries()) {
+      lines.push(this.theme.bold(this.theme.fg("accent", section.label)));
       const block = this.blocks[index];
       if (block === undefined) {
-        return;
+        continue;
       }
-      const content = block.render(Math.max(1, width - 4));
+      const content = block.render(inner);
       if (
         content.length === 0 ||
         content.every((line) => visibleWidth(line) === 0)
       ) {
-        lines.push(this.frameLine(this.theme.fg("muted", "(none)"), width));
-        return;
+        lines.push(this.theme.fg("muted", "(none)"));
+        continue;
       }
-      for (const line of content) {
-        lines.push(this.frameLine(line, width));
-      }
-    });
-    if (this.options.footer !== undefined) {
-      lines.push(this.divider(width));
-      lines.push(
-        this.frameLine(this.theme.fg("muted", this.options.footer), width),
-      );
+      lines.push(...content);
     }
-    lines.push(this.bottomBorder(width));
     return lines;
-  }
-
-  private renderNarrow(width: number): string[] {
-    const lines: string[] = [
-      truncateToWidth(
-        this.theme.bold(this.theme.fg("accent", this.options.title)),
-        width,
-      ),
-    ];
-    this.options.sections.forEach((section, index) => {
-      if (index > 0) {
-        lines.push("");
-      }
-      lines.push(
-        truncateToWidth(
-          this.theme.bold(this.theme.fg("accent", section.label)),
-          width,
-        ),
-      );
-      const block = this.blocks[index];
-      if (block === undefined) {
-        return;
-      }
-      const content = block.render(Math.max(1, width - 2));
-      if (
-        content.length === 0 ||
-        content.every((line) => visibleWidth(line) === 0)
-      ) {
-        lines.push(truncateToWidth(this.theme.fg("muted", "  (none)"), width));
-        return;
-      }
-      for (const line of content) {
-        lines.push(truncateToWidth(`  ${line}`, width));
-      }
-    });
-    if (this.options.footer !== undefined) {
-      lines.push("");
-      lines.push(
-        truncateToWidth(this.theme.fg("muted", this.options.footer), width),
-      );
-    }
-    return lines.map((line) => truncateToWidth(line, width));
-  }
-
-  private topBorder(width: number): string {
-    const label = truncateToWidth(
-      `─ ${this.options.title} `,
-      Math.max(1, width - 2),
-      "…",
-    );
-    const fill = Math.max(0, width - 2 - visibleWidth(label));
-    return this.theme.fg("border", `┌${label}${"─".repeat(fill)}┐`);
-  }
-
-  private divider(width: number): string {
-    return this.theme.fg("border", `├${"─".repeat(Math.max(0, width - 2))}┤`);
-  }
-
-  private bottomBorder(width: number): string {
-    return this.theme.fg("border", `└${"─".repeat(Math.max(0, width - 2))}┘`);
-  }
-
-  private frameLine(content: string, width: number): string {
-    const inner = Math.max(1, width - 4);
-    const body = truncateToWidth(content, inner, "…", true);
-    return `${this.theme.fg("border", "│")} ${body} ${this.theme.fg("border", "│")}`;
   }
 }

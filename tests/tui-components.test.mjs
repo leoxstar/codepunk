@@ -18,6 +18,12 @@ const { TextBlock } = await importSource(
 const { Panel } = await importSource(
   "packages/cli/src/tui/components/panel.ts",
 );
+const { Table } = await importSource(
+  "packages/cli/src/tui/components/table.ts",
+);
+const { TableScreen } = await importSource(
+  "packages/cli/src/tui/components/table-screen.ts",
+);
 
 const WIDTHS = [1, 2, 8, 12, 20, 40, 80, 120];
 const THEME = {
@@ -149,4 +155,122 @@ test("Panel output is stable across invalidate and width changes", () => {
   assert.deepEqual(panel.render(40), first);
   assertWidthSafe(panel.render(8), 8);
   assert.deepEqual(panel.render(40), first);
+});
+
+test("Table renders CJK, emoji, ANSI, and long cells within every width", () => {
+  const table = new Table({
+    columns: [
+      { label: "Agent", minWidth: 6, maxWidth: 24 },
+      { label: "Session", minWidth: 8, maxWidth: 20 },
+      { label: "Status", minWidth: 9, maxWidth: 22 },
+      { label: "Next", minWidth: 12, maxWidth: 48 },
+    ],
+    rows: [
+      [
+        "reviewer · worktree",
+        "01a20b77-4998-70f8-a3d8-05fb196066a8",
+        "completed · merged",
+        `/agents review ${"x".repeat(120)}`,
+      ],
+      [
+        "中文🙂/非常长的代理名",
+        "\u001b[31mred-session\u001b[0m",
+        "running",
+        "路径/🙂/下一 步 ".repeat(10),
+      ],
+    ],
+  });
+  for (const width of WIDTHS) {
+    assertWidthSafe(table.render(width), width);
+    table.invalidate();
+  }
+  assert.match(table.render(60).join("\n"), /AGENT/u);
+  assert.match(table.render(60).join("\n"), /SESSION/u);
+});
+
+test("Table renders a width-safe empty state", () => {
+  const table = new Table({
+    columns: [{ label: "ID" }, { label: "ARGV" }],
+    rows: [],
+    emptyText:
+      'No scoped rules. Choose "Always allow this exact command" on an approval to create one.',
+  });
+  for (const width of WIDTHS) {
+    const lines = table.render(width);
+    assertWidthSafe(lines, width);
+    assert.ok(lines.length > 0);
+    table.invalidate();
+  }
+  assert.match(table.render(40).join("\n"), /No scoped rules/u);
+});
+
+test("Table falls back to a label list when the terminal is too narrow", () => {
+  const table = new Table({
+    columns: [
+      { label: "ID" },
+      { label: "ARGV" },
+      { label: "CWD" },
+      { label: "HASH" },
+    ],
+    rows: [["rule-1", "touch probe.txt", "/workspace", "abc123def456"]],
+  });
+  const lines = table.render(10).map(stripTerminalSequences);
+  assertWidthSafe(lines, 10);
+  assert.ok(lines.some((line) => line.startsWith("id:")));
+  assert.ok(lines.some((line) => line.startsWith("argv:")));
+  assert.ok(!lines.some((line) => line.includes("┼")));
+});
+
+test("Table shrinks maxWidth columns and aligns a right column", () => {
+  const table = new Table({
+    columns: [
+      { label: "ID", minWidth: 6, maxWidth: 10 },
+      { label: "ARGV", minWidth: 10, maxWidth: 16 },
+      { label: "HASH", minWidth: 8, maxWidth: 12, align: "right" },
+    ],
+    rows: [
+      [
+        "rule-with-a-very-long-id",
+        "touch a-very-long-argument.txt",
+        "abc123def456",
+      ],
+    ],
+  });
+  const lines = table.render(40).map(stripTerminalSequences);
+  assertWidthSafe(lines, 40);
+  assert.ok(lines.some((line) => /abc123def456$/u.test(line)));
+  assert.ok(lines.some((line) => line.includes("…")));
+});
+
+test("TableScreen renders a title, footer, and closes on escape or q", () => {
+  let closed = 0;
+  const screen = new TableScreen(
+    {
+      title: "Background subagents",
+      table: {
+        columns: [{ label: "Agent" }, { label: "Status" }],
+        rows: [["reviewer", "running"]],
+      },
+      footer: "esc close",
+    },
+    THEME,
+    KEYBINDINGS,
+    () => {
+      closed += 1;
+    },
+  );
+  for (const width of WIDTHS) {
+    assertWidthSafe(screen.render(width), width);
+    screen.invalidate();
+  }
+  const text = stripTerminalSequences(screen.render(60).join("\n"));
+  assert.match(text, /Background subagents/u);
+  assert.match(text, /esc close/u);
+  assert.doesNotMatch(text, /\bpi\b|π/iu);
+  screen.handleInput("x");
+  assert.equal(closed, 0);
+  screen.handleInput("\u001b");
+  assert.equal(closed, 1);
+  screen.handleInput("q");
+  assert.equal(closed, 2);
 });

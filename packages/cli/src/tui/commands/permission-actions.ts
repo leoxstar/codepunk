@@ -11,6 +11,7 @@ import {
   type CodepunkRuntime,
   type FilesystemMode,
   type PermissionProfile,
+  type ScopedRule,
 } from "codepunk-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -273,6 +274,65 @@ export async function scopedRulesSummary(
   }
 }
 
+async function showPermissionPanel(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<boolean> {
+  try {
+    const { createPermissionPanel } =
+      await import("../components/permission-panel.ts");
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createPermissionPanel(runtime, theme, keybindings, done),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function showScopedRulesTable(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<boolean> {
+  let view: { filePath: string | null; rules: readonly ScopedRule[] };
+  const filePath = runtime.config.autonomy.scoped_rules;
+  if (filePath === null) {
+    view = { filePath: null, rules: [] };
+  } else {
+    try {
+      const loaded = await loadScopedRules(filePath, runtime.paths);
+      view = { filePath: loaded.path, rules: loaded.rules };
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const [
+      { createTableScreen },
+      { scopedRulesTableOptions, scopedRulesTitle },
+    ] = await Promise.all([
+      import("../components/table-screen.ts"),
+      import("../components/scoped-rules-table.ts"),
+    ]);
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createTableScreen(
+        {
+          title: scopedRulesTitle(view, runtime.autonomy.profile),
+          table: scopedRulesTableOptions(view),
+          footer: "esc close",
+          ...(view.filePath === null ? {} : { note: `file: ${view.filePath}` }),
+        },
+        theme,
+        keybindings,
+        done,
+      ),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function explainCommandPolicy(
   runtime: CodepunkRuntime,
   command: string,
@@ -331,12 +391,16 @@ export async function configurePermissions(
     return;
   }
   if (argument.length === 0) {
-    context.ui.notify(permissionSummary(runtime), "info");
+    if (!(await showPermissionPanel(runtime, context))) {
+      context.ui.notify(permissionSummary(runtime), "info");
+    }
     return;
   }
   const trimmed = argument.trim();
   if (trimmed === "rules") {
-    context.ui.notify(await scopedRulesSummary(runtime), "info");
+    if (!(await showScopedRulesTable(runtime, context))) {
+      context.ui.notify(await scopedRulesSummary(runtime), "info");
+    }
     return;
   }
   if (trimmed === "why" || trimmed.startsWith("why ")) {

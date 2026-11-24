@@ -1493,6 +1493,11 @@ async function runCommandAfter(session, command, marker) {
   await waitForQuiet(session, 250);
 }
 
+async function closeOverlay(session) {
+  session.child.stdin.write("\u001b");
+  await waitForQuiet(session, 250);
+}
+
 async function waitFor(predicate, label, timeoutMs = 20_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -3583,9 +3588,14 @@ test("a real pty reloads config in place and preserves state on invalid input", 
       const permissionsMark = session.output().length;
       await runCommandAfter(session, "/permissions", "approvals: deny");
       const permissions = session.output().slice(permissionsMark);
+      assert.match(permissions, /codepunk permissions/u);
+      assert.match(permissions, /Profile/u);
+      assert.match(permissions, /Approvals/u);
+      assert.match(permissions, /esc close/u);
       assert.match(permissions, /autonomy: read-only/u);
       assert.match(permissions, /current shell: explicit-unsandboxed/u);
       assert.match(permissions, /next session sandbox: required/u);
+      await closeOverlay(session);
 
       await fs.writeFile(configPath, '[approval]\nmode = "not-a-mode"\n');
       const invalidMark = session.output().length;
@@ -3601,6 +3611,7 @@ test("a real pty reloads config in place and preserves state on invalid input", 
         session.output().slice(preservedMark),
         /autonomy: read-only/u,
       );
+      await closeOverlay(session);
 
       const sessionsBeforeQuit = (
         await fs.readdir(home, { recursive: true })
@@ -4661,6 +4672,10 @@ test(
           first.output().slice(rulesMark),
           /touch persisted-exact\.txt/u,
         );
+        assert.match(first.output().slice(rulesMark), /ARGV/u);
+        assert.match(first.output().slice(rulesMark), /HASH/u);
+        assert.match(first.output().slice(rulesMark), /esc close/u);
+        await closeOverlay(first);
         const restoreMark = first.output().length;
         first.child.stdin.write("/permissions autonomy scoped\r");
         await waitForOutputAfter(
@@ -5523,11 +5538,28 @@ test("a real pty shows and persists permission modes", async () => {
       await waitForOutput(session, "codepunk · auto/auto", "startup");
       const summaryMark = session.output().length;
       await runCommandAfter(session, "/permissions", "profile: custom");
+      assert.match(
+        session.output().slice(summaryMark),
+        /codepunk permissions/u,
+      );
+      assert.match(session.output().slice(summaryMark), /Profile/u);
+      assert.match(session.output().slice(summaryMark), /Approvals/u);
+      assert.match(session.output().slice(summaryMark), /esc close/u);
       assert.match(session.output().slice(summaryMark), /approvals: ask/u);
       assert.match(
         session.output().slice(summaryMark),
         /current shell: explicit-unsandboxed/u,
       );
+      await closeOverlay(session);
+      const emptyRulesMark = session.output().length;
+      await runCommandAfter(
+        session,
+        "/permissions rules",
+        "Scoped rules: none",
+      );
+      assert.match(session.output().slice(emptyRulesMark), /No scoped rules/u);
+      assert.match(session.output().slice(emptyRulesMark), /esc close/u);
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/permissions reviewer",
@@ -5629,19 +5661,25 @@ test("a real pty shows and persists permission modes", async () => {
       assert.match(profiled, /mode = "ask"/u);
       assert.match(profiled, /profile = "read-only"/u);
       assert.match(profiled, /mode = "required"/u);
+      const finalPermissionsMark = session.output().length;
       await runCommandAfter(session, "/permissions", "profile: read-only");
       assert.match(
-        session.output().slice(session.output().lastIndexOf("Permissions")),
+        session.output().slice(finalPermissionsMark),
         /autonomy: read-only/u,
       );
       assert.match(
-        session.output().slice(session.output().lastIndexOf("Permissions")),
+        session.output().slice(finalPermissionsMark),
         /current shell: explicit-unsandboxed/u,
       );
       assert.match(
-        session.output().slice(session.output().lastIndexOf("Permissions")),
+        session.output().slice(finalPermissionsMark),
         /next session sandbox: required/u,
       );
+      assert.match(
+        session.output().slice(finalPermissionsMark),
+        /codepunk permissions/u,
+      );
+      await closeOverlay(session);
       assert.match(
         session.output(),
         /permissions read-only · trust trusted · shell explicit-unsandboxed/u,
@@ -5792,6 +5830,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "No memory records matched.",
       );
       await runCommandAfter(session, "/permissions", "approvals: ask");
+      await closeOverlay(session);
       await runCommandAfter(session, "/model", "No authenticated models.");
       assert.match(session.output(), /Add a provider first:/u);
       assert.match(session.output(), /Then run \/model to choose a model\./u);
@@ -6594,6 +6633,10 @@ test("a real pty runs /subagent as a read-only child session", async () => {
     );
     try {
       await waitForOutput(session, "codepunk · local/local-test", "startup");
+      await runCommandAfter(session, "/agents", "No subagents");
+      assert.match(session.output(), /Background subagents/u);
+      assert.match(session.output(), /esc close/u);
+      await closeOverlay(session);
       await runCommandAfter(session, "/agents profiles", "reviewer (user)");
       const mark = session.output().length;
       session.child.stdin.write(
@@ -6661,7 +6704,14 @@ test("a real pty runs /subagent as a read-only child session", async () => {
         `/agents result ${childSessionId}`,
         "FIRST_DONE",
       );
+      const agentsMark = session.output().length;
       await runCommandAfter(session, "/agents", "completed");
+      assert.match(session.output().slice(agentsMark), /AGENT/u);
+      assert.match(session.output().slice(agentsMark), /SESSION/u);
+      assert.match(session.output().slice(agentsMark), /STATUS/u);
+      assert.match(session.output().slice(agentsMark), /NEXT/u);
+      assert.match(session.output().slice(agentsMark), /esc close/u);
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         `/agents stop ${childSessionId}`,
@@ -6918,6 +6968,7 @@ test("a real pty reviews, signs, and merges a mutating subagent worktree", async
       assert.match(session.output().slice(mergeMark), /worktree removed/u);
       await runCommandAfter(session, "/agents", childSessionId);
       assert.match(session.output(), /merged/u);
+      await closeOverlay(session);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
