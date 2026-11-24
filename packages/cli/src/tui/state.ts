@@ -11,7 +11,7 @@ import type {
 } from "codepunk-core";
 import type { MergeRecord, TaskHandoff, Verdict } from "codepunk-protocol";
 import type { ResumeHint } from "../exit-hint.ts";
-import type { TuiApprovalChannel } from "../tui.ts";
+import type { TuiApprovalChannel } from "./approval/channel.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
