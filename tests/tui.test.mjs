@@ -1409,7 +1409,12 @@ async function waitFor(predicate, label, timeoutMs = 20_000) {
 }
 
 async function readEvidence(home) {
-  const entries = await fs.readdir(home, { recursive: true });
+  const entries = await fs.readdir(home, { recursive: true }).catch((error) => {
+    if (["ENOENT", "EPERM", "EBUSY"].includes(error?.code)) {
+      return [];
+    }
+    throw error;
+  });
   const records = [];
   for (const entry of entries) {
     if (!entry.endsWith(".jsonl") || !entry.includes("evidence")) {
