@@ -20,6 +20,7 @@ export interface TuiState {
   lastRunId: string | null;
   lastEvidence: number;
   warningsShown: boolean;
+  sandboxNoticeShown: boolean;
   modelSelected: boolean;
   modelOnboardingShown?: boolean;
   ready: boolean;

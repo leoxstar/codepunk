@@ -8,7 +8,11 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
 import { codepunkHelp } from "./help.ts";
 import { selectedModel, renderStatus, evidenceCount } from "./model.ts";
-import { currentShellStatus, setRuntimeStatus } from "./status.ts";
+import {
+  currentShellStatus,
+  sandboxStatusLines,
+  setRuntimeStatus,
+} from "./status.ts";
 import { EditorBridge } from "./widgets.ts";
 import { isSlashCommand } from "../host-commands.ts";
 import { formatConfigReload } from "../format/reload.ts";
@@ -384,6 +388,11 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         ]
       : undefined,
   );
+  if (tui.widgets) {
+    context.ui.setWidget("sandbox-status", sandboxStatusLines(runtime), {
+      placement: "aboveEditor",
+    });
+  }
   const statuses: Array<[string, string]> = [
     [
       "permissions",

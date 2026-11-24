@@ -89,6 +89,8 @@ async function loadTuiModules() {
   ]);
 }
 
+type TuiModule = Awaited<ReturnType<typeof loadTuiModules>>[1];
+
 interface TuiRuntimeBuilderContext {
   options: CliOptions;
   extension: ExtensionFactory;
@@ -203,6 +205,48 @@ function installRuntimeReplacement(
   };
 }
 
+function watchSandboxStatus(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  tui: TuiModule,
+): void {
+  void (async () => {
+    await runtime.sandboxReady;
+    await runtime.shellPreflightSettled();
+    const context = state.context;
+    if (state.shuttingDown || state.runtime !== runtime || context === null) {
+      return;
+    }
+    if (runtime.config.tui.widgets) {
+      context.ui.setWidget("sandbox-status", tui.sandboxStatusLines(runtime), {
+        placement: "aboveEditor",
+      });
+    }
+    tui.setRuntimeStatus(
+      state,
+      context,
+      "shell",
+      tui.currentShellStatus(runtime),
+    );
+    if (runtime.shellPreflightIssue !== null) {
+      state.sandboxNoticeShown = true;
+      context.ui.notify(
+        `srt shell unavailable: ${runtime.shellPreflightIssue}. Shell tools are disabled.`,
+        "warning",
+      );
+      return;
+    }
+    if (state.sandboxNoticeShown) {
+      return;
+    }
+    const lines = tui.sandboxStatusLines(runtime);
+    if (lines !== undefined) {
+      state.sandboxNoticeShown = true;
+      context.ui.notify(`${lines.join(". ")}.`, "warning");
+    }
+  })();
+}
+
 function startTitleAndBuildWatch(state: TuiState): () => void {
   const applyTitle = () => {
     if (state.shuttingDown) {
@@ -289,6 +333,7 @@ export async function runTui(options: CliOptions): Promise<number> {
     lastRunId: null,
     lastEvidence: 0,
     warningsShown: false,
+    sandboxNoticeShown: false,
     modelSelected: false,
     ready: false,
     shuttingDown: false,
@@ -352,7 +397,14 @@ export async function runTui(options: CliOptions): Promise<number> {
       sessionRuntime,
       slot,
       switchState,
-      tui.applyReplacedRuntime,
+      (replacedState, replacedRuntime, replacedContext) => {
+        tui.applyReplacedRuntime(
+          replacedState,
+          replacedRuntime,
+          replacedContext,
+        );
+        watchSandboxStatus(replacedState, replacedRuntime, tui);
+      },
     );
     const modelFallbackMessage =
       tui.modelOnboardingMessage(runtime) ??
@@ -375,6 +427,7 @@ export async function runTui(options: CliOptions): Promise<number> {
       ...(modelFallbackMessage === undefined ? {} : { modelFallbackMessage }),
     });
     await interactive.init();
+    watchSandboxStatus(state, runtime, tui);
     stopWatch = startTitleAndBuildWatch(state);
     await interactive.run();
     return 0;

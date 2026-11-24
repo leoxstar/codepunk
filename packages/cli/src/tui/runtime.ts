@@ -10,6 +10,7 @@ import { setupChrome } from "./chrome/setup.ts";
 import type { TuiState } from "./state.ts";
 export function setTuiRuntime(state: TuiState, runtime: CodepunkRuntime): void {
   state.runtime = runtime;
+  state.sandboxNoticeShown = false;
   state.modelOnboardingShown = false;
   if (typeof state.channel.setWorkspaceTrusted === "function") {
     state.channel.setWorkspaceTrusted(runtime.workspaceTrust?.trusted ?? false);

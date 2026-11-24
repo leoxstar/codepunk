@@ -9,6 +9,7 @@ export * from "./tui/runtime.ts";
 export * from "./tui/chrome/model.ts";
 export * from "./tui/chrome/setup.ts";
 export * from "./tui/chrome/help.ts";
+export * from "./tui/chrome/status.ts";
 export * from "./tui/format/plan.ts";
 export * from "./tui/format/status.ts";
 export * from "./tui/format/init.ts";

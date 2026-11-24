@@ -11,16 +11,8 @@ import {
   physicalModel,
   selectedModel,
 } from "../chrome/model.ts";
+import { currentShellStatus } from "../chrome/status.ts";
 import { permissionUsage } from "./permissions.ts";
-
-export function currentShellStatus(
-  runtime: Pick<CodepunkRuntime, "sandbox">,
-): "srt" | "explicit-unsandboxed" | "disabled" {
-  if (runtime.sandbox?.sandboxed === true) {
-    return "srt";
-  }
-  return runtime.sandbox === null ? "disabled" : "explicit-unsandboxed";
-}
 
 export function permissionSummary(runtime: CodepunkRuntime): string {
   const shell = currentShellStatus(runtime);
