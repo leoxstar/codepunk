@@ -5865,6 +5865,7 @@ test("a real pty resumes another session without restarting the CLI", async () =
         await stopPty(second);
       }
     } finally {
+      model.server.closeAllConnections?.();
       await new Promise((resolve) => model.server.close(resolve));
     }
   });
@@ -6095,6 +6096,7 @@ test("a real pty navigates the session tree and forks into a child session", asy
         await stopPty(session);
       }
     } finally {
+      model.server.closeAllConnections?.();
       await new Promise((resolve) => model.server.close(resolve));
     }
   });
@@ -6531,6 +6533,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });
