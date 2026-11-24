@@ -204,6 +204,15 @@ the manifest. Do not backfill missing data from the development checkout or
 change the corpus to make a failing test pass; regenerate it from the published
 release instead.
 
+For stores that the published CLI cannot write directly but the published
+`codepunk-core` exports, collect them with a repository script that imports the
+exact published core package and a fixed clock. Keep capture scratch state under
+the system temporary directory, replace local absolute paths with manifest
+placeholders, and append only newly generated files to the corpus. Record
+transient or non-writing stores in `excludedStores` with the actual probe
+command or lifecycle evidence. Record capture-only files that are not stores in
+`excludedCaptureArtifacts`; do not leave either kind in `notCovered`.
+
 Perform a clean global-install smoke test with no Codepunk state in the
 temporary home. Run it on each release target with the sandbox dependencies
 installed. The only expected `doctor` error is the missing model; another

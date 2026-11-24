@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { importCore } from "./support/core.mjs";
+import { importCore, importSource } from "./support/core.mjs";
 import {
   ensureBuilt,
   fixedClock,
@@ -13,6 +13,9 @@ import {
 } from "./support/helpers.mjs";
 
 const core = await importCore();
+const modelHistoryModule = await importSource(
+  "packages/cli/src/model-history.ts",
+);
 
 const CORPUS_ROOT = path.resolve(
   import.meta.dirname,
@@ -41,9 +44,16 @@ async function restoreCorpus(root, { tamper } = {}) {
 
   const manifest = JSON.parse(await fs.readFile(CORPUS_MANIFEST, "utf8"));
   const projectId = core.projectIdFor(project);
+  const restoredNpmPrefix = path.join(root, "capture-npm", "node_modules");
   const replacements = [
     ["{{PROJECT}}", project],
     ["{{HOME}}", home],
+    ["{{NPM_PREFIX}}", restoredNpmPrefix],
+    [
+      "{{PI_AGENT_DOCS}}",
+      path.join(restoredNpmPrefix, "@earendil-works", "pi-coding-agent"),
+    ],
+    ["{{COMPAT_API_KEY}}", "compat-test-key"],
   ];
 
   for (const entry of manifest.files) {
@@ -469,6 +479,19 @@ test("state-version.json refuses a non-integer version instead of migrating it",
 test("the 0.1.0 corpus matches its manifest digests", async () => {
   const manifest = JSON.parse(await fs.readFile(CORPUS_MANIFEST, "utf8"));
   assert.equal(manifest.source.version, "0.1.0");
+  assert.deepEqual(manifest.notCovered, []);
+  assert.equal(manifest.excludedStores.length, 2);
+  assert.deepEqual(
+    manifest.excludedStores.map((entry) => entry.split(/[ (]/u)[0]).sort(),
+    ["headless.toml", "plugin.toml"],
+  );
+  assert.ok(Array.isArray(manifest.excludedCaptureArtifacts));
+  assert.ok(
+    manifest.excludedCaptureArtifacts.every(
+      (entry) =>
+        !entry.startsWith("plugin.toml") && !entry.startsWith("headless.toml"),
+    ),
+  );
   assert.ok(manifest.files.length > 0);
   for (const entry of manifest.files) {
     const bytes = await fs.readFile(path.join(CORPUS_ROOT, entry.path));
@@ -478,6 +501,216 @@ test("the 0.1.0 corpus matches its manifest digests", async () => {
       entry.path,
     );
   }
+});
+
+test("the restored 0.1.0 corpus reads its newly covered stores", async () => {
+  await withTempDirectory("codepunk-compat-new-stores-", async (root) => {
+    const restored = await restoreCorpus(root);
+
+    const placeholders = [];
+    const pending = [root];
+    while (pending.length > 0) {
+      const directory = pending.pop();
+      for (const entry of await fs.readdir(directory, {
+        withFileTypes: true,
+      })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(file);
+        } else if (entry.isFile() && !file.endsWith(".bin")) {
+          const content = await fs.readFile(file, "utf8");
+          const matches = content.match(/\{\{[A-Z0-9_]+\}\}/gu) ?? [];
+          placeholders.push(...matches.map((match) => `${file}: ${match}`));
+        }
+      }
+    }
+    assert.deepEqual(placeholders, []);
+
+    const history = await modelHistoryModule.readModelHistory(restored.home);
+    assert.deepEqual(history, {
+      recent: [],
+      favorites: ["compat/compat-model"],
+      warning: null,
+    });
+
+    const auth = new core.McpAuthStore(restored.home);
+    assert.deepEqual(
+      await auth.status("compat-auth", "http://127.0.0.1:48762/mcp"),
+      {
+        signed_in: false,
+        expires_at: null,
+        scope: null,
+      },
+    );
+
+    const paths = {
+      home: restored.home,
+      projectDir: restored.projectDir,
+    };
+    const claimStore = new core.ClaimStore({
+      paths,
+      now: fixedClock("2026-11-24T00:00:30.000Z"),
+    });
+    const claim = await claimStore.inspect("compat-claim");
+    assert.deepEqual(claim, {
+      claim_id: "compat-claim-1",
+      task_id: "compat-claim",
+      owner: "compat-worker",
+      fence: 1,
+      acquired_at: "2026-11-24T00:00:00.000Z",
+      renewed_at: "2026-11-24T00:00:00.000Z",
+      expires_at: "2026-11-24T00:01:00.000Z",
+    });
+
+    const bridge = new core.MessageBridge({
+      paths,
+      now: fixedClock("2026-11-24T00:00:30.000Z"),
+    });
+    assert.equal(await bridge.queueSize(), 1);
+
+    const transcriptPath = path.join(
+      restored.projectDir,
+      "artifacts",
+      "subagents",
+      "compat-child",
+      "transcript.jsonl",
+    );
+    const transcript = (await fs.readFile(transcriptPath, "utf8"))
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line));
+    assert.equal(transcript[0].type, "session");
+    assert.ok(transcript.every((entry) => typeof entry.type === "string"));
+    assert.ok(
+      transcript.some(
+        (entry) =>
+          entry.type === "message_end" && entry.message.role === "user",
+      ),
+    );
+  });
+});
+
+test("backup create and restore verify the restored corpus manifest", async () => {
+  await withTempDirectory("codepunk-compat-backup-", async (root) => {
+    const restored = await restoreCorpus(root);
+    const backup = await core.createBackup(restored.home, {
+      roots: ["projects"],
+      include: ["config.toml", "state-version.json"],
+    });
+    assert.equal(backup.version, 1);
+    assert.ok(backup.files.length > 0);
+
+    const claimsPath = path.join(restored.projectDir, "claims.json");
+    const original = await fs.readFile(claimsPath, "utf8");
+    await fs.writeFile(claimsPath, `${original}\n`, "utf8");
+
+    const restoredManifest = await core.restoreBackup(restored.home, backup.id);
+    assert.equal(restoredManifest.id, backup.id);
+    assert.deepEqual(restoredManifest.files, backup.files);
+    assert.equal(await fs.readFile(claimsPath, "utf8"), original);
+
+    const create = await runCli(["backup", "create", "--json"], {
+      cwd: restored.project,
+      home: restored.home,
+    });
+    assert.equal(create.code, 0, create.stderr);
+    const current = JSON.parse(create.stdout);
+
+    const list = await runCli(["backup", "list", "--json"], {
+      cwd: restored.project,
+      home: restored.home,
+    });
+    assert.equal(list.code, 0, list.stderr);
+    assert.ok(JSON.parse(list.stdout).some((entry) => entry.id === current.id));
+
+    const restore = await runCli(["backup", "restore", current.id, "--json"], {
+      cwd: restored.project,
+      home: restored.home,
+    });
+    assert.equal(restore.code, 0, restore.stderr);
+    assert.equal(JSON.parse(restore.stdout).id, current.id);
+
+    const backupManifestPath = path.join(
+      restored.home,
+      "backups",
+      current.id,
+      "manifest.json",
+    );
+    const savedManifest = JSON.parse(
+      await fs.readFile(backupManifestPath, "utf8"),
+    );
+    savedManifest.files[0].sha256 = `sha256:${"0".repeat(64)}`;
+    await fs.writeFile(
+      backupManifestPath,
+      `${JSON.stringify(savedManifest, null, 2)}\n`,
+      "utf8",
+    );
+    const before = await fs.readFile(
+      path.join(restored.home, savedManifest.files[0].path),
+      "utf8",
+    );
+    const tampered = await runCli(["backup", "restore", current.id, "--json"], {
+      cwd: restored.project,
+      home: restored.home,
+    });
+    assert.notEqual(tampered.code, 0, "tampered backup manifest was accepted");
+    assert.match(tampered.stderr, /hash mismatch/u);
+    assert.equal(
+      await fs.readFile(
+        path.join(restored.home, savedManifest.files[0].path),
+        "utf8",
+      ),
+      before,
+    );
+  });
+});
+
+test("newer and malformed new stores are refused without rewriting", async () => {
+  await withTempDirectory("codepunk-compat-new-negative-", async (root) => {
+    const restored = await restoreCorpus(root);
+    const claimPath = path.join(restored.projectDir, "claims.json");
+    const notificationPath = path.join(
+      restored.projectDir,
+      "notifications.jsonl",
+    );
+    const paths = {
+      home: restored.home,
+      projectDir: restored.projectDir,
+    };
+
+    const newerClaims = `${JSON.stringify({
+      version: 2,
+      next_fence: 1,
+      claims: {},
+    })}\n`;
+    await fs.writeFile(claimPath, newerClaims, "utf8");
+    const claimStore = new core.ClaimStore({
+      paths,
+      now: fixedClock("2026-11-24T00:00:30.000Z"),
+    });
+    await assert.rejects(
+      () => claimStore.acquire("compat-other", "compat-worker"),
+      /claim store version 2 is newer than supported 1/u,
+    );
+    assert.equal(await fs.readFile(claimPath, "utf8"), newerClaims);
+
+    const malformedNotifications = "{not json\n";
+    await fs.writeFile(notificationPath, malformedNotifications, "utf8");
+    const bridge = new core.MessageBridge({
+      paths,
+      now: fixedClock("2026-11-24T00:00:30.000Z"),
+    });
+    await assert.rejects(
+      () => bridge.queueSize(),
+      (error) =>
+        error.code === "bridge.corrupt_queue" &&
+        /notification queue is corrupt/u.test(error.message),
+    );
+    assert.equal(
+      await fs.readFile(notificationPath, "utf8"),
+      malformedNotifications,
+    );
+  });
 });
 
 test("the restored 0.1.0 corpus lists, searches and reads its sessions", async () => {
@@ -528,6 +761,61 @@ test("the restored 0.1.0 corpus lists, searches and reads its sessions", async (
       assert.ok(
         state.leaf_id === null || branchIds.includes(state.leaf_id),
         `${sessionId} leaf is not on the active branch`,
+      );
+    }
+  });
+});
+
+test("the restored 0.1.0 sessions resume through the current runtime", async () => {
+  await withTempDirectory("codepunk-compat-resume-", async (root) => {
+    const restored = await restoreCorpus(root);
+    for (const sessionId of ["compat-sign-session", "compat-parent"]) {
+      const store = await core.SessionStore.open({
+        rootDir: restored.home,
+        cwd: restored.project,
+        projectRoot: restored.project,
+        projectId: restored.projectId,
+        sessionId,
+      });
+      const beforeLog = await fs.readFile(store.paths.logPath, "utf8");
+      const beforeCoverage = store.metadata.state_covers_seq;
+      const resumed = await store.resume();
+      assert.ok(
+        resumed.uncommittedEvents.length > 0,
+        `${sessionId} should carry the 0.1.0 capture tail`,
+      );
+      assert.ok(
+        resumed.uncommittedEvents.every((event) =>
+          core.isBenignTailEventKind(event.kind),
+        ),
+        `${sessionId} has a non-benign capture tail`,
+      );
+
+      const runtime = await core.createRuntime({
+        cwd: restored.project,
+        environment: { ...process.env, CODEPUNK_HOME: restored.home },
+        sessionId,
+        allowMissingModel: true,
+      });
+      await runtime.dispose();
+
+      const reopened = await core.SessionStore.open({
+        rootDir: restored.home,
+        cwd: restored.project,
+        projectRoot: restored.project,
+        projectId: restored.projectId,
+        sessionId,
+      });
+      assert.equal(
+        reopened.metadata.state_covers_seq,
+        reopened.metadata.log_seq,
+      );
+      assert.ok(reopened.metadata.state_covers_seq > beforeCoverage);
+      assert.ok(
+        (await fs.readFile(reopened.paths.logPath, "utf8")).startsWith(
+          beforeLog,
+        ),
+        `${sessionId} log was rewritten during recovery`,
       );
     }
   });

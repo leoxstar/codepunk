@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "next_fence": 1,
+  "claims": {
+    "compat-claim": {
+      "claim_id": "compat-claim-1",
+      "task_id": "compat-claim",
+      "owner": "compat-worker",
+      "fence": 1,
+      "acquired_at": "2026-11-24T00:00:00.000Z",
+      "renewed_at": "2026-11-24T00:00:00.000Z",
+      "expires_at": "2026-11-24T00:01:00.000Z"
+    }
+  }
+}
