@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -21,6 +22,19 @@ import { importCore, importSource } from "./support/core.mjs";
 
 const execFileAsync = promisify(execFile);
 const core = await importCore();
+const SRT_PTY_SKIP =
+  process.platform === "win32"
+    ? "the deferred sandbox PTY test runs on POSIX hosts"
+    : await (async () => {
+        const issue = await core.probeSrtSandbox({
+          cwd: os.tmpdir(),
+          workspaceRoot: os.tmpdir(),
+          deliveryRoot: os.tmpdir(),
+          codepunkHome: path.join(os.tmpdir(), "codepunk-pty-srt-home"),
+          writeSet: ["."],
+        });
+        return issue === null ? false : `srt is unavailable: ${issue}`;
+      })();
 const PTY_RUNNER =
   process.platform === "win32"
     ? [
@@ -472,6 +486,89 @@ test("the TUI treats an active session model as selected", async () => {
     host: { session: { model: { provider: "local", id: "chat" } } },
   });
   assert.equal(unconfigured.modelSelected, true);
+});
+
+test("sandbox shell status reflects deferred readiness and preflight failure", async () => {
+  const { currentShellStatus, sandboxStatusLines } = await importSource(
+    "packages/cli/src/tui.ts",
+  );
+  const { DeferredSandbox } = await importCore();
+  const deferred = new DeferredSandbox(Promise.resolve(null));
+  assert.equal(
+    currentShellStatus({
+      config: { sandbox: { mode: "required" } },
+      sandbox: deferred,
+      shellPreflightIssue: null,
+    }),
+    "srt-preparing",
+  );
+  assert.equal(
+    currentShellStatus({
+      config: { sandbox: { mode: "required" } },
+      sandbox: deferred,
+      shellPreflightIssue: "probe failed",
+    }),
+    "srt-failed",
+  );
+  assert.equal(
+    currentShellStatus({
+      config: { sandbox: { mode: "uncovered" } },
+      sandbox: null,
+      shellPreflightIssue: null,
+    }),
+    "disabled",
+  );
+  assert.equal(
+    currentShellStatus({
+      config: { sandbox: { mode: "required" } },
+      sandbox: null,
+      shellPreflightIssue: null,
+    }),
+    "srt-failed",
+  );
+  assert.equal(
+    currentShellStatus({
+      config: { sandbox: { mode: "required" } },
+      sandbox: { sandboxed: true, descriptor: {} },
+      shellPreflightIssue: null,
+    }),
+    "srt",
+  );
+  assert.deepEqual(
+    sandboxStatusLines({
+      config: { sandbox: { mode: "required" } },
+      sandbox: deferred,
+      shellPreflightIssue: null,
+    }),
+    ["srt sandbox preparing; shell tools will wait until it is ready"],
+  );
+  assert.deepEqual(
+    sandboxStatusLines({
+      config: { sandbox: { mode: "required" } },
+      sandbox: null,
+      shellPreflightIssue: "probe failed",
+    }),
+    ["srt shell unavailable: probe failed", "shell tools are disabled"],
+  );
+  assert.deepEqual(
+    sandboxStatusLines({
+      config: { sandbox: { mode: "required" } },
+      sandbox: null,
+      shellPreflightIssue: null,
+    }),
+    [
+      "srt sandbox initialization failed; shell tools are disabled",
+      "run codepunk doctor for details",
+    ],
+  );
+  assert.equal(
+    sandboxStatusLines({
+      config: { sandbox: { mode: "required" } },
+      sandbox: { sandboxed: true, descriptor: {} },
+      shellPreflightIssue: null,
+    }),
+    undefined,
+  );
 });
 
 test("image input records failure instead of completion when dispatch fails", async () => {
@@ -1594,6 +1691,94 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
     }
   });
 });
+
+test(
+  "a real pty remains interactive while the srt sandbox prepares",
+  { skip: SRT_PTY_SKIP },
+  async () => {
+    await withTempDirectory("codepunk-tui-srt-preparing-", async (root) => {
+      const project = path.join(root, "project");
+      const home = path.join(root, "home");
+      await fs.mkdir(project);
+      await fs.mkdir(home);
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        '[sandbox]\nmode = "required"\n',
+      );
+      await execFileAsync("git", ["init", "-q"], { cwd: project });
+      const cli = await ensureBuilt();
+      const sandboxMarker = path.join(home, "sandbox-ready");
+      const session = startPty(
+        process.execPath,
+        [
+          "--import",
+          path.join(REPO_ROOT, "tests", "support", "slow-sandbox.mjs"),
+          cli,
+        ],
+        {
+          cwd: project,
+          env: {
+            ...BASE_ENV,
+            CODEPUNK_HOME: home,
+            CODEPUNK_TEST_SANDBOX_MARKER: sandboxMarker,
+            TERM: "xterm-256color",
+            NO_COLOR: "1",
+          },
+        },
+      );
+      try {
+        await waitForOutput(
+          session,
+          "srt sandbox preparing; shell tools will wait until it is ready",
+          "sandbox preparing",
+        );
+        assert.notEqual(
+          await fs.readFile(sandboxMarker, "utf8").catch(() => null),
+          "ready",
+          "the sandbox finished before the preparing status was rendered",
+        );
+
+        const mark = session.output().length;
+        session.child.stdin.write("/help\r");
+        await waitForOutputAfter(
+          session,
+          mark,
+          "show this command list",
+          "interactive /help",
+        );
+        await waitForOutput(session, "shell srt ·", "sandbox ready status");
+
+        const markerStarted = Date.now();
+        while (
+          Date.now() - markerStarted < 20_000 &&
+          (await fs.readFile(sandboxMarker, "utf8").catch(() => null)) !==
+            "ready"
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        assert.equal(
+          await fs.readFile(sandboxMarker, "utf8").catch(() => null),
+          "ready",
+          "the sandbox never reported readiness",
+        );
+
+        session.child.stdin.write("/quit\r");
+        const exited = await Promise.race([
+          session.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(exited, { code: 0, signal: null });
+      } finally {
+        await stopPty(session);
+      }
+    });
+  },
+);
 
 test("a real pty shows the working tree diff", async () => {
   await withTempDirectory("codepunk-tui-diff-", async (root) => {

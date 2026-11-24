@@ -440,6 +440,50 @@ test(
   },
 );
 
+test("a failed sandbox preflight makes shell tools fail closed", async () => {
+  const paths = await setup();
+  const ledger = await core.EvidenceLedger.open(
+    path.join(paths.root, "evidence.jsonl"),
+  );
+  const fakeSandbox = {
+    name: "bash",
+    sandboxed: true,
+    async execCommand() {
+      throw new Error("must-not-run");
+    },
+  };
+  const [unwrappedBash] = core
+    .createCodepunkToolDefinitions(paths.project, fakeSandbox)
+    .filter((tool) => tool.name === "bash");
+  const [bash] = await core.wrapToolDefinitions([unwrappedBash], {
+    cwd: paths.project,
+    workspaceRoot: paths.project,
+    deliveryRoot: paths.project,
+    codepunkHome: paths.home,
+    sessionId: "session-preflight",
+    runId: "run-preflight",
+    writeSet: [paths.project],
+    mode: "interactive",
+    ledger,
+    sandbox: () => null,
+    shellUnavailableReason: () => "srt shell preflight failed",
+  });
+  assert.ok(bash);
+  try {
+    const result = await bash.execute(
+      "call-preflight-bash",
+      { command: "printf must-not-run" },
+      undefined,
+      undefined,
+      {},
+    );
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /srt shell preflight failed/u);
+  } finally {
+    await fs.rm(paths.root, { recursive: true, force: true });
+  }
+});
+
 test("a discovered skill file is readable without opening Codepunk home", async () => {
   const paths = await setup();
   const skillFile = path.join(paths.home, "skills", "probe", "SKILL.md");

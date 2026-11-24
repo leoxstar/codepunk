@@ -17,6 +17,55 @@ import {
 
 const core = await importCore();
 const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
+const TIMED_OUT = Symbol("timed out");
+
+async function within(promise, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function deferredShellProvider() {
+  const descriptor = {
+    backend: "srt",
+    version: "test",
+    profile_sha256: "sha256:deferred-profile",
+    network_allowed_domains: ["allowed.example"],
+    network_denied_domains: ["denied.example"],
+  };
+  return {
+    descriptor,
+    sandboxed: true,
+    execCommandCalls: 0,
+    closeCalls: 0,
+    async execCommand(command, cwd, options) {
+      this.execCommandCalls += 1;
+      assert.deepEqual(options.descriptor, descriptor);
+      return {
+        output: command,
+        exitCode: 0,
+        cancelled: false,
+        timedOut: false,
+        executor: "srt",
+        descriptor: options.descriptor,
+      };
+    },
+    async execArgv(argv, cwd, options) {
+      return await this.execCommand(argv.join(" "), cwd, options);
+    },
+    async close() {
+      this.closeCalls += 1;
+    },
+  };
+}
 
 test("a persisted full filesystem requires the dangerous start flag", async () => {
   await withTempDirectory("codepunk-config-full-fs-", async (root) => {
@@ -297,6 +346,299 @@ test(
     );
   },
 );
+
+test("a required sandbox does not block runtime construction or disposal", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-sandbox-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const provider = deferredShellProvider();
+      const originalCreate = core.SrtSandbox.create;
+      let resolveReady;
+      let createCalls = 0;
+      core.SrtSandbox.create = () => {
+        createCalls += 1;
+        return new Promise((resolve) => {
+          resolveReady = resolve;
+        });
+      };
+      let runtime;
+      let disposed = false;
+      try {
+        const started = performance.now();
+        runtime = await within(
+          core.createRuntime({
+            cwd: projectRoot,
+            environment: { CODEPUNK_HOME: paths.home },
+            approvalChannel: null,
+            allowMissingModel: true,
+          }),
+          5_000,
+        );
+        const elapsedMs = performance.now() - started;
+        assert.notEqual(runtime, TIMED_OUT, "runtime construction blocked");
+        assert.equal(createCalls, 1);
+        assert.ok(runtime.sandbox instanceof core.DeferredSandbox);
+        assert.ok(elapsedMs < 3_000, `startup took ${elapsedMs}ms`);
+        const readyState = await within(
+          runtime.sandboxReady.then(() => "ready"),
+          20,
+        );
+        assert.equal(readyState, TIMED_OUT, "sandbox initialization resolved");
+
+        const disposal = await within(runtime.dispose(), 2_000);
+        assert.notEqual(disposal, TIMED_OUT, "dispose waited for readiness");
+        disposed = true;
+        resolveReady(provider);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(provider.closeCalls, 1, "late provider was not closed");
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+        if (!disposed && runtime !== TIMED_OUT) {
+          await runtime?.dispose().catch(() => undefined);
+        }
+      }
+    },
+  );
+});
+
+test("shell calls wait for a deferred sandbox and runtime status resolves", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-shell-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const provider = deferredShellProvider();
+      const originalCreate = core.SrtSandbox.create;
+      let resolveReady;
+      core.SrtSandbox.create = () =>
+        new Promise((resolve) => {
+          resolveReady = () => resolve(provider);
+        });
+      let runtime;
+      let disposed = false;
+      try {
+        runtime = await core.createRuntime({
+          cwd: projectRoot,
+          environment: { CODEPUNK_HOME: paths.home },
+          approvalChannel: null,
+          allowMissingModel: true,
+        });
+        assert.ok(runtime.sandbox instanceof core.DeferredSandbox);
+        const first = runtime.sandbox.execCommand("echo first", projectRoot);
+        const second = runtime.sandbox.execCommand("echo second", projectRoot);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(provider.execCommandCalls, 0);
+
+        resolveReady();
+        const [firstResult, secondResult, resolved] = await Promise.all([
+          first,
+          second,
+          runtime.sandboxReady,
+        ]);
+        assert.deepEqual(
+          [firstResult.output, secondResult.output],
+          ["echo first", "echo second"],
+        );
+        assert.equal(provider.execCommandCalls, 2);
+        assert.equal(resolved, provider);
+        assert.equal(runtime.sandbox, provider);
+        assert.deepEqual(firstResult.descriptor, provider.descriptor);
+        assert.deepEqual(secondResult.descriptor, provider.descriptor);
+        await runtime.dispose();
+        disposed = true;
+        assert.equal(provider.closeCalls, 1, "provider was closed once");
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+        if (!disposed) {
+          await runtime?.dispose().catch(() => undefined);
+        }
+      }
+    },
+  );
+});
+
+test("runtime creation failure closes a pending sandbox provider", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-failure-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const provider = deferredShellProvider();
+      const originalCreate = core.SrtSandbox.create;
+      core.SrtSandbox.create = () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(provider), 250);
+        });
+      try {
+        await assert.rejects(
+          () =>
+            core.createRuntime({
+              cwd: projectRoot,
+              environment: { CODEPUNK_HOME: paths.home },
+              configOverrides: { model: "openai/not-a-real-model" },
+              approvalChannel: null,
+            }),
+          /selected model openai\/not-a-real-model is not available/u,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(provider.closeCalls, 1, "pending provider was not closed");
+        const entries = await fs.readdir(paths.home, { recursive: true });
+        assert.equal(
+          entries.some((entry) => entry.endsWith(".tmp")),
+          false,
+        );
+        const projectEntries = await fs.readdir(projectRoot, {
+          recursive: true,
+        });
+        assert.equal(
+          projectEntries.some((entry) => entry.endsWith(".tmp")),
+          false,
+        );
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+      }
+    },
+  );
+});
+
+test("runtime creation failure closes a resolved sandbox provider", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-resolved-failure-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const provider = deferredShellProvider();
+      const originalCreate = core.SrtSandbox.create;
+      core.SrtSandbox.create = async () => provider;
+      try {
+        await assert.rejects(
+          () =>
+            core.createRuntime({
+              cwd: projectRoot,
+              environment: { CODEPUNK_HOME: paths.home },
+              configOverrides: { model: "openai/not-a-real-model" },
+              approvalChannel: null,
+            }),
+          /selected model openai\/not-a-real-model is not available/u,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(
+          provider.closeCalls,
+          1,
+          "resolved provider was closed once",
+        );
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+      }
+    },
+  );
+});
+
+test("runtime creation failure waits for sandbox close", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-slow-close-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const provider = {
+        ...deferredShellProvider(),
+        closeStarted: false,
+        closeFinished: false,
+        async close() {
+          this.closeStarted = true;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          this.closeCalls += 1;
+          this.closeFinished = true;
+        },
+      };
+      const originalCreate = core.SrtSandbox.create;
+      core.SrtSandbox.create = async () => provider;
+      try {
+        await assert.rejects(
+          () =>
+            core.createRuntime({
+              cwd: projectRoot,
+              environment: { CODEPUNK_HOME: paths.home },
+              configOverrides: { model: "openai/not-a-real-model" },
+              approvalChannel: null,
+            }),
+          /selected model openai\/not-a-real-model is not available/u,
+        );
+        assert.equal(
+          provider.closeFinished,
+          true,
+          "startup cleanup waited for close",
+        );
+        assert.equal(
+          provider.closeCalls,
+          1,
+          "startup cleanup waited for close",
+        );
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+      }
+    },
+  );
+});
+
+test("invalid session selectors are rejected without starting a sandbox", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-cancel-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const originalCreate = core.SrtSandbox.create;
+      let createCalls = 0;
+      core.SrtSandbox.create = () => {
+        createCalls += 1;
+        return new Promise(() => undefined);
+      };
+      try {
+        await assert.rejects(
+          () =>
+            core.createRuntime({
+              cwd: projectRoot,
+              environment: { CODEPUNK_HOME: paths.home },
+              newSessionId: "new-session",
+              continueSession: true,
+              approvalChannel: null,
+            }),
+          /newSessionId cannot be combined with --continue/u,
+        );
+        assert.equal(createCalls, 0);
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+      }
+    },
+  );
+});
+
+test("runtime startup failure reports the sandbox failure and leaves no provider", async () => {
+  await withSandboxTempDirectory(
+    "codepunk-config-deferred-startup-failure-",
+    async (root) => {
+      const { projectRoot, paths } = await makeProject(root);
+      const originalCreate = core.SrtSandbox.create;
+      core.SrtSandbox.create = async () => {
+        throw new Error("port allocation failed");
+      };
+      let runtime;
+      try {
+        runtime = await core.createRuntime({
+          cwd: projectRoot,
+          environment: { CODEPUNK_HOME: paths.home },
+          approvalChannel: null,
+          allowMissingModel: true,
+        });
+        assert.equal(await runtime.sandboxReady, null);
+        assert.equal(
+          runtime.sandbox instanceof core.DeferredSandbox,
+          false,
+          "failed sandbox is not exposed as a live provider",
+        );
+      } finally {
+        core.SrtSandbox.create = originalCreate;
+        await runtime?.dispose();
+      }
+    },
+  );
+});
 
 test("read-only autonomy skips plugins enabled by persisted config", async () => {
   await withTempDirectory("codepunk-config-readonly-plugins-", async (root) => {

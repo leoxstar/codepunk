@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { importCore } from "./support/core.mjs";
+import { importCore, importSource, TESTS_DIR } from "./support/core.mjs";
 import {
   readFakeEnv,
   writeFakeExecutable,
@@ -17,12 +17,23 @@ import {
 } from "./support/helpers.mjs";
 
 const core = await importCore();
+const sandboxModule = await importSource("packages/core/src/sandbox/index.ts");
 const execFileAsync = promisify(execFile);
 const POSIX_SRT_SKIP =
   process.platform === "win32"
     ? "the assertion uses POSIX shell commands and paths"
     : false;
 const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
+const REAL_SRT_SKIP = await (async () => {
+  if (!sandboxModule.SandboxManager.isSupportedPlatform()) {
+    return "the host platform cannot initialize the real srt manager";
+  }
+  const dependencies =
+    await sandboxModule.SandboxManager.checkDependenciesAsync();
+  return dependencies.errors.length > 0
+    ? `real srt dependencies are unavailable: ${dependencies.errors.join("; ")}`
+    : false;
+})();
 const WINDOWS_HOME_PROTECTION_NOOP = async () => {};
 
 async function setup() {
@@ -41,6 +52,65 @@ async function setup() {
   );
   return { root, home, project, writable };
 }
+
+test("concurrent deferred sandbox closes share one close operation", async () => {
+  const provider = {
+    sandboxed: true,
+    descriptor: { backend: "srt", version: "test", profile_sha256: null },
+    closeCalls: 0,
+    closeCallsDuringClose: 0,
+    closeFinished: false,
+    async close() {
+      this.closeCalls += 1;
+      this.closeCallsDuringClose = this.closeCalls;
+      this.closeFinished = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    },
+  };
+  const deferred = new sandboxModule.DeferredSandbox(Promise.resolve(provider));
+  const firstClose = deferred.close();
+  await deferred.close();
+  assert.equal(provider.closeCallsDuringClose, 1);
+  await Promise.all([firstClose, deferred.close()]);
+  assert.equal(provider.closeCalls, 1);
+  assert.equal(provider.closeFinished, true);
+});
+
+test("closing a pending deferred sandbox returns before readiness", async () => {
+  const provider = {
+    sandboxed: true,
+    descriptor: { backend: "srt", version: "test", profile_sha256: null },
+    closeCalls: 0,
+    async close() {
+      this.closeCalls += 1;
+    },
+  };
+  let resolveReady;
+  const deferred = new sandboxModule.DeferredSandbox(
+    new Promise((resolve) => {
+      resolveReady = resolve;
+    }),
+  );
+  await deferred.close();
+  assert.equal(provider.closeCalls, 0);
+  resolveReady(provider);
+  await deferred.close();
+  assert.equal(provider.closeCalls, 1);
+});
+
+test("a deferred sandbox that never resolves rejects shell execution", async () => {
+  const failed = new sandboxModule.DeferredSandbox(Promise.resolve(null));
+  await assert.rejects(
+    failed.execCommand("printf must-not-run", process.cwd()),
+    /srt sandbox is not ready; shell tools are disabled/u,
+  );
+  const closed = new sandboxModule.DeferredSandbox(Promise.resolve(null));
+  await closed.close();
+  await assert.rejects(
+    closed.execCommand("printf must-not-run", process.cwd()),
+    /srt provider is closed/u,
+  );
+});
 
 test("missing srt dependencies disable execution", async () => {
   const input = {
@@ -75,6 +145,75 @@ test("missing srt dependencies disable execution", async () => {
     /dependency check failed/u,
   );
 });
+
+test(
+  "a canceled sandbox initialization does not cancel another process",
+  { skip: REAL_SRT_SKIP },
+  async () => {
+    const children = ["cancel", "survive"].map((role) => {
+      const child = spawn(
+        process.execPath,
+        [path.join(TESTS_DIR, "sandbox-reset-child.mjs"), role],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let output = "";
+      let stderr = "";
+      const exited = new Promise((resolve, reject) => {
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("error", reject);
+        child.on("close", (code, signal) => resolve({ code, signal }));
+      });
+      return {
+        child,
+        exited,
+        output: () => `${output}${stderr}`,
+        role,
+      };
+    });
+    try {
+      const results = await Promise.all(
+        children.map(async (child) => {
+          try {
+            const { code, signal } = await child.exited;
+            assert.equal(
+              code,
+              0,
+              `child failed (${signal}): ${child.output()}`,
+            );
+            return JSON.parse(child.output());
+          } catch (error) {
+            return {
+              child: child.role,
+              error: `${String(error)}\n${child.output()}`,
+            };
+          }
+        }),
+      );
+      const canceled = results[0];
+      const survivor = results[1];
+      if (canceled.error !== undefined || survivor.error !== undefined) {
+        throw new Error(
+          `concurrent reset children failed: ${JSON.stringify(results)}`,
+        );
+      }
+      assert.ok(canceled.skipped !== undefined || canceled.canceled === true);
+      assert.ok(
+        survivor.skipped !== undefined || survivor.initialized === true,
+      );
+    } finally {
+      for (const child of children) {
+        if (child.child.exitCode === null && child.child.signalCode === null) {
+          child.child.kill("SIGTERM");
+        }
+      }
+    }
+  },
+);
 
 test("windows initialization passes the vendored srt-win helper", async () => {
   const calls = [];
