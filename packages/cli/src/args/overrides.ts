@@ -1,11 +1,23 @@
 import {
+  ConfigError,
   PERMISSION_PROFILES,
+  isThinkingLevel,
   openModelRuntime,
   projectPaths,
   resolveModelSelection,
   type ConfigOverrides,
 } from "codepunk-core";
 import type { CliOptions } from "./options.ts";
+
+function checkedThinkingLevel(value: string) {
+  if (!isThinkingLevel(value)) {
+    throw new ConfigError(
+      `--thinking ${JSON.stringify(value)} is invalid; must be one of off, minimal, low, medium, high, xhigh, max`,
+      "model.thinking",
+    );
+  }
+  return value;
+}
 
 export function configOverrides(options: CliOptions): ConfigOverrides {
   const profile =
@@ -26,7 +38,7 @@ export function configOverrides(options: CliOptions): ConfigOverrides {
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.thinking !== undefined
-      ? { thinking: options.thinking as never }
+      ? { thinking: checkedThinkingLevel(options.thinking) }
       : {}),
     ...(options.tools !== undefined ? { tools: options.tools } : {}),
     ...(options.modelFallback !== undefined

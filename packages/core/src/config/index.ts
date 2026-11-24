@@ -1335,6 +1335,13 @@ function applyCliOverrides(
     target.model.provider = overrides.provider;
   }
   if (overrides.thinking !== null && overrides.thinking !== undefined) {
+    const levels = KEY_SPECS.get("model.thinking")!.allowed!;
+    if (!levels.includes(overrides.thinking)) {
+      throw new ConfigError(
+        `--thinking ${JSON.stringify(overrides.thinking)} is invalid; must be one of ${levels.join(", ")}`,
+        "model.thinking",
+      );
+    }
     target.model.thinking = overrides.thinking;
   }
   if (overrides.tools !== null && overrides.tools !== undefined) {
