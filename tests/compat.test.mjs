@@ -87,7 +87,8 @@ async function restoreCorpus(root, { tamper } = {}) {
     const original = await fs.readFile(file, "utf8");
     let content = original;
     for (const [placeholder, value] of replacements) {
-      content = content.replaceAll(placeholder, value);
+      const replacement = replacementValue(value, file);
+      content = content.replaceAll(placeholder, () => replacement);
     }
     content = content.replaceAll(
       `"project_id":"${CORPUS_PROJECT_ID}"`,
@@ -244,6 +245,11 @@ async function restoreCorpus(root, { tamper } = {}) {
 
 function recordKey(runId, sessionId) {
   return `${sessionId}\0${runId}`;
+}
+
+function replacementValue(value, file) {
+  const isJson = /\.(?:json|jsonl)$/iu.test(file);
+  return isJson ? JSON.stringify(value).slice(1, -1) : value;
 }
 
 async function runCli(args, { cwd, home }) {
