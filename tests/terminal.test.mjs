@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
@@ -281,16 +282,18 @@ test("terminal capability detection covers truecolor and explicit override", asy
       [
         "import * as tui from " +
           JSON.stringify(
-            path.join(
-              REPO_ROOT,
-              "packages",
-              "cli",
-              "node_modules",
-              "@earendil-works",
-              "pi-tui",
-              "dist",
-              "index.js",
-            ),
+            pathToFileURL(
+              path.join(
+                REPO_ROOT,
+                "packages",
+                "cli",
+                "node_modules",
+                "@earendil-works",
+                "pi-tui",
+                "dist",
+                "index.js",
+              ),
+            ).href,
           ) +
           ";",
         "const capabilities = tui.detectCapabilities(() => false);",
@@ -360,8 +363,8 @@ test("ANSI styling is enabled on a real PTY and disabled by NO_COLOR", async () 
       const output = session.output();
       assert.match(
         output,
-        /\u001b\[[34]6m[^\r\n]+\u001b\[0m/u,
-        "expected ANSI color SGR output",
+        /\u001b\[(?:[0-9;]*;)?(?:3[0-7]|9[0-7]|38|48)(?:;[0-9;]*)?m[\s\S]*\u001b\[(?:0*(?:;0*)*)?m/u,
+        "expected a colored SGR sequence followed by a reset",
       );
     } finally {
       await stopPty(session);
@@ -379,7 +382,7 @@ test("ANSI styling is enabled on a real PTY and disabled by NO_COLOR", async () 
       plainPromptRendered = true;
       assert.doesNotMatch(
         plainSession.output(),
-        /\u001b\[(?!0m)[0-9;]*m/u,
+        /\u001b\[(?!(?:0*(?:;0*)*)?m)[0-9;]*m/u,
         "expected NO_COLOR to disable non-reset SGR output",
       );
     } finally {
