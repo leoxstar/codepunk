@@ -1,0 +1,19 @@
+[model]
+provider = "compat"
+id = "compat-model"
+
+[context]
+keep_recent_tokens = 50
+
+[approval]
+mode = "ask"
+
+[autonomy]
+profile = "ask"
+
+[sandbox]
+mode = "required"
+network_deny = ["example.invalid"]
+
+[filesystem]
+mode = "workspace"

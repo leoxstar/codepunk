@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "run_id": "01M8613G0WXGV8JR488B9ZV66C",
+  "session_id": "compat-parent",
+  "verdict": "unverifiable",
+  "evidence_head": "sha256:9e392f815be12880f2cf8036cf78af71a3aa4ee4d286edc6daef6dd90510e161",
+  "sign_off_id": null,
+  "signed_verdict": null,
+  "coverage": "enforced",
+  "reasons": [
+    "human sign-off is missing"
+  ],
+  "computed_at": "2026-11-24T05:40:23.069Z",
+  "vcs": {
+    "commit": null,
+    "tree": null,
+    "base_commit": null
+  }
+}

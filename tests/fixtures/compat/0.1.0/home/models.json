@@ -1,0 +1,43 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "compat": {
+      "name": "compat",
+      "baseUrl": "http://127.0.0.1:48761/v1",
+      "api": "openai-completions",
+      "apiKey": "{{COMPAT_API_KEY}}",
+      "authHeader": false,
+      "models": [
+        {
+          "id": "compat-model",
+          "name": "Compat Model",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "compat-sign": {
+      "name": "compat-sign",
+      "baseUrl": "http://127.0.0.1:48762/v1",
+      "api": "openai-completions",
+      "apiKey": "{{COMPAT_API_KEY}}",
+      "authHeader": false,
+      "models": [
+        {
+          "id": "compat-model",
+          "name": "Compat Model",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 16384
+        }
+      ]
+    }
+  }
+}

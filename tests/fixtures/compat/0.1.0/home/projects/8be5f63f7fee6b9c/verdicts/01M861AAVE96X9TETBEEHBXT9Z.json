@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "run_id": "01M861AAVE96X9TETBEEHBXT9Z",
+  "session_id": "compat-sign-session",
+  "verdict": "complete",
+  "evidence_head": "sha256:9a60fb9436dc969eeda55c1c78ae1d63ccb5d3909be793d399fcaa9042240203",
+  "sign_off_id": "01M861BGJVG727QX112A88306N",
+  "signed_verdict": "complete",
+  "coverage": "enforced",
+  "reasons": [],
+  "computed_at": "2026-11-24T05:44:42.346Z",
+  "vcs": {
+    "commit": null,
+    "tree": null,
+    "base_commit": null
+  }
+}

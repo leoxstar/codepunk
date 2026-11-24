@@ -1,15 +1,267 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
 import {
+  ensureBuilt,
   fixedClock,
   makeProject,
   withTempDirectory,
 } from "./support/helpers.mjs";
 
 const core = await importCore();
+
+const CORPUS_ROOT = path.resolve(
+  import.meta.dirname,
+  "fixtures",
+  "compat",
+  "0.1.0",
+);
+const CORPUS_MANIFEST = path.join(CORPUS_ROOT, "MANIFEST.json");
+const CORPUS_PROJECT_ID = "8be5f63f7fee6b9c";
+
+/**
+ * Restore the collected `codepunk-cli@0.1.0` corpus into a temporary
+ * `CODEPUNK_HOME` and workspace.
+ *
+ * The corpus stores the capture-time absolute paths as `{{PROJECT}}` and
+ * `{{HOME}}`, so a restore replaces them with the temporary directories and
+ * recomputes the project id from the restored workspace path. The project id
+ * is written back into the session headers and `project.json` because the
+ * reader compares it with the directory it opens.
+ */
+async function restoreCorpus(root, { tamper } = {}) {
+  const home = path.join(root, "home");
+  const project = path.join(root, "project");
+  await fs.mkdir(home, { recursive: true });
+  await fs.mkdir(project, { recursive: true });
+
+  const manifest = JSON.parse(await fs.readFile(CORPUS_MANIFEST, "utf8"));
+  const projectId = core.projectIdFor(project);
+  const replacements = [
+    ["{{PROJECT}}", project],
+    ["{{HOME}}", home],
+  ];
+
+  for (const entry of manifest.files) {
+    const source = path.join(CORPUS_ROOT, entry.path);
+    const relative = entry.path.replace(
+      `home/projects/${CORPUS_PROJECT_ID}/`,
+      `home/projects/${projectId}/`,
+    );
+    const target = path.join(root, relative);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const bytes = await fs.readFile(source);
+    await fs.writeFile(target, bytes);
+  }
+
+  // Replace the placeholders in every restored text file and rewrite the
+  // project id that the reader compares against the project directory.
+  const restoredFiles = [];
+  async function walk(directory) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolute);
+      } else if (entry.isFile()) {
+        restoredFiles.push(absolute);
+      }
+    }
+  }
+  await walk(root);
+
+  for (const file of restoredFiles) {
+    const original = await fs.readFile(file, "utf8");
+    let content = original;
+    for (const [placeholder, value] of replacements) {
+      content = content.replaceAll(placeholder, value);
+    }
+    content = content.replaceAll(
+      `"project_id":"${CORPUS_PROJECT_ID}"`,
+      `"project_id":"${projectId}"`,
+    );
+    content = content.replaceAll(
+      `"id":"${CORPUS_PROJECT_ID}"`,
+      `"id":"${projectId}"`,
+    );
+    if (content !== original) {
+      await fs.writeFile(file, content, "utf8");
+    }
+  }
+
+  const projectDir = path.join(home, "projects", projectId);
+  const sessionsDir = path.join(projectDir, "sessions");
+  const sessionIds = (await fs.readdir(sessionsDir)).sort();
+
+  // A forked child records the hash of its parent agent state. Restoring
+  // rewrote the parent state (its workspace path and project id), so the
+  // recorded hash is recomputed over the restored parent state.
+  for (const sessionId of sessionIds) {
+    const logPath = path.join(sessionsDir, sessionId, "session.jsonl");
+    const lines = (await fs.readFile(logPath, "utf8"))
+      .split("\n")
+      .filter((line) => line.length > 0);
+    const forked = lines
+      .slice(1)
+      .map((line) => JSON.parse(line))
+      .find((event) => event.kind === "session/forked");
+    if (forked === undefined) {
+      continue;
+    }
+    const parentStatePath = path.join(
+      sessionsDir,
+      forked.data.parent_session_id,
+      "agent-state.json",
+    );
+    const parentState = JSON.parse(await fs.readFile(parentStatePath, "utf8"));
+    const expected = core.recordHash(parentState);
+    const rewritten = lines.map((line, index) => {
+      if (index === 0) {
+        return line;
+      }
+      const event = JSON.parse(line);
+      if (event.kind !== "session/forked") {
+        return line;
+      }
+      event.data.parent_state_sha256 = expected;
+      return JSON.stringify(event);
+    });
+    await fs.writeFile(logPath, `${rewritten.join("\n")}\n`, "utf8");
+  }
+
+  // Evidence record hashes cover the complete record, including the restored
+  // workspace paths. Recompute each chain, then update the evidence index,
+  // run/end event, sign-off event, and verdict artifact that bind that head.
+  const evidenceDir = path.join(projectDir, "evidence");
+  const evidenceHeads = new Map();
+  for (const sessionId of await fs.readdir(evidenceDir)) {
+    const dir = path.join(evidenceDir, sessionId);
+    for (const file of await fs.readdir(dir)) {
+      if (file === "index.jsonl") {
+        continue;
+      }
+      const records = (await fs.readFile(path.join(dir, file), "utf8"))
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line));
+      let previous = null;
+      for (const [index, record] of records.entries()) {
+        record.prev_sha256 = previous;
+        previous = core.evidenceRecordHash(record);
+        records[index] = record;
+      }
+      const head = previous;
+      const runId = records[0]?.run_id;
+      assert.ok(typeof runId === "string", "evidence records have no run id");
+      evidenceHeads.set(recordKey(runId, sessionId), head);
+      await fs.writeFile(
+        path.join(dir, file),
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+        "utf8",
+      );
+    }
+  }
+
+  for (const sessionId of sessionIds) {
+    const logPath = path.join(sessionsDir, sessionId, "session.jsonl");
+    const lines = (await fs.readFile(logPath, "utf8"))
+      .split("\n")
+      .filter((line) => line.length > 0);
+    const updated = lines.map((line, index) => {
+      if (index === 0) {
+        return line;
+      }
+      const event = JSON.parse(line);
+      const head = evidenceHeads.get(recordKey(event.run_id, sessionId));
+      if (event.kind === "run/end" && head !== undefined) {
+        event.data.evidence_head = head;
+      }
+      if (event.kind === "verdict/sign_off" && head !== undefined) {
+        event.data.evidence_head = head;
+      }
+      return JSON.stringify(event);
+    });
+    await fs.writeFile(logPath, `${updated.join("\n")}\n`, "utf8");
+  }
+
+  for (const sessionId of await fs.readdir(evidenceDir)) {
+    const indexLines = (
+      await fs.readFile(
+        path.join(evidenceDir, sessionId, "index.jsonl"),
+        "utf8",
+      )
+    )
+      .split("\n")
+      .filter((line) => line.length > 0);
+    const updatedIndex = indexLines.map((line) => {
+      const entry = JSON.parse(line);
+      entry.head = evidenceHeads.get(recordKey(entry.run_id, sessionId));
+      return JSON.stringify(entry);
+    });
+    await fs.writeFile(
+      path.join(evidenceDir, sessionId, "index.jsonl"),
+      `${updatedIndex.join("\n")}\n`,
+      "utf8",
+    );
+  }
+
+  const verdictsDir = path.join(projectDir, "verdicts");
+  for (const file of await fs.readdir(verdictsDir)) {
+    const verdictPath = path.join(verdictsDir, file);
+    const verdict = JSON.parse(await fs.readFile(verdictPath, "utf8"));
+    verdict.evidence_head = evidenceHeads.get(
+      recordKey(verdict.run_id, verdict.session_id),
+    );
+    await fs.writeFile(verdictPath, `${JSON.stringify(verdict, null, 2)}\n`);
+  }
+
+  if (tamper !== undefined) {
+    await tamper({
+      home,
+      project,
+      projectDir,
+      projectId,
+      sessionsDir,
+      sessionIds,
+    });
+  }
+
+  return { home, project, projectId, projectDir, sessionsDir, sessionIds };
+}
+
+function recordKey(runId, sessionId) {
+  return `${sessionId}\0${runId}`;
+}
+
+async function runCli(args, { cwd, home }) {
+  const cli = await ensureBuilt();
+  const child = spawn(process.execPath, [cli, ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      CODEPUNK_HOME: home,
+      NO_COLOR: "1",
+      PI_OFFLINE: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  return new Promise((resolve) => {
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
 
 test("checkStoreVersion accepts older or equal and rejects with both numbers", () => {
   assert.equal(core.checkStoreVersion("test store", 1, 1), 1);
@@ -211,5 +463,274 @@ test("state-version.json refuses a non-integer version instead of migrating it",
       /state-version\.json version is not a non-negative integer/u,
     );
     assert.equal(await fs.readFile(statePath, "utf8"), original);
+  });
+});
+
+test("the 0.1.0 corpus matches its manifest digests", async () => {
+  const manifest = JSON.parse(await fs.readFile(CORPUS_MANIFEST, "utf8"));
+  assert.equal(manifest.source.version, "0.1.0");
+  assert.ok(manifest.files.length > 0);
+  for (const entry of manifest.files) {
+    const bytes = await fs.readFile(path.join(CORPUS_ROOT, entry.path));
+    assert.equal(
+      createHash("sha256").update(bytes).digest("hex"),
+      entry.sha256,
+      entry.path,
+    );
+  }
+});
+
+test("the restored 0.1.0 corpus lists, searches and reads its sessions", async () => {
+  await withTempDirectory("codepunk-compat-restore-", async (root) => {
+    const restored = await restoreCorpus(root);
+    assert.notEqual(restored.projectId, CORPUS_PROJECT_ID);
+
+    const sessions = await core.listProjectSessions(
+      restored.home,
+      restored.projectId,
+    );
+    assert.deepEqual(
+      sessions.map((session) => session.id).sort(),
+      restored.sessionIds,
+    );
+
+    const search = await core.searchProjectSessions({
+      rootDir: restored.home,
+      projectId: restored.projectId,
+      query: "compat",
+    });
+    assert.ok(search.matches.length > 0, "expected a session search hit");
+    for (const match of search.matches) {
+      assert.equal(match.cwd, restored.project);
+    }
+
+    for (const sessionId of restored.sessionIds) {
+      const store = await core.SessionStore.open({
+        rootDir: restored.home,
+        cwd: restored.project,
+        projectRoot: restored.project,
+        projectId: restored.projectId,
+        sessionId,
+      });
+      const tree = await core.readSessionTree(store);
+      assert.ok(tree !== null, `${sessionId} has no readable tree`);
+      assert.equal(tree.cwd, restored.project);
+      assert.equal(tree.session_id, sessionId);
+      const state = await store.readAgentState();
+      assert.ok(state !== null, `${sessionId} has no agent state`);
+      assert.equal(state.session_id, sessionId);
+      const branchIds = state.branch.map((entry) => entry.id);
+      assert.deepEqual(
+        tree.active_entry_ids,
+        branchIds,
+        `${sessionId} active branch differs from the corpus`,
+      );
+      assert.ok(
+        state.leaf_id === null || branchIds.includes(state.leaf_id),
+        `${sessionId} leaf is not on the active branch`,
+      );
+    }
+  });
+});
+
+test("the restored 0.1.0 corpus keeps every evidence chain and store readable", async () => {
+  await withTempDirectory("codepunk-compat-evidence-chain-", async (root) => {
+    const restored = await restoreCorpus(root);
+    const evidenceDir = path.join(restored.projectDir, "evidence");
+    const sessionIds = await fs.readdir(evidenceDir);
+    let ledgers = 0;
+    for (const sessionId of sessionIds) {
+      const dir = path.join(evidenceDir, sessionId);
+      const files = await fs.readdir(dir);
+      for (const file of files) {
+        if (file === "index.jsonl") {
+          continue;
+        }
+        const loaded = await core.readEvidenceFile(path.join(dir, file));
+        const chain = core.validateEvidenceChain(loaded.records);
+        assert.equal(chain.ok, true, chain.issues.join("; "));
+        assert.ok(chain.head !== null);
+        ledgers += 1;
+      }
+    }
+    assert.ok(ledgers > 0, "expected at least one evidence ledger");
+
+    const verdicts = await fs.readdir(
+      path.join(restored.projectDir, "verdicts"),
+    );
+    assert.ok(verdicts.length > 0, "expected verdict artifacts");
+    for (const file of verdicts) {
+      const verdict = JSON.parse(
+        await fs.readFile(
+          path.join(restored.projectDir, "verdicts", file),
+          "utf8",
+        ),
+      );
+      assert.equal(verdict.version, 1);
+      assert.equal(typeof verdict.verdict, "string");
+    }
+
+    const checkpointSession = "compat-parent";
+    const checkpoints = new core.CheckpointStore({
+      sessionDir: path.join(restored.sessionsDir, checkpointSession),
+      workspaceRoot: restored.project,
+    });
+    const list = await checkpoints.list();
+    assert.ok(list.length > 0, "expected checkpoint entries");
+    for (const entry of list) {
+      assert.equal(entry.id, "01M8613376NJBFQCJ2MQJY3R9D");
+    }
+
+    const state = JSON.parse(
+      await fs.readFile(path.join(restored.home, "state-version.json"), "utf8"),
+    );
+    assert.equal(state.version, 1);
+    const migration = await core.checkMigration(restored.home);
+    assert.deepEqual(migration, {
+      current: 1,
+      target: 1,
+      required: false,
+    });
+  });
+});
+
+test("the restored 0.1.0 corpus loads its configuration", async () => {
+  await withTempDirectory("codepunk-compat-config-", async (root) => {
+    const restored = await restoreCorpus(root);
+    const paths = core.projectPaths(
+      {
+        cwd: restored.project,
+        deliveryRoot: restored.project,
+        projectId: restored.projectId,
+      },
+      restored.home,
+    );
+    const loaded = await core.loadConfig(
+      paths,
+      { ...process.env, CODEPUNK_HOME: restored.home },
+      {},
+      { projectTrusted: true },
+    );
+    assert.equal(loaded.config.model.provider, "compat");
+    assert.equal(loaded.config.model.id, "compat-model");
+
+    const shown = await runCli(["config", "--json"], {
+      cwd: restored.project,
+      home: restored.home,
+    });
+    assert.equal(shown.code, 0, shown.stderr);
+    const payload = JSON.parse(shown.stdout);
+    assert.equal(payload.config.model.provider, "compat");
+  });
+});
+
+test("a newer agent-state version is refused without rewriting the file", async () => {
+  await withTempDirectory("codepunk-compat-c1-version-", async (root) => {
+    const restored = await restoreCorpus(root, {
+      tamper: async ({ sessionsDir }) => {
+        const statePath = path.join(
+          sessionsDir,
+          "compat-parent",
+          "agent-state.json",
+        );
+        const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+        state.version = 2;
+        await fs.writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
+      },
+    });
+    const statePath = path.join(
+      restored.sessionsDir,
+      "compat-parent",
+      "agent-state.json",
+    );
+    const before = await fs.readFile(statePath, "utf8");
+    const store = await core.SessionStore.open({
+      rootDir: restored.home,
+      cwd: restored.project,
+      projectRoot: restored.project,
+      projectId: restored.projectId,
+      sessionId: "compat-parent",
+    });
+    await assert.rejects(
+      () => store.readAgentState(),
+      (error) => {
+        assert.match(error.message, /agent-state/u);
+        assert.match(error.message, /version/u);
+        assert.match(error.message, /2/u);
+        assert.match(error.message, /1/u);
+        return true;
+      },
+    );
+    assert.equal(await fs.readFile(statePath, "utf8"), before);
+  });
+});
+
+test("a newer Pi session version is refused without rewriting the file", async () => {
+  await withTempDirectory(
+    "codepunk-compat-c1-session-version-",
+    async (root) => {
+      const restored = await restoreCorpus(root, {
+        tamper: async ({ sessionsDir }) => {
+          const statePath = path.join(
+            sessionsDir,
+            "compat-parent",
+            "agent-state.json",
+          );
+          const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+          state.session_version = 4;
+          await fs.writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
+        },
+      });
+      const statePath = path.join(
+        restored.sessionsDir,
+        "compat-parent",
+        "agent-state.json",
+      );
+      const before = await fs.readFile(statePath, "utf8");
+      const store = await core.SessionStore.open({
+        rootDir: restored.home,
+        cwd: restored.project,
+        projectRoot: restored.project,
+        projectId: restored.projectId,
+        sessionId: "compat-parent",
+      });
+      await assert.rejects(
+        () => store.readAgentState(),
+        (error) => {
+          assert.match(error.message, /agent-state/u);
+          assert.match(error.message, /session_version/u);
+          assert.match(error.message, /4/u);
+          assert.match(error.message, /3/u);
+          return true;
+        },
+      );
+      assert.equal(await fs.readFile(statePath, "utf8"), before);
+    },
+  );
+});
+
+test("a tampered corpus byte breaks the restored evidence chain", async () => {
+  await withTempDirectory("codepunk-compat-tamper-", async (root) => {
+    const restored = await restoreCorpus(root);
+    const ledger = path.join(
+      restored.projectDir,
+      "evidence",
+      "compat-parent",
+      "01M8612N73K9BRH91WH523Z8YS.jsonl",
+    );
+    const original = await fs.readFile(ledger, "utf8");
+    assert.match(
+      original,
+      /"output_preview":"Successfully wrote to compat-written\.txt"/u,
+    );
+    await fs.writeFile(
+      ledger,
+      original.replace(
+        '"output_preview":"Successfully wrote to compat-written.txt"',
+        '"output_preview":"Successfully wrote to compat-written.txt "',
+      ),
+      "utf8",
+    );
+    await assert.rejects(() => core.readEvidenceFile(ledger), /evidence/u);
   });
 });

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "run_id": "01M861379JAB5DZ6M723YSHJB5",
+  "session_id": "compat-parent",
+  "verdict": "incomplete",
+  "evidence_head": "sha256:b875a42bfd90cf1b9bc31b6fd9a0085f1754e658a42ae157217122a5984c548b",
+  "sign_off_id": null,
+  "signed_verdict": null,
+  "coverage": "uncovered",
+  "reasons": [
+    "record 1 was denied",
+    "run ended in state failed"
+  ],
+  "computed_at": "2026-11-24T05:40:16.613Z",
+  "vcs": {
+    "commit": null,
+    "tree": null,
+    "base_commit": null
+  }
+}

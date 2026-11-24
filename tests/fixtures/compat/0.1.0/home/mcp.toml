@@ -1,0 +1,3 @@
+[servers.compat-echo]
+command = "node"
+args = ["-e", "process.stdout.write(\"ok\")"]

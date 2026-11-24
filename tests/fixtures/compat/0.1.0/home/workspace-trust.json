@@ -1,0 +1,1 @@
+{"version":1,"workspaces":{"{{PROJECT}}":{"grants":{"config":true,"policy":true,"skills":true,"instructions":true},"updated_at":"2026-11-24T05:38:02.575Z","source":"cli"}}}

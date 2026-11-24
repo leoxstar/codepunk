@@ -189,6 +189,21 @@ Verify versions, internal dependencies, and the registry tarballs:
 )
 ```
 
+After the CLI release is visible in npm, collect the next compatibility corpus
+from the exact published version. Use a temporary `CODEPUNK_HOME` and a
+temporary project outside this repository; do not generate or edit fixture bytes
+by hand. Cover the current compatibility contract's required session and store
+scenarios, write every JSON and TOML store that release can produce, replace
+local absolute paths with `{{PROJECT}}` and `{{HOME}}`, and record every file
+digest plus the capture commands, npm integrity, OS, and Node version in
+`tests/fixtures/compat/<version>/MANIFEST.json`.
+
+The corpus must come from the real published package. If a required capability
+can only be exercised interactively, record the exact PTY command and inputs in
+the manifest. Do not backfill missing data from the development checkout or
+change the corpus to make a failing test pass; regenerate it from the published
+release instead.
+
 Perform a clean global-install smoke test with no Codepunk state in the
 temporary home. Run it on each release target with the sandbox dependencies
 installed. The only expected `doctor` error is the missing model; another

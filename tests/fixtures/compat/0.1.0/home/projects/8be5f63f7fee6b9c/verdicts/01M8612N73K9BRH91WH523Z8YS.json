@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "run_id": "01M8612N73K9BRH91WH523Z8YS",
+  "session_id": "compat-parent",
+  "verdict": "unverifiable",
+  "evidence_head": "sha256:1d394530f4615e70a0394f27410e9567f5b2cbda5dfc00504638b7fb45b4ce0a",
+  "sign_off_id": null,
+  "signed_verdict": null,
+  "coverage": "app-layer",
+  "reasons": [
+    "92bdba69-f1d1-48b2-aa87-d2ea286ea61c: diff_sha256 is missing"
+  ],
+  "computed_at": "2026-11-24T05:40:06.641Z",
+  "vcs": {
+    "commit": null,
+    "tree": null,
+    "base_commit": null
+  }
+}
