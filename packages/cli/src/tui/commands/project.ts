@@ -128,7 +128,15 @@ export function statusCommand(state: TuiState): TuiCommand {
     name: "status",
     description: "Show model, session, permission, trust, and usage status",
     handler: commandContext(state, async (runtime, context) => {
-      await notify(context, formatStatusSummary(runtime));
+      try {
+        const { createStatusPanel } =
+          await import("../components/status-panel.ts");
+        await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+          createStatusPanel(runtime, theme, keybindings, done),
+        );
+      } catch {
+        await notify(context, formatStatusSummary(runtime));
+      }
     }),
   });
 }

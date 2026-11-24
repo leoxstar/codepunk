@@ -3292,13 +3292,20 @@ test("a real pty reports status without a configured model", async () => {
         "sessions: ",
         "/status completion",
       );
-      const output = session.output().slice(mark);
+      const output = stripAnsi(session.output().slice(mark));
       assert.match(output, /project: /u);
       assert.match(output, /model: not selected/u);
       assert.match(output, /permissions: /u);
       assert.match(output, /trust: (trusted|untrusted)(?: \([^)]+\))? · /u);
       assert.match(output, /capabilities: /u);
       assert.match(output, /evidence: /u);
+      assert.match(output, /Project/u);
+      assert.match(output, /Session/u);
+      assert.match(output, /Permissions/u);
+      assert.match(output, /esc close/u);
+      assert.match(output, /│/u);
+      session.child.stdin.write("\u001b");
+      await waitForQuiet(session, 250);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -6270,6 +6277,8 @@ test("a real pty surfaces a stopped budget and refuses more model calls", async 
           "/status",
           "budget: stopped at 5/1 tokens; start a new session with /new",
         );
+        session.child.stdin.write("\u001b");
+        await waitForQuiet(session, 250);
         await runCommandAfter(
           session,
           "/session",
