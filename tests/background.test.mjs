@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { importCore } from "./support/core.mjs";
 import { withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
+
+// Background tasks require POSIX process groups, so the whole suite is
+// unsupported on Windows.
+const test = process.platform === "win32" ? nodeTest.skip : nodeTest;
 
 const CHILD_SCRIPT = `
 const fs = require("node:fs");
