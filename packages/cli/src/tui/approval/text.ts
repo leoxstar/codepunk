@@ -31,3 +31,22 @@ export function formatApproval(request: ApprovalRequest): string {
   ];
   return lines.join("\n");
 }
+
+export function persistentApprovalPreview(request: ApprovalRequest): string {
+  const argv =
+    request.argv === undefined || request.argv.length === 0
+      ? "(missing; persistent approval is unavailable)"
+      : JSON.stringify(request.argv);
+  return [
+    "Persistent rule preview",
+    "This choice writes a scoped rule for later sessions.",
+    `tool: ${request.tool ?? "(unknown)"}`,
+    `exact argv: ${argv}`,
+    `cwd: ${request.cwd ?? "(missing)"}`,
+    "match: identical argv only, from this exact cwd",
+    "storage: user scoped-rule file; inspect it with /permissions rules",
+    "next session: autonomy switches to scoped so this exact rule can apply",
+    "",
+    "Save this exact rule?",
+  ].join("\n");
+}

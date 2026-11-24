@@ -903,6 +903,145 @@ test("untrusted TUI approval selector", async () => {
   assert.ok(options.includes("Always allow this exact command"));
 });
 
+test("TuiApprovalChannel uses the inline approval card when available", async () => {
+  const { TuiApprovalChannel } = await importSource("packages/cli/src/tui.ts");
+  let customCalls = 0;
+  let selectCalls = 0;
+  const channel = new TuiApprovalChannel(true);
+  channel.setWorkspaceTrusted(true);
+  channel.attach({
+    ui: {
+      custom(factory) {
+        customCalls += 1;
+        return new Promise((resolve) => {
+          const card = factory(
+            {},
+            { bold: (text) => text, fg: (_color, text) => text },
+            {
+              matches: (data, keybinding) =>
+                keybinding === "tui.select.cancel" && data === "\u001b",
+            },
+            resolve,
+          );
+          card.handleInput("s");
+        });
+      },
+      async select() {
+        selectCalls += 1;
+        return "Deny";
+      },
+      notify() {},
+    },
+  });
+  const answer = await channel.ask({
+    request_id: "request-inline",
+    nonce_sha256: `sha256:${"c".repeat(64)}`,
+    ttl_ms: 30_000,
+    worker_id: "local",
+    session_id: "session-1",
+    tool_call_id: "call-1",
+    channel_id: "tui-main",
+    tool: "bash",
+    command: "touch probe.txt",
+    argv: ["touch", "probe.txt"],
+    cwd: "/workspace",
+    created_at: "2026-11-14T00:00:00.000Z",
+    expires_at: "2026-11-14T00:00:30.000Z",
+  });
+  assert.equal(customCalls, 1);
+  assert.equal(selectCalls, 0);
+  assert.equal(answer.answer, "allow");
+  assert.equal(answer.scope, "session");
+});
+
+test("TuiApprovalChannel keeps denial guidance on the inline path", async () => {
+  const { TuiApprovalChannel } = await importSource("packages/cli/src/tui.ts");
+  let prompts = 0;
+  const channel = new TuiApprovalChannel(true);
+  channel.setWorkspaceTrusted(true);
+  channel.attach({
+    ui: {
+      custom(factory) {
+        return new Promise((resolve) => {
+          const card = factory(
+            {},
+            { bold: (text) => text, fg: (_color, text) => text },
+            {
+              matches: (data, keybinding) =>
+                keybinding === "tui.select.cancel" && data === "\u001b",
+            },
+            resolve,
+          );
+          card.handleInput("g");
+        });
+      },
+      async input(title) {
+        prompts += 1;
+        assert.match(title, /Denial guidance/u);
+        return "  keep the original file  ";
+      },
+      async select() {
+        throw new Error("inline approval must not fall back to select");
+      },
+      notify() {},
+    },
+  });
+  const answer = await channel.ask({
+    request_id: "request-guidance",
+    nonce_sha256: `sha256:${"d".repeat(64)}`,
+    ttl_ms: 30_000,
+    worker_id: "local",
+    session_id: "session-1",
+    tool_call_id: "call-1",
+    channel_id: "tui-main",
+    tool: "bash",
+    command: "touch probe.txt",
+    argv: ["touch", "probe.txt"],
+    cwd: "/workspace",
+    created_at: "2026-11-14T00:00:00.000Z",
+    expires_at: "2026-11-14T00:00:30.000Z",
+  });
+  assert.equal(prompts, 1);
+  assert.equal(answer.answer, "deny");
+  assert.equal(answer.scope, "once");
+  assert.equal(answer.guidance, "keep the original file");
+});
+
+test("TuiApprovalChannel falls back to select when the inline card fails", async () => {
+  const { TuiApprovalChannel } = await importSource("packages/cli/src/tui.ts");
+  const channel = new TuiApprovalChannel(true);
+  channel.setWorkspaceTrusted(true);
+  channel.attach({
+    ui: {
+      async custom() {
+        throw new Error("custom components are unavailable");
+      },
+      async select(_title, options) {
+        assert.ok(options.includes("Allow once"));
+        return "Allow once";
+      },
+      notify() {},
+    },
+  });
+  const answer = await channel.ask({
+    request_id: "request-fallback",
+    nonce_sha256: `sha256:${"e".repeat(64)}`,
+    ttl_ms: 30_000,
+    worker_id: "local",
+    session_id: "session-1",
+    tool_call_id: "call-1",
+    channel_id: "tui-main",
+    tool: "bash",
+    command: "touch probe.txt",
+    argv: ["touch", "probe.txt"],
+    cwd: "/workspace",
+    created_at: "2026-11-14T00:00:00.000Z",
+    expires_at: "2026-11-14T00:00:30.000Z",
+  });
+  assert.equal(answer.answer, "allow");
+  assert.equal(answer.scope, "once");
+});
+
 test("the Codepunk help lists the real command surface", async () => {
   const { codepunkHelp } = await importSource("packages/cli/src/tui.ts");
   const help = codepunkHelp();
@@ -2558,7 +2697,7 @@ test("a real pty generates an image through a configured image model", async () 
         stripAnsi(session.output().slice(mark)),
         /command: image-generate openrouter\/black-forest-labs\/flux\.2-pro/u,
       );
-      session.child.stdin.write("\r");
+      session.child.stdin.write("a");
       await waitForOutputAfter(
         session,
         mark,
@@ -2744,7 +2883,7 @@ test("a real pty generates an image through a configured image model", async () 
           "Approval required",
           "wildcard-scoped image generation approval prompt",
         );
-        wildcard.child.stdin.write("\r");
+        wildcard.child.stdin.write("a");
         await waitForOutputAfter(
           wildcard,
           mark,
@@ -4442,7 +4581,7 @@ test(
           session.output().slice(allowMark),
           /Always allow this exact command/u,
         );
-        session.child.stdin.write("\r");
+        session.child.stdin.write("a");
         await waitFor(
           () =>
             fs
@@ -4477,7 +4616,7 @@ test(
           "!touch denied.txt",
           "deny approval prompt",
         );
-        session.child.stdin.write("\u001b[B\u001b[B\u001b[B\r");
+        session.child.stdin.write("d");
         const denied = await waitFor(
           async () =>
             (await readEvidence(home)).find(
@@ -4500,7 +4639,7 @@ test(
           "!!touch excluded.txt",
           "excluded shell approval prompt",
         );
-        session.child.stdin.write("\r");
+        session.child.stdin.write("a");
         await waitFor(
           () =>
             fs
@@ -4577,7 +4716,7 @@ test(
           "Always allow this exact command",
           "persistent approval option",
         );
-        first.child.stdin.write("\u001b[B\u001b[B\r");
+        first.child.stdin.write("p");
         await waitForOutputAfter(
           first,
           mark,
@@ -4614,13 +4753,15 @@ test(
           "cancelled persistent approval",
         );
         const cancelMark = first.output().length;
-        first.child.stdin.write("\u001b[B\u001b[B\r");
+        first.child.stdin.write("p");
         await waitForOutputAfter(
           first,
           cancelMark,
           "Persistent rule preview",
           "cancelled persistent approval confirmation",
         );
+        first.child.stdin.write("\u001b");
+        await new Promise((resolve) => setTimeout(resolve, 100));
         first.child.stdin.write("\u001b");
         await waitFor(
           async () =>

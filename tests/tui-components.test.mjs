@@ -27,6 +27,9 @@ const { TableScreen } = await importSource(
 const { DiffView, diffViewLines } = await importSource(
   "packages/cli/src/tui/components/diff-view.ts",
 );
+const { ApprovalCard } = await importSource(
+  "packages/cli/src/tui/components/approval-card.ts",
+);
 
 const WIDTHS = [1, 2, 8, 12, 20, 40, 80, 120];
 const THEME = {
@@ -373,4 +376,177 @@ test("DiffView closes on escape or q and ignores other input", () => {
   assert.equal(closed, 1);
   view.handleInput("q");
   assert.equal(closed, 2);
+});
+
+const APPROVAL_CHOICES = [
+  { key: "a", label: "Allow once", decision: "allow", scope: "once" },
+  {
+    key: "s",
+    label: "Allow this exact command for the session",
+    decision: "allow",
+    scope: "session",
+    requiresTrust: true,
+  },
+  {
+    key: "p",
+    label: "Always allow this exact command",
+    decision: "allow",
+    scope: "persistent",
+    requiresTrust: true,
+  },
+  { key: "d", label: "Deny", decision: "deny", scope: "once" },
+  {
+    key: "g",
+    label: "Deny with guidance for the model",
+    decision: "deny",
+    scope: "once",
+    guidance: true,
+  },
+];
+
+function approvalRequest(overrides = {}) {
+  return {
+    request_id: "request-1",
+    nonce_sha256: `sha256:${"a".repeat(64)}`,
+    ttl_ms: 30_000,
+    worker_id: "local",
+    session_id: "session-1",
+    tool_call_id: "call-1",
+    channel_id: "tui-main",
+    tool: "bash",
+    command: "touch probe.txt",
+    argv: ["touch", "probe.txt"],
+    cwd: "/workspace",
+    reason: "write outside the safe read-only classes",
+    created_at: "2026-11-14T00:00:00.000Z",
+    expires_at: "2026-11-14T00:00:30.000Z",
+    ...overrides,
+  };
+}
+
+function createCard({ trusted = true, request = approvalRequest(), onDone }) {
+  return new ApprovalCard(
+    {
+      request,
+      choices: APPROVAL_CHOICES,
+      workspaceTrusted: trusted,
+    },
+    THEME,
+    KEYBINDINGS,
+    (choice) => onDone(choice),
+  );
+}
+
+test("ApprovalCard renders the full request and defaults to Deny", () => {
+  let result = "unset";
+  const card = createCard({ onDone: (choice) => (result = choice) });
+  for (const width of WIDTHS) {
+    assertWidthSafe(card.render(width), width);
+    card.invalidate();
+  }
+  const text = stripTerminalSequences(card.render(80).join("\n"));
+  assert.match(text, /codepunk approval/u);
+  assert.match(text, /action: bash/u);
+  assert.match(text, /command: touch probe\.txt/u);
+  assert.match(text, /exact argv: touch probe\.txt/u);
+  assert.match(text, /cwd: \/workspace/u);
+  assert.match(text, /why: write outside/u);
+  assert.match(text, /> d  Deny/u);
+  assert.match(text, /a  Allow once/u);
+  assert.match(text, /s  Allow this exact command for the session/u);
+  assert.match(text, /p  Always allow this exact command/u);
+  assert.match(text, /g  Deny with guidance/u);
+  assert.match(text, /esc cancel/u);
+  assert.doesNotMatch(text, /\bpi\b|π/iu);
+  card.handleInput("\r");
+  assert.equal(result.key, "d");
+  assert.equal(result.decision, "deny");
+});
+
+test("ApprovalCard single keys and persistent confirmation", () => {
+  for (const [key, scope] of [
+    ["a", "once"],
+    ["d", "once"],
+    ["s", "session"],
+    ["g", "once"],
+  ]) {
+    let result = "unset";
+    const card = createCard({ onDone: (choice) => (result = choice) });
+    card.handleInput(key);
+    assert.equal(result.key, key);
+    assert.equal(result.scope, scope);
+  }
+
+  let result = "unset";
+  const card = createCard({ onDone: (choice) => (result = choice) });
+  card.handleInput("p");
+  assert.equal(result, "unset");
+  const preview = stripTerminalSequences(card.render(80).join("\n"));
+  assert.match(preview, /Persistent rule preview/u);
+  assert.match(preview, /exact argv: \["touch","probe\.txt"\]/u);
+  assert.match(preview, /enter\/p confirm · esc back/u);
+  card.handleInput("\u001b");
+  assert.equal(result, "unset");
+  assert.match(
+    stripTerminalSequences(card.render(80).join("\n")),
+    /> d  Deny/u,
+  );
+  card.handleInput("p");
+  card.handleInput("\r");
+  assert.equal(result.key, "p");
+  assert.equal(result.scope, "persistent");
+});
+
+test("ApprovalCard hides session and persistent choices when untrusted", () => {
+  let result = "unset";
+  const card = createCard({
+    trusted: false,
+    onDone: (choice) => (result = choice),
+  });
+  const text = stripTerminalSequences(card.render(80).join("\n"));
+  assert.doesNotMatch(text, /Allow this exact command for the session/u);
+  assert.doesNotMatch(text, /Always allow this exact command/u);
+  assert.match(text, /workspace is untrusted/u);
+  card.handleInput("s");
+  assert.equal(result, "unset");
+  card.handleInput("p");
+  assert.equal(result, "unset");
+  card.handleInput("a");
+  assert.equal(result.key, "a");
+});
+
+test("ApprovalCard arrows move the selection and escape cancels", () => {
+  let result = "unset";
+  const card = createCard({ onDone: (choice) => (result = choice) });
+  card.handleInput("\u001b[B");
+  assert.match(
+    stripTerminalSequences(card.render(80).join("\n")),
+    /> g  Deny with guidance/u,
+  );
+  card.handleInput("k");
+  assert.match(
+    stripTerminalSequences(card.render(80).join("\n")),
+    /> d  Deny/u,
+  );
+  card.handleInput("\u001b[A");
+  assert.match(
+    stripTerminalSequences(card.render(80).join("\n")),
+    /> p  Always allow this exact command/u,
+  );
+  card.handleInput("\u001b");
+  assert.equal(result, null);
+});
+
+test("ApprovalCard keeps CJK, emoji, ANSI, and long argv within width", () => {
+  const card = createCard({
+    request: approvalRequest({
+      command: `touch ${"中文/🙂/非常长的路径 ".repeat(12)}`,
+      argv: ["touch", `中文/🙂/非常长的路径-${"x".repeat(160)}`],
+    }),
+    onDone: () => {},
+  });
+  for (const width of WIDTHS) {
+    assertWidthSafe(card.render(width), width);
+    card.invalidate();
+  }
 });

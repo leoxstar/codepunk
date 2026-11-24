@@ -5,27 +5,28 @@ import type {
   ApprovalRequest,
   ApprovalScope,
 } from "codepunk-protocol";
-import { formatApproval } from "./text.ts";
+import type { ApprovalChoice } from "../components/approval-card.ts";
+import { formatApproval, persistentApprovalPreview } from "./text.ts";
 
-const APPROVAL_CHOICES: ReadonlyArray<{
-  label: string;
-  decision: "allow" | "deny";
-  scope: ApprovalScope;
-  guidance?: boolean;
-}> = [
-  { label: "Allow once", decision: "allow", scope: "once" },
+const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
+  { key: "a", label: "Allow once", decision: "allow", scope: "once" },
   {
+    key: "s",
     label: "Allow this exact command for the session",
     decision: "allow",
     scope: "session",
+    requiresTrust: true,
   },
   {
+    key: "p",
     label: "Always allow this exact command",
     decision: "allow",
     scope: "persistent",
+    requiresTrust: true,
   },
-  { label: "Deny", decision: "deny", scope: "once" },
+  { key: "d", label: "Deny", decision: "deny", scope: "once" },
   {
+    key: "g",
     label: "Deny with guidance for the model",
     decision: "deny",
     scope: "once",
@@ -35,24 +36,11 @@ const APPROVAL_CHOICES: ReadonlyArray<{
 const PERSIST_APPROVAL = "Save exact rule and allow";
 const PERSIST_BACK = "Back";
 
-function persistentApprovalPreview(request: ApprovalRequest): string {
-  const argv =
-    request.argv === undefined || request.argv.length === 0
-      ? "(missing; persistent approval is unavailable)"
-      : JSON.stringify(request.argv);
-  return [
-    "Persistent rule preview",
-    "This choice writes a scoped rule for later sessions.",
-    `tool: ${request.tool ?? "(unknown)"}`,
-    `exact argv: ${argv}`,
-    `cwd: ${request.cwd ?? "(missing)"}`,
-    "match: identical argv only, from this exact cwd",
-    "storage: user scoped-rule file; inspect it with /permissions rules",
-    "next session: autonomy switches to scoped so this exact rule can apply",
-    "",
-    "Save this exact rule?",
-  ].join("\n");
+interface InlineResult {
+  readonly used: boolean;
+  readonly choice: ApprovalChoice | null;
 }
+
 export class TuiApprovalChannel implements ApprovalChannel {
   readonly id = "codepunk-tui";
   readonly kind = "tui" as const;
@@ -95,42 +83,113 @@ export class TuiApprovalChannel implements ApprovalChannel {
       request.cwd !== undefined;
     const choices = APPROVAL_CHOICES.filter(
       (choice) =>
-        choice.scope === "once" || (canReuseExact && this.workspaceTrusted),
+        choice.requiresTrust !== true ||
+        (canReuseExact && this.workspaceTrusted),
     );
+    const inline = await this.askInline(request, choices);
+    if (inline.used) {
+      return this.resolveChoice(request, inline.choice);
+    }
+    return this.askWithSelect(request, choices);
+  }
+
+  private async askInline(
+    request: ApprovalRequest,
+    choices: readonly ApprovalChoice[],
+  ): Promise<InlineResult> {
+    if (this.context === null || !this.isTTY) {
+      return { used: false, choice: null };
+    }
+    const ui = this.context.ui;
+    if (typeof ui.custom !== "function") {
+      return { used: false, choice: null };
+    }
+    try {
+      const { createApprovalCard } =
+        await import("../components/approval-card.ts");
+      const choice = await ui.custom<ApprovalChoice | null>(
+        (_tui, theme, keybindings, done) =>
+          createApprovalCard(
+            {
+              request,
+              choices,
+              workspaceTrusted: this.workspaceTrusted,
+            },
+            theme,
+            keybindings,
+            done,
+          ),
+      );
+      return { used: true, choice: choice ?? null };
+    } catch {
+      return { used: false, choice: null };
+    }
+  }
+
+  private async resolveChoice(
+    request: ApprovalRequest,
+    choice: ApprovalChoice | null,
+  ): Promise<ApprovalAnswer> {
+    if (choice === null || choice.decision === "deny") {
+      const ui = this.context?.ui;
+      const guidance =
+        choice?.guidance === true && ui !== undefined
+          ? (
+              await ui.input(
+                "Denial guidance (optional)",
+                "Tell the model what to do instead",
+              )
+            )?.trim()
+          : undefined;
+      return this.answer(
+        request,
+        "deny",
+        "once",
+        guidance === undefined || guidance.length === 0 ? undefined : guidance,
+      );
+    }
+    if (choice.scope === "persistent") {
+      if (!this.workspaceTrusted) {
+        return this.answer(request, "deny", "once");
+      }
+      const stored = await this.persist?.(request);
+      if (stored !== true) {
+        this.context?.ui.notify(
+          "the exact rule was not stored; allowing this call only",
+          "warning",
+        );
+        return this.answer(request, "allow", "once");
+      }
+    }
+    return this.answer(request, "allow", choice.scope);
+  }
+
+  private async askWithSelect(
+    request: ApprovalRequest,
+    choices: readonly ApprovalChoice[],
+  ): Promise<ApprovalAnswer> {
+    if (this.context === null) {
+      return this.answer(request, "deny", "once");
+    }
+    const ui = this.context.ui;
     const options = choices.map((choice) => choice.label);
     const prompt = this.workspaceTrusted
       ? formatApproval(request)
       : `${formatApproval(request)}\n\nworkspace is untrusted; only "Allow once" is available for this call.`;
     while (true) {
-      const selected = await this.context.ui.select(prompt, options);
+      const selected = await ui.select(prompt, options);
       const choice = choices.find((candidate) => candidate.label === selected);
       if (choice === undefined || choice.decision === "deny") {
-        const guidance =
-          choice?.guidance === true
-            ? (
-                await this.context.ui.input(
-                  "Denial guidance (optional)",
-                  "Tell the model what to do instead",
-                )
-              )?.trim()
-            : undefined;
-        return this.answer(
-          request,
-          "deny",
-          "once",
-          guidance === undefined || guidance.length === 0
-            ? undefined
-            : guidance,
-        );
+        return this.resolveChoice(request, choice ?? null);
       }
       if (choice.scope === "persistent") {
         if (!this.workspaceTrusted) {
           return this.answer(request, "deny", "once");
         }
-        const confirmed = await this.context.ui.select(
-          persistentApprovalPreview(request),
-          [PERSIST_APPROVAL, PERSIST_BACK],
-        );
+        const confirmed = await ui.select(persistentApprovalPreview(request), [
+          PERSIST_APPROVAL,
+          PERSIST_BACK,
+        ]);
         if (confirmed === PERSIST_BACK) {
           continue;
         }
@@ -139,7 +198,7 @@ export class TuiApprovalChannel implements ApprovalChannel {
         }
         const stored = await this.persist?.(request);
         if (stored !== true) {
-          this.context.ui.notify(
+          ui.notify(
             "the exact rule was not stored; allowing this call only",
             "warning",
           );
