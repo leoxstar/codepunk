@@ -220,12 +220,12 @@ const EXPECTED_LOCKFILE_SHA256 =
   "19720cd67c3e2d0a3335cf7b9f5095044f1d60d3433ae81578acd3862b173abd";
 
 const EXPECTED_CI_SHA256 =
-  "c99f39055445cadcddebab6d8518edd4dfd49d758fa9ec8cf5be20a2b3ad70dc";
+  "420329995c24a3b1e196f5d81a2c601adc674fefcfe659be7b8cfd600703cf98";
 
 const FULL_CI_PATH = ".github/workflows/full-ci.yml";
 
 const EXPECTED_FULL_CI_SHA256 =
-  "837c9957dba73978c9e90bad5e922e36b97e07d1a5f1bfa480123ab4fb61b38d";
+  "b40b343de89f414503eca8a3c746e4f025d8965f166928c2d064c078e6282fb1";
 
 const EXPECTED_CI_RUNNERS = ["macos-15", "windows-latest"];
 

@@ -21,8 +21,13 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
   curl -fsSL --retry 3 --retry-delay 2 \
     -o "$dest/fd.zip" \
     "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-x86_64-pc-windows-msvc.zip"
-  powershell.exe -NoProfile -NonInteractive -Command \
-    "Expand-Archive -LiteralPath '$dest_win/ripgrep.zip' -DestinationPath '$dest_win/ripgrep' -Force; Expand-Archive -LiteralPath '$dest_win/fd.zip' -DestinationPath '$dest_win/fd' -Force"
+  seven_zip="/c/Program Files/7-Zip/7z.exe"
+  if [ ! -x "$seven_zip" ]; then
+    echo "7-Zip is required to extract Windows sandbox dependencies: $seven_zip" >&2
+    exit 1
+  fi
+  "$seven_zip" x -y "-o$dest_win/ripgrep" "$dest_win/ripgrep.zip" >/dev/null
+  "$seven_zip" x -y "-o$dest_win/fd" "$dest_win/fd.zip" >/dev/null
   rg_bin="$(find "$dest/ripgrep" -type f -name rg.exe -print -quit)"
   fd_bin="$(find "$dest/fd" -type f -name fd.exe -print -quit)"
   test -n "$rg_bin"

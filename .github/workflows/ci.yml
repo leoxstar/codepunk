@@ -80,14 +80,14 @@ jobs:
       - name: Install sandbox dependencies
         run: bash scripts/ci-install-sandbox-deps.sh
 
+      - name: Build
+        run: pnpm run build
+
       - name: Run tests and negative controls
         run: pnpm test
 
       - name: Run deterministic eval regression
         run: pnpm run eval
-
-      - name: Build
-        run: pnpm run build
 
       - name: Check built entry points
         run: node scripts/check-repo.mjs --require-built
