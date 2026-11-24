@@ -1151,7 +1151,7 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     path: "docs/DEVELOPMENT.md",
     async apply(root) {
       return replaceFile(root, "docs/DEVELOPMENT.md", (content) =>
-        content.replaceAll("`1.5.2`", "`1.5.3`"),
+        content.replaceAll("`1.6.0`", "`1.6.1`"),
       );
     },
   },
@@ -1214,7 +1214,7 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     path: "pnpm-lock.yaml",
     async apply(root) {
       return replaceFile(root, "pnpm-lock.yaml", (content) =>
-        content.replaceAll("undici@8.12.3", "undici@8.0.0"),
+        content.replaceAll("undici@8.12.4", "undici@8.0.0"),
       );
     },
   },

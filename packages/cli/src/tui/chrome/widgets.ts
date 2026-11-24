@@ -1,15 +1,17 @@
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 
 export class InterceptingEditor extends CustomEditor {
   private readonly intercept: (text: string) => Promise<boolean> | boolean;
 
   constructor(
-    tui: unknown,
-    theme: unknown,
-    keybindings: unknown,
+    tui: TUI,
+    theme: EditorTheme,
+    keybindings: KeybindingsManager,
     intercept: (text: string) => Promise<boolean> | boolean,
   ) {
-    super(tui as never, theme as never, keybindings as never);
+    super(tui, theme, keybindings);
     this.intercept = intercept;
     let assigned: ((text: string) => Promise<void> | void) | undefined;
     Object.defineProperty(this, "onSubmit", {
@@ -32,9 +34,9 @@ export class InterceptingEditor extends CustomEditor {
 
 export class EditorBridge extends InterceptingEditor {
   constructor(
-    tui: unknown,
-    theme: unknown,
-    keybindings: unknown,
+    tui: TUI,
+    theme: EditorTheme,
+    keybindings: KeybindingsManager,
     intercept: (text: string) => Promise<boolean> | boolean,
   ) {
     super(tui, theme, keybindings, intercept);

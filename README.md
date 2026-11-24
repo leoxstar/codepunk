@@ -521,7 +521,7 @@ codepunk permissions why -- git status
 ```
 
 The model receives the session start time and timezone in an `environment`
-section injected through Pi's `before_agent_start` section hook. Pi 1.5.2
+section injected through Pi's `before_agent_start` section hook. Pi 1.6.0
 does not provide a built-in clock section; Codepunk supplies one timestamp
 and IANA timezone string. It is a clock fact, not a weekday or locale
 adapter. `date`, `uname`, `whoami`, `hostname` read forms, `id`,
@@ -646,7 +646,7 @@ codepunk doctor
 `models import` reads the endpoint's `/models` response and writes only
 metadata plus the configured key reference. A local endpoint that ignores
 authentication still needs a placeholder key so the host reports the provider
-as configured; leave `--auth-header` off in that case. With Pi 1.5.2 the
+as configured; leave `--auth-header` off in that case. With Pi 1.6.0 the
 placeholder is still emitted as a Bearer credential by the OpenAI client, so
 the local endpoint must accept or ignore that header. For an authenticated
 endpoint, pass the real key or an `$ENV` reference and add `--auth-header`.

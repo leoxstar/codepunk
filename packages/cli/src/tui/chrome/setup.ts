@@ -4,6 +4,7 @@ import {
   type CodepunkRuntime,
 } from "codepunk-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
 import { codepunkHelp } from "./help.ts";
 import { selectedModel, renderStatus, evidenceCount } from "./model.ts";
@@ -26,30 +27,29 @@ import { sessionSummary } from "../format/status-summary.ts";
 import { availableModels, selectModelReference } from "../format/model.ts";
 import { noAuthenticatedModelsMessage } from "./model.ts";
 
-interface Renderable {
-  render(width: number): string[];
-  invalidate(): void;
-}
-
-function component(text: () => string, visible: () => boolean): Renderable {
+function component(text: () => string, visible: () => boolean): Component {
   return {
     render: () => (visible() ? text().split("\n") : []),
     invalidate: () => {},
   };
 }
 
-function chromeHeader(state: TuiState, header: boolean): never {
+function chromeHeader(state: TuiState, header: boolean): Component {
   return component(
     () => renderStatus(state),
     () => header,
-  ) as never;
+  );
 }
 
-function chromeFooter(state: TuiState, cwd: string, footer: boolean): never {
+function chromeFooter(
+  state: TuiState,
+  cwd: string,
+  footer: boolean,
+): Component {
   return component(
     () => `${renderStatus(state)}\n${cwd}`,
     () => footer,
-  ) as never;
+  );
 }
 
 async function handleShellInput(

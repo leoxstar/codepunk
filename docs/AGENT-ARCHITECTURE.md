@@ -4,17 +4,18 @@ This note answers a narrower question than a feature list: which parts of a
 coding agent should Codepunk own, and which parts should come from the Pi host
 that Codepunk already depends on?
 
-The review is source-backed. It uses the pinned Pi `1.5.2` package shipped in
-this repository, plus source inspection or installed help for Codex CLI
+The review was originally source-backed against the then-pinned Pi `1.5.2`
+package; spec 0015 re-checked the `1.6.0` upgrade surface. It also uses source
+inspection or installed help for Codex CLI
 `0.169.0`, Claude Code `2.1.323`, OpenCode `2.3.0`, Gemini CLI `0.68.0`, OMP
 `18.12.6`, Kimi Code `2.6.0`, and MiniMax Code `0.7.7`. The local gate and real
 gateway requests were also exercised; see Local evidence. The comparison is
 not a security test of the other products.
 
 The concrete host dependency is
-`@earendil-works/pi-coding-agent@1.5.2`; `pi-agent-core` is a transitive
+`@earendil-works/pi-coding-agent@1.6.0`; `pi-agent-core` is a transitive
 package at the same version. The CLI also declares
-`@earendil-works/pi-tui@1.5.2` directly because the pre-host trust prompt
+`@earendil-works/pi-tui@1.6.0` directly because the pre-host trust prompt
 uses its exported terminal components. Codepunk pins this surface rather than
 vendoring or forking the Pi execution engine.
 
@@ -421,10 +422,11 @@ instead of claiming hooks are disabled.
 The boundary is not an informal diagram; the product imports a small Pi
 surface and wraps it at two points:
 
-Current pin: `@earendil-works/pi-coding-agent@1.5.2`, with `pi-agent-core`
-at the same version transitively and `pi-tui@1.5.2` declared directly by the
+Current pin: `@earendil-works/pi-coding-agent@1.6.0`, with `pi-agent-core`
+at the same version transitively and `pi-tui@1.6.0` declared directly by the
 CLI. The imports live in `packages/core/src/adapters/pi/index.ts`,
-`packages/core/src/model/index.ts`, `packages/cli/src/tui.ts`,
+`packages/core/src/model/index.ts`, `packages/cli/src/tui/host-commands.ts`,
+`packages/cli/src/tui/extension.ts` (through the `tui.ts` facade),
 `packages/cli/src/terminal-select.ts`, and `packages/cli/src/index.ts`.
 
 | Pi surface                                                      | Where Codepunk uses it                       | What Codepunk does not duplicate                                                                                                                                   |

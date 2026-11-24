@@ -51,7 +51,7 @@ export async function makeSessionRuntime(
           services: runtime.host.services,
           diagnostics: runtime.host.services.diagnostics,
           extensionsResult:
-            runtime.host.services.resourceLoader.getExtensions() as never,
+            runtime.host.services.resourceLoader.getExtensions(),
         };
       }
       if (options === undefined) {
@@ -70,8 +70,7 @@ export async function makeSessionRuntime(
         session: next.host.session,
         services: next.host.services,
         diagnostics: next.host.services.diagnostics,
-        extensionsResult:
-          next.host.services.resourceLoader.getExtensions() as never,
+        extensionsResult: next.host.services.resourceLoader.getExtensions(),
       };
     },
     {

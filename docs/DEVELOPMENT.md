@@ -97,22 +97,22 @@ Runtime dependencies are exact and limited to:
 
 | Package                           | Version  | Manifest                        |
 | --------------------------------- | -------- | ------------------------------- |
-| `@earendil-works/pi-ai`           | `1.5.2`  | `packages/core`                 |
-| `@earendil-works/pi-coding-agent` | `1.5.2`  | `packages/core`, `packages/cli` |
-| `@earendil-works/pi-mcp`          | `1.5.2`  | `packages/core`                 |
+| `@earendil-works/pi-ai`           | `1.6.0`  | `packages/core`                 |
+| `@earendil-works/pi-coding-agent` | `1.6.0`  | `packages/core`, `packages/cli` |
+| `@earendil-works/pi-mcp`          | `1.6.0`  | `packages/core`                 |
 | `@anthropic-ai/sandbox-runtime`   | `0.0.82` | `packages/core`                 |
 | `typebox`                         | `1.3.27` | `packages/protocol`             |
 
 Root development dependencies are exact and limited to the Pi test harness
-packages `@earendil-works/pi-ai` `1.5.2` and
-`@earendil-works/pi-coding-agent` `1.5.2`, Prettier `3.10.1`, TypeScript
+packages `@earendil-works/pi-ai` `1.6.0` and
+`@earendil-works/pi-coding-agent` `1.6.0`, Prettier `3.10.1`, TypeScript
 `7.0.2`, and Node.js type definitions `@types/node` `22.19.1`. The checker
 rejects ranges, tags, URLs, Git specs, untracked runtime packages, unapproved
 overrides, and lifecycle scripts. Dependency changes require a reviewed
 lockfile diff.
 
 Install and CI commands use `--ignore-scripts`. The dependency tree contains
-four transitive packages with install scripts: `@google/genai@2.21.0`,
+four transitive packages with install scripts: `@google/genai@2.32.0`,
 `koffi@3.3.8`, `node-pty@1.1.0`, and `protobufjs@7.6.6`. None of those scripts
 run in this repository's install or CI flow. The workspace names all four in
 `ignoredBuiltDependencies`, so pnpm 12 records the reviewed denial instead of
