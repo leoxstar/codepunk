@@ -2803,6 +2803,9 @@ async function checkPackagePackaging(
   requireBuilt,
   add,
 ) {
+  // npm startup and the offline file scan are slower on Windows runners;
+  // keep the tighter bound on POSIX so a real hang is still caught quickly.
+  const packTimeoutMs = process.platform === "win32" ? 60_000 : 10_000;
   const relativeLicense = `${spec.dir}/LICENSE`;
   try {
     const license = await readFile(path.join(root, relativeLicense));
@@ -2829,7 +2832,7 @@ async function checkPackagePackaging(
       {
         cwd: path.join(root, spec.dir),
         encoding: "utf8",
-        timeout: 10_000,
+        timeout: packTimeoutMs,
         maxBuffer: 1_048_576,
         shell: process.platform === "win32",
         env: { ...process.env, npm_config_update_notifier: "false" },
@@ -2838,7 +2841,7 @@ async function checkPackagePackaging(
     output = result.stdout;
   } catch (error) {
     const reason = error.killed
-      ? "timed out after 10000 ms"
+      ? `timed out after ${packTimeoutMs} ms`
       : `${error.code ?? "unknown"}: ${(error.stderr?.trim() || error.message).slice(0, 1_000)}`;
     add("pkg.pack", spec.dir, `npm pack --dry-run failed (${reason})`);
     return;
