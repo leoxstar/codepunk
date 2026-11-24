@@ -134,6 +134,7 @@ function toolEffects(tool: string): Effects {
     case "list_mcp_resources":
     case "list_mcp_resource_templates":
     case "read_mcp_resource":
+    case "web_fetch":
       return { fs: "none", shell: false, network: true };
     default:
       return { fs: "unknown", shell: false, network: false };
@@ -155,6 +156,9 @@ export function coverageFor(
     return sandbox === "allow" ? "enforced" : "uncovered";
   }
   if (tool === "read" || tool === "search" || tool === "memory_search") {
+    return "app-layer";
+  }
+  if (tool === "web_fetch") {
     return "app-layer";
   }
   if (tool === "plan" || tool === "todo") {
@@ -1692,6 +1696,20 @@ function toolDecision(request: PolicyRequest): {
       },
       pathTarget: check.target,
       approvalClass: check.approvalClass,
+    };
+  }
+  if (request.tool === "web_fetch") {
+    return {
+      decision: "ask",
+      reason:
+        "web fetch runs in-process outside the sandbox and needs approval",
+      rule: {
+        id: "web.fetch.ask",
+        tool: request.tool,
+        decision: "ask",
+      },
+      pathTarget: null,
+      approvalClass: "network",
     };
   }
   if (request.tool === "memory_search") {

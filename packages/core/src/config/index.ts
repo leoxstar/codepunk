@@ -245,6 +245,7 @@ const TOOL_NAMES = [
   "search",
   "memory_search",
   "exec",
+  "web_fetch",
   "plan",
   "todo",
 ] as const;
@@ -457,6 +458,7 @@ export function defaultConfig(): CodepunkConfig {
         "shell",
         "search",
         "memory_search",
+        "web_fetch",
         "plan",
         "todo",
       ],

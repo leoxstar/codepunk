@@ -215,6 +215,27 @@ function matchesDomainEntry(
   return host === entry.host;
 }
 
+/**
+ * True when a host:port is denied by one of the operator's deny entries.
+ * The `web_fetch` tool applies this list in-process, outside the sandbox
+ * proxy, so the deny decisions stay identical on both egress paths.
+ */
+/**
+ * True when a host:port is denied by one of the operator's deny entries.
+ * The `web_fetch` tool applies this list in-process, outside the sandbox
+ * proxy, so the deny decisions stay identical on both egress paths.
+ */
+export function domainListDenies(
+  host: string,
+  port: number,
+  entries: readonly string[],
+): boolean {
+  return entries.some((entry) => {
+    const parsed = parseDomainEntry(entry);
+    return parsed !== null && matchesDomainEntry(host, port, parsed);
+  });
+}
+
 function headerText(
   headers: Record<string, string | string[] | undefined>,
   name: string,

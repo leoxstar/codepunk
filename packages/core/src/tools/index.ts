@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createMemorySearchTool, type MemoryManager } from "../memory/index.ts";
 import { createSearchTool } from "../search/index.ts";
+import { createWebFetchTool } from "../webfetch/index.ts";
 import {
   createPlanTool,
   createTodoTool,
@@ -32,6 +33,7 @@ export const CODEPUNK_TOOL_NAMES = [
   "exec",
   "search",
   "memory_search",
+  "web_fetch",
   "plan",
   "todo",
 ] as const;
@@ -88,6 +90,12 @@ export const TOOL_EXECUTION_POLICIES: Readonly<
     sideEffect: "read",
     idempotent: true,
     resultBudgetBytes: 128 * 1_024,
+    retry: "never",
+  },
+  web_fetch: {
+    sideEffect: "external",
+    idempotent: false,
+    resultBudgetBytes: 256 * 1_024,
     retry: "never",
   },
   plan: {
@@ -166,6 +174,8 @@ export function createCodepunkToolDefinitions(
     workspaceRoot?: string;
     additionalRoots?: readonly string[];
     work?: WorkToolOptions | null;
+    /** Operator-denied domains applied to every web_fetch call. */
+    networkDeny?: readonly string[];
   } = {},
 ): ToolDefinition<any, any, any>[] {
   const defaultEnabled: string[] = [
@@ -218,6 +228,13 @@ export function createCodepunkToolDefinitions(
   ) {
     all.push(createMemorySearchTool(options.memory));
   }
+  all.push(
+    createWebFetchTool(
+      options.networkDeny === undefined
+        ? {}
+        : { deniedDomains: options.networkDeny },
+    ),
+  );
   if (options.work !== null && options.work !== undefined) {
     all.push(
       createPlanTool({

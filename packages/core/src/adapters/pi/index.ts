@@ -1158,6 +1158,8 @@ export async function createPiHost(
               continue;
             }
             messageEntries.push(
+              // SAFETY: the role was narrowed to user/assistant/toolResult
+              // above, so the entry carries a matching message shape.
               entry as unknown as {
                 id: string;
                 message: ContextEvent["messages"][number];
@@ -1896,6 +1898,9 @@ export async function createPiHost(
         ...(options.enabledTools !== undefined
           ? { enabledTools: options.enabledTools }
           : {}),
+        ...(options.networkDeniedDomains !== undefined
+          ? { networkDeny: options.networkDeniedDomains }
+          : {}),
         memory: options.memory ?? null,
         work,
       },
@@ -2029,9 +2034,12 @@ export async function createPiHost(
     };
     const replaceExtensionPaths = (paths: readonly string[]): void => {
       const normalized = paths.map((candidate) => normalizeAbsolute(candidate));
-      const loader = services!.resourceLoader as unknown as {
-        additionalExtensionPaths?: string[];
-      };
+      const loader =
+        // SAFETY: pi's resource loader exposes additionalExtensionPaths, and
+        // the shape is validated by the Array.isArray check below.
+        services!.resourceLoader as unknown as {
+          additionalExtensionPaths?: string[];
+        };
       if (!Array.isArray(loader.additionalExtensionPaths)) {
         throw new HostIsolationError(
           "pinned Pi resource loader no longer exposes additionalExtensionPaths",

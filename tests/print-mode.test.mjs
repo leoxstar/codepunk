@@ -225,7 +225,7 @@ test("print and JSON modes run read-only through a local provider", async () => 
         JSON.stringify(
           toolRequests[0].tools.map((tool) => tool.function?.name ?? tool.name),
         ),
-        JSON.stringify(["read", "search", "memory_search"]),
+        JSON.stringify(["read", "search", "memory_search", "web_fetch"]),
       );
       assert.equal(
         toolRequests.every((request) =>

@@ -4012,7 +4012,7 @@ test(
         assert.match(session.output().slice(allowMark), /why: .+/u);
         assert.match(
           session.output().slice(allowMark),
-          /coverage: (?:enforced: srt|uncovered: no srt sandbox)/u,
+          /coverage: (?:srt [^;]+ enforced|no srt sandbox; this command runs directly)/u,
         );
         assert.match(
           session.output().slice(allowMark),

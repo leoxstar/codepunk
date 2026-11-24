@@ -19,6 +19,11 @@ explicit policy boundary around file and shell actions.
 - `--add-dir` extra file roots that extend read/write paths without loading
   the extra directory's project config, skills, MCP, or instructions.
 - Shell confinement through `srt`, with coverage reported per execution surface.
+- `web_fetch` is a model-callable tool that runs in-process outside `srt` and
+  therefore always asks: the approval card names the exact URL and grants
+  only that call. The tool refuses private, loopback, and link-local hosts
+  and applies the operator's `sandbox.network_deny` list to every hop,
+  including redirects.
 - Append-only evidence with a hash chain and human sign-off.
 - Codepunk-owned sessions with live `/resume`, `/new`, `/fork`, `/clone`, and
   `/tree` in the TUI, where the bare command opens Pi's searchable branch

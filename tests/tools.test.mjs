@@ -304,7 +304,10 @@ test("approval carries a diff preview and returns denial guidance", async () => 
   assert.match(request.diff_preview, /-before/u);
   assert.match(request.diff_preview, /\+after/u);
   assert.match(request.diff_sha256, /^sha256:/u);
-  assert.match(request.coverage_preview, /^app-layer:/u);
+  assert.match(
+    request.coverage_preview,
+    /^path and write-set policy enforced/u,
+  );
   assert.equal(await fs.readFile(target, "utf8"), "before\n");
   const record = (await core.readEvidenceFile(paths.evidence)).records.find(
     (entry) => entry.tool_call_id === "call-preview",

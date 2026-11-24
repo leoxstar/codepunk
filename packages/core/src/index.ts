@@ -199,6 +199,7 @@ export {
   createCodepunkToolDefinitions,
   createHeadlessExecToolDefinition,
   createSandboxBashOperations,
+  toolExecutionPolicy,
   type BashObservation,
   type CodepunkToolName,
   type WorkToolOptions,
@@ -398,6 +399,10 @@ export {
   type SearchBinary,
   type SearchToolOptions,
 } from "./search/index.ts";
+export {
+  createWebFetchTool,
+  type WebFetchToolOptions,
+} from "./webfetch/index.ts";
 export {
   exportSession,
   forkSession,

@@ -9,6 +9,10 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `web_fetch` tool: model-initiated HTTP GET through an approval-gated,
+  in-process path that enforces the sandbox `network_deny` domain list and
+  refuses private, loopback, and link-local hosts. Every call opens an
+  approval card that names the exact URL; approving grants only that call.
 - `/plan <request>` enters read-only plan mode and submits the request as a
   planning round; `/plan` without arguments still shows the recorded plan.
 

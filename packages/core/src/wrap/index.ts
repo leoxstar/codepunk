@@ -483,6 +483,13 @@ function approvalArguments(
   tool: string,
   params: Record<string, unknown>,
 ): { preview: string; sha256: string } | null {
+  if (tool === "web_fetch" && typeof params["url"] === "string") {
+    const params2 = { url: redactOutputPreview(params["url"]) };
+    return {
+      preview: boundedApprovalPreview(JSON.stringify(params2, null, 2)),
+      sha256: sha256Text(canonicalJson(params2)),
+    };
+  }
   if (!isMcpProductTool(tool)) {
     return null;
   }
@@ -499,15 +506,18 @@ function coveragePreview(
   sandbox: ShellProvider | null,
 ): string | undefined {
   if (isMcpProductTool(tool)) {
-    return "uncovered: MCP server executes outside Codepunk's sandbox";
+    return "uncovered: MCP server runs outside the Codepunk sandbox";
   }
   if (isShellTool(tool)) {
     return sandbox?.sandboxed === true
-      ? `enforced: srt ${sandbox.descriptor.version ?? "unknown"}; network denied; writes restricted to the Codepunk write set`
-      : "uncovered: no srt sandbox is available";
+      ? `srt ${sandbox.descriptor.version ?? "unknown"} enforced; network off unless allowlisted; writes limited to the Codepunk write set`
+      : "no srt sandbox; this command runs directly on your machine";
   }
   if (tool === "write" || tool === "edit") {
-    return "app-layer: path and write-set policy are enforced; file tools are not executed inside srt";
+    return "path and write-set policy enforced; file tools do not run inside srt";
+  }
+  if (tool === "web_fetch") {
+    return "in-process request; approving grants only this call; the domain deny list and private-host guard still apply";
   }
   return undefined;
 }
@@ -520,6 +530,9 @@ function approvalReason(
 ): string {
   if (policy.approval_class !== "network") {
     return reason;
+  }
+  if (policy.match.tool === "web_fetch") {
+    return `${reason}; approving grants only this request, and the domain deny list still applies`;
   }
   if (allowedDomains === undefined || allowedDomains.length === 0) {
     return `${reason}; sandbox.network_allow is empty, so srt will deny egress even if approved`;

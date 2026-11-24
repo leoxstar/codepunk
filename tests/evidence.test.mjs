@@ -145,7 +145,7 @@ test("a complete malformed line is not treated as truncation", async () => {
     await writeFile(filePath, '{"not":"a record"}\n', "utf8");
     await assert.rejects(
       () => core.readEvidenceFile(filePath),
-      /invalid evidence record/u,
+      /evidence record at line 1 version is missing/u,
     );
   });
 });
