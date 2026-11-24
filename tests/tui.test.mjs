@@ -3208,6 +3208,12 @@ test("a real pty guides first-run model setup without a Pi-only warning", async 
         "No model configured",
         "first-run prompt gate",
       );
+      await waitForOutputAfter(
+        session,
+        promptMark,
+        "escape/ctrl+c cancel",
+        "first-run setup selector hint",
+      );
       assert.match(
         session.output().slice(promptMark),
         /Sign in to a provider/u,
