@@ -81,12 +81,19 @@ import {
   wrapUserBashCommand,
   type ToolWrapOptions,
 } from "../../wrap/index.ts";
+import type { ShellProvider } from "../../sandbox/index.ts";
 
 export class HostIsolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "HostIsolationError";
   }
+}
+
+function resolveSandbox(
+  sandbox: ToolWrapOptions["sandbox"],
+): ShellProvider | null {
+  return typeof sandbox === "function" ? sandbox() : (sandbox ?? null);
 }
 
 type ExtensionPathLoader = {
@@ -1944,7 +1951,7 @@ export async function createPiHost(
           };
     const baseDefinitions = createCodepunkToolDefinitions(
       cwd,
-      options.sandbox ?? null,
+      resolveSandbox(options.sandbox),
       {
         mode: options.mode ?? "interactive",
         workspaceRoot: options.workspaceRoot,
@@ -2168,7 +2175,7 @@ export async function createPiHost(
           } finally {
             restoreEnvironment();
             if (options.closeSandbox !== false) {
-              await options.sandbox?.close?.();
+              await resolveSandbox(options.sandbox)?.close?.();
             }
           }
         }
@@ -2184,7 +2191,9 @@ export async function createPiHost(
     await writer?.release().catch(() => {});
     restoreEnvironment();
     if (options.closeSandbox !== false) {
-      await options.sandbox?.close?.().catch(() => {});
+      await resolveSandbox(options.sandbox)
+        ?.close?.()
+        .catch(() => {});
     }
     throw error;
   }

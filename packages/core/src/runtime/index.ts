@@ -104,8 +104,10 @@ import {
 } from "../skills/index.ts";
 import { HookRunner } from "../capabilities/hooks.ts";
 import {
+  DeferredSandbox,
   probeWindowsShell,
   resolveWindowsShell,
+  SandboxManager,
   SrtSandbox,
   UnsandboxedShell,
   type ShellProvider,
@@ -257,6 +259,9 @@ export interface CodepunkRuntime {
   checkpoints: CheckpointStore;
   ledger: RunLedger;
   sandbox: ShellProvider | null;
+  sandboxReady: Promise<ShellProvider | null>;
+  shellPreflightIssue: string | null;
+  shellPreflightSettled(): Promise<void>;
   autonomy: AutonomyController;
   approval: ApprovalBroker;
   host: PiHost;
@@ -500,22 +505,28 @@ function effectiveTools(
   return [...requested].map((name) => (name === "shell" ? "bash" : name));
 }
 
+function sessionSelectorIssue(options: RuntimeOptions): string | null {
+  if (options.newSessionId === undefined) {
+    return null;
+  }
+  if (options.sessionId !== undefined || options.sessionPath !== undefined) {
+    return "newSessionId cannot be combined with an existing session selector";
+  }
+  if (options.continueSession === true) {
+    return "newSessionId cannot be combined with --continue";
+  }
+  return null;
+}
+
 async function openSession(
   options: RuntimeOptions,
   paths: ProjectPaths,
   heartbeatMs: number,
   leaseMs: number,
 ): Promise<SessionStoreType> {
-  if (
-    options.newSessionId !== undefined &&
-    (options.sessionId !== undefined || options.sessionPath !== undefined)
-  ) {
-    throw new Error(
-      "newSessionId cannot be combined with an existing session selector",
-    );
-  }
-  if (options.newSessionId !== undefined && options.continueSession === true) {
-    throw new Error("newSessionId cannot be combined with --continue");
+  const selectorIssue = sessionSelectorIssue(options);
+  if (selectorIssue !== null) {
+    throw new Error(selectorIssue);
   }
   if (
     options.parentSessionId !== undefined &&
@@ -630,23 +641,37 @@ function configValuesEqual(left: unknown, right: unknown): boolean {
 export async function createRuntime(
   options: RuntimeOptions,
 ): Promise<CodepunkRuntime> {
-  // The srt sandbox starts a long-lived proxy process on Linux. If startup
-  // fails after the sandbox exists (a bad model reference, an unreachable
-  // provider, a failed host), the proxy would keep the event loop alive and
-  // the CLI would print its error and then hang instead of exiting.
-  const sandboxRef: { current: ShellProvider | null } = { current: null };
+  // The srt sandbox starts a long-lived proxy process. If startup fails
+  // before the runtime is returned, cancel the pending initialization;
+  // otherwise a resolving provider would keep the event loop alive and the
+  // CLI would print its error and then hang instead of exiting.
+  const startupCleanup: { current: (() => Promise<void>) | null } = {
+    current: null,
+  };
   try {
-    return await createRuntimeInner(options, sandboxRef);
+    return await createRuntimeInner(options, startupCleanup);
   } catch (error) {
-    await sandboxRef.current?.close?.().catch(() => undefined);
+    await closePendingSandboxForStartupFailure(startupCleanup);
     throw error;
   }
 }
 
+async function closePendingSandboxForStartupFailure(startupCleanup: {
+  current: (() => Promise<void>) | null;
+}): Promise<void> {
+  const cleanup = startupCleanup.current;
+  startupCleanup.current = null;
+  await cleanup?.();
+}
+
 async function createRuntimeInner(
   options: RuntimeOptions,
-  sandboxRef: { current: ShellProvider | null },
+  startupCleanup: { current: (() => Promise<void>) | null },
 ): Promise<CodepunkRuntime> {
+  const selectorIssue = sessionSelectorIssue(options);
+  if (selectorIssue !== null) {
+    throw new Error(selectorIssue);
+  }
   const environment = options.environment ?? process.env;
   const configOverrides = { ...(options.configOverrides ?? {}) };
   const project = await findDeliveryRoot(options.cwd);
@@ -868,7 +893,18 @@ async function createRuntimeInner(
   };
   const autonomy = new AutonomyController(autonomyRegistration);
   let sandbox: ShellProvider | null = null;
+  let sandboxReady: Promise<ShellProvider | null> = Promise.resolve(null);
   let sandboxUnavailableReason: string | null = null;
+  let shellPreflightIssue: string | null = null;
+  let closePendingSandbox: () => Promise<void> = () => Promise.resolve();
+  let pendingSandboxProvider: () => ShellProvider | null = () => sandbox;
+  let resolveShellPreflight: () => void = () => undefined;
+  const shellPreflightSettled = new Promise<void>((resolve) => {
+    resolveShellPreflight = resolve;
+  });
+  if (process.platform !== "win32" || windowsShell.kind === "auto") {
+    resolveShellPreflight();
+  }
   // The sandbox starts before the Pi host exists. The ref is filled in once
   // the host is created, so the sandbox's network events reach the session
   // log through the host's own append chain.
@@ -880,49 +916,84 @@ async function createRuntimeInner(
     await hostRef.current.recordEvent("hook/result", evidence);
   };
   if (config.sandbox.mode === "required") {
-    try {
-      sandbox = await SrtSandbox.create(
-        {
-          cwd: paths.cwd,
-          workspaceRoot: paths.deliveryRoot,
-          deliveryRoot: paths.deliveryRoot,
-          codepunkHome: paths.home,
-          writeSet: writeSetWithAdditionalRoots,
-          additionalRoots: paths.additionalRoots,
-          networkAllow: config.sandbox.network_allow,
-          networkDeny: config.sandbox.network_deny,
-          networkMaxRequests: config.sandbox.network_max_requests,
-          networkMaxBytes: config.sandbox.network_max_bytes,
-          readOnly: config.autonomy.profile === "read-only",
-          ...(windowsShell.binShell === null
-            ? {}
-            : { windowsBinShell: windowsShell.binShell }),
+    const createPromise = SrtSandbox.create(
+      {
+        cwd: paths.cwd,
+        workspaceRoot: paths.deliveryRoot,
+        deliveryRoot: paths.deliveryRoot,
+        codepunkHome: paths.home,
+        writeSet: writeSetWithAdditionalRoots,
+        additionalRoots: paths.additionalRoots,
+        networkAllow: config.sandbox.network_allow,
+        networkDeny: config.sandbox.network_deny,
+        networkMaxRequests: config.sandbox.network_max_requests,
+        networkMaxBytes: config.sandbox.network_max_bytes,
+        readOnly: config.autonomy.profile === "read-only",
+        ...(windowsShell.binShell === null
+          ? {}
+          : { windowsBinShell: windowsShell.binShell }),
+      },
+      {
+        // The sandbox starts before the session writer lock is acquired, so
+        // the run id and the sink are resolved lazily. The callback is only
+        // invoked for events after the host has acquired the writer.
+        runId: () => hostRef.current?.currentRunId ?? initialRunId,
+        onNetworkEvent: async (kind, data) => {
+          await hostRef.current?.recordEvent(kind, data);
         },
-        {
-          // The sandbox starts before the session writer lock is acquired, so
-          // the run id and the sink are resolved lazily. The callback is only
-          // invoked for events after the host has acquired the writer.
-          runId: () => hostRef.current?.currentRunId ?? initialRunId,
-          onNetworkEvent: async (kind, data) => {
-            await hostRef.current?.recordEvent(kind, data);
-          },
-        },
-      );
-    } catch (error) {
-      sandboxUnavailableReason =
-        error instanceof Error ? error.message : String(error);
-      sandbox = null;
-    }
-    sandboxRef.current = sandbox;
+      },
+    );
+    sandboxReady = createPromise
+      .then((createdSandbox) => {
+        sandbox = createdSandbox;
+        return createdSandbox;
+      })
+      .catch((error: unknown) => {
+        sandboxUnavailableReason =
+          error instanceof Error ? error.message : String(error);
+        sandbox = null;
+        return null;
+      });
+    const pendingSandbox = new DeferredSandbox(sandboxReady, {
+      cancelPendingInitialization: () => {
+        void SandboxManager.reset();
+      },
+    });
+    sandbox = pendingSandbox;
+    pendingSandboxProvider = () => pendingSandbox;
+    closePendingSandbox = async () => {
+      if (startupCleanup.current === closePendingSandbox) {
+        startupCleanup.current = null;
+      }
+      await pendingSandbox.close();
+    };
+  }
+  const runtimeSandboxReady: Promise<ShellProvider | null> = sandboxReady;
+  if (config.sandbox.mode === "required") {
+    startupCleanup.current = closePendingSandbox;
   }
   if (process.platform === "win32" && windowsShell.kind !== "auto") {
-    if (sandbox === null) {
-      throw new ConfigError(
-        `tools.shell=${windowsShell.kind} requires the srt sandbox on Windows; shell tools stay disabled until srt is available`,
-        "tools.shell",
-      );
-    }
-    await probeWindowsShell(sandbox, windowsShell, paths.cwd);
+    void runtimeSandboxReady
+      .then(async (resolved) => {
+        if (resolved === null) {
+          throw new ConfigError(
+            `tools.shell=${windowsShell.kind} requires the srt sandbox on Windows; shell tools stay disabled until srt is available`,
+            "tools.shell",
+          );
+        }
+        await probeWindowsShell(resolved, windowsShell, paths.cwd);
+      })
+      .catch(async (error: unknown) => {
+        shellPreflightIssue =
+          error instanceof Error ? error.message : String(error);
+        sandbox = null;
+        sandboxUnavailableReason = shellPreflightIssue;
+      })
+      .finally(() => {
+        resolveShellPreflight?.();
+      });
+  } else {
+    resolveShellPreflight?.();
   }
   if (
     sandbox === null &&
@@ -952,6 +1023,7 @@ async function createRuntimeInner(
       if (!(
         options.allowMissingModel === true && error instanceof ModelError
       )) {
+        await closePendingSandboxForStartupFailure(startupCleanup);
         throw error;
       }
       loadedConfig.warnings.push(error.message);
@@ -1202,13 +1274,18 @@ async function createRuntimeInner(
       autonomy,
       ledger,
       reviewer,
-      sandbox,
+      sandbox: () =>
+        shellPreflightIssue === null ? pendingSandboxProvider() : null,
+      closeSandbox: false,
       approvalMode: () => config.approval.mode,
       planMode: () => readPlanModeState(session.allEvents),
       currentPlan: () => readWorkState(session.allEvents).plan,
       networkAllowedDomains: config.sandbox.network_allow,
       networkDeniedDomains: config.sandbox.network_deny,
-      shellUnavailableReason: () => shellUnavailableReason(sessionSandboxMode),
+      shellUnavailableReason: () =>
+        shellPreflightIssue === null
+          ? shellUnavailableReason(sessionSandboxMode)
+          : `${shellUnavailableReason(sessionSandboxMode)} (${shellPreflightIssue})`,
       context: configuredContext,
       artifactsDir: paths.artifactsDir,
       checkpoints,
@@ -1277,6 +1354,7 @@ async function createRuntimeInner(
       ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
     });
   } catch (error) {
+    await closePendingSandboxForStartupFailure(startupCleanup);
     await mcp.close();
     throw error;
   }
@@ -1315,6 +1393,7 @@ async function createRuntimeInner(
       appendHookEvidence,
     );
   } catch (error) {
+    await closePendingSandboxForStartupFailure(startupCleanup);
     await host.dispose().catch(() => undefined);
     throw error;
   }
@@ -1456,7 +1535,16 @@ async function createRuntimeInner(
     session,
     checkpoints,
     ledger,
-    sandbox,
+    get sandbox() {
+      return sandbox;
+    },
+    sandboxReady: runtimeSandboxReady,
+    async shellPreflightSettled() {
+      await shellPreflightSettled;
+    },
+    get shellPreflightIssue() {
+      return shellPreflightIssue;
+    },
     autonomy,
     approval,
     host,
@@ -1939,6 +2027,7 @@ async function createRuntimeInner(
     },
     async dispose() {
       let hookFailure: unknown = null;
+      const sandboxClosed = closePendingSandbox();
       try {
         await hooks.run(
           "session_end",
@@ -1961,6 +2050,7 @@ async function createRuntimeInner(
         })
         .catch(() => undefined);
       await host.dispose();
+      await sandboxClosed;
       if (hookFailure !== null) {
         throw hookFailure;
       }

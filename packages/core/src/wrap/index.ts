@@ -98,7 +98,7 @@ export interface ToolWrapOptions {
   /** Operator-configured egress deny list; shown in the same explanation. */
   networkDeniedDomains?: readonly string[];
   ledger: EvidenceLedgerPort;
-  sandbox?: ShellProvider | null;
+  sandbox?: ShellProvider | null | (() => ShellProvider | null);
   shellUnavailableReason?: string | (() => string);
   workerId?: string;
   disableUserBash?: boolean;
@@ -160,6 +160,12 @@ export interface ToolWrapOptions {
   }) =>
     | Promise<{ result: "pass" | "fail"; reason: string | null }>
     | { result: "pass" | "fail"; reason: string | null };
+}
+
+function resolveSandbox(
+  sandbox: ToolWrapOptions["sandbox"],
+): ShellProvider | null {
+  return typeof sandbox === "function" ? sandbox() : (sandbox ?? null);
 }
 
 export interface ToolLifecycleHookInput {
@@ -1114,7 +1120,7 @@ export async function wrapToolDefinition(
           JSON.stringify(redactApprovalValue(params), null, 2),
         ),
       };
-      const sandboxProvider = options.sandbox ?? null;
+      const sandboxProvider = resolveSandbox(options.sandbox);
       const autonomy = options.autonomy ?? null;
       const target = targetPath(definition.name, params, options.cwd);
       const isMutation =
@@ -2030,7 +2036,7 @@ export async function wrapUserBashCommand(
         command,
         commandArgv: null,
         pathTarget: null,
-        sandbox: options.sandbox?.descriptor ?? NONE_SANDBOX,
+        sandbox: resolveSandbox(options.sandbox)?.descriptor ?? NONE_SANDBOX,
         coverage: "uncovered",
         coverageBasis: ["plugin"],
         exitCode: null,
@@ -2067,7 +2073,7 @@ export async function wrapUserBashCommand(
       return { result: deniedUserBashResult(message) };
     }
   }
-  const sandboxProvider = options.sandbox ?? null;
+  const sandboxProvider = resolveSandbox(options.sandbox);
   const autonomy = options.autonomy ?? null;
   const approvalMode = resolveApprovalMode(options);
   const policy = decidePolicy(

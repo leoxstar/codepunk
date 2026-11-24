@@ -14,6 +14,7 @@ import {
   type WindowsBinShell,
   type WrapWithSandboxOptions,
 } from "@anthropic-ai/sandbox-runtime";
+export { SandboxManager };
 export type { WindowsBinShell } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxDescriptor } from "codepunk-protocol";
 import { ConfigError } from "../config/index.ts";
@@ -45,6 +46,110 @@ export class SandboxUnavailableError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "SandboxUnavailableError";
+  }
+}
+
+export interface SandboxLifecycle {
+  cancelPendingInitialization(): void;
+}
+
+/**
+ * A required sandbox may spend minutes on its first platform setup. Shell
+ * tools stay registered while that work runs, and each execution awaits the
+ * resolved provider instead of blocking the TUI before its first frame.
+ */
+export class DeferredSandbox implements ShellProvider {
+  readonly sandboxed = true;
+  private provider: ShellProvider | null;
+  private readonly ready: Promise<ShellProvider | null>;
+  private readonly lifecycle: SandboxLifecycle | null;
+  private state: "pending" | "closed" = "pending";
+  private closePromise: Promise<void> | null = null;
+  private lateClosePromise: Promise<void> | null = null;
+
+  constructor(
+    ready: Promise<ShellProvider | null>,
+    lifecycle?: SandboxLifecycle,
+  ) {
+    this.ready = ready;
+    this.lifecycle = lifecycle ?? null;
+    this.provider = null;
+    ready.then(
+      (resolved) => {
+        if (this.provider === null) {
+          this.provider = resolved;
+        }
+        if (this.state === "closed") {
+          this.lateClosePromise = resolved?.close?.() ?? null;
+          return this.lateClosePromise?.catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+  }
+
+  private async resolve(): Promise<ShellProvider> {
+    if (this.state === "closed") {
+      throw new SandboxUnavailableError("srt provider is closed");
+    }
+    const sandbox = this.provider ?? (await this.ready);
+    if (sandbox === null) {
+      throw new SandboxUnavailableError(
+        "srt sandbox is not ready; shell tools are disabled",
+      );
+    }
+    return sandbox;
+  }
+
+  async execCommand(
+    command: string,
+    cwd: string,
+    options?: ShellExecutionOptions,
+  ): Promise<ShellExecutionResult> {
+    const sandbox = await this.resolve();
+    return await sandbox.execCommand(command, cwd, {
+      ...options,
+      descriptor: sandbox.descriptor,
+    });
+  }
+
+  async execArgv(
+    argv: readonly string[],
+    cwd: string,
+    options?: ShellExecutionOptions,
+  ): Promise<ShellExecutionResult> {
+    const sandbox = await this.resolve();
+    return await sandbox.execArgv(argv, cwd, {
+      ...options,
+      descriptor: sandbox.descriptor,
+    });
+  }
+
+  get descriptor(): SandboxDescriptor {
+    return (
+      this.provider?.descriptor ?? {
+        backend: "srt",
+        version: SRT_VERSION,
+        profile_sha256: null,
+        network_allowed_domains: [],
+        network_denied_domains: [],
+      }
+    );
+  }
+
+  async close(): Promise<void> {
+    if (this.state === "closed") {
+      return this.closePromise ?? this.lateClosePromise ?? Promise.resolve();
+    }
+    this.state = "closed";
+    this.closePromise = (async () => {
+      this.lifecycle?.cancelPendingInitialization();
+      if (this.provider !== null) {
+        await this.provider.close?.().catch(() => undefined);
+        return;
+      }
+    })();
+    return this.closePromise;
   }
 }
 
@@ -108,6 +213,7 @@ export interface ShellExecutionOptions {
   env?: NodeJS.ProcessEnv;
   onData?: (chunk: Buffer) => void;
   commandId?: string;
+  descriptor?: SandboxDescriptor;
 }
 
 export interface ShellExecutionResult {
@@ -1173,7 +1279,7 @@ export class SrtSandbox implements ShellProvider {
       cancelled,
       timedOut,
       executor: SANDBOX_EXECUTOR,
-      descriptor: this.descriptor,
+      descriptor: options.descriptor ?? this.descriptor,
     };
   }
 
