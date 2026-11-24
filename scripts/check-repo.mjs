@@ -177,7 +177,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
     },
   ],
   [
-    "packages/cli/src/tui.ts",
+    "packages/cli/src/tui/host-commands.ts",
     {
       argument: /^moduleUrl$/u,
       anchors: [
@@ -190,7 +190,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
     },
   ],
   [
-    "packages/cli/dist/tui.js",
+    "packages/cli/dist/tui/host-commands.js",
     {
       argument: /^__rewriteRelativeImportExtension\(moduleUrl$/u,
       anchors: [
@@ -201,6 +201,18 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
       reason:
         "TypeScript wraps the reviewed Pi slash-table import with its relative-extension helper",
     },
+  ],
+]);
+
+const CLI_SOURCE_FILE_LIMIT = 600;
+const CLI_FUNCTION_LIMIT = 150;
+// Exemptions are path + reviewed reason only; source comments are not an
+// escape hatch. Keep this empty unless a spec records why a file must exceed
+// the limit.
+const CLI_SIZE_EXEMPTIONS = new Map([
+  [
+    "packages/cli/src/subagent-transcript.ts",
+    "spec 0014 §2.1 keeps the standalone transcript browser in place; splitting it belongs to the TUI renderer spec",
   ],
 ]);
 
@@ -237,7 +249,7 @@ const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "80bbe5d4ea62091f2b10482ac49c14f36604e17fb7c103b117f23a6b24a91864";
+  "0cdb147a052243de048e102a81c31481ca4c6561557a773924a37b27d5eed382";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -551,6 +563,12 @@ async function listFiles(root) {
 }
 
 function hasForbiddenSegment(relativePath) {
+  // The compatibility corpus is a deliberate copy of runtime state captured
+  // from a released version; its session/store directory names are data, not
+  // product runtime state.
+  if (relativePath.startsWith("tests/fixtures/compat/")) {
+    return undefined;
+  }
   const packageSource = isPackageSourcePath(relativePath);
   const productPackage = isProductPackagePath(relativePath);
   for (const rawSegment of relativePath.split("/")) {
@@ -675,6 +693,12 @@ async function scanWorkingTreeHygiene(root, add, directoriesWithTrackedFiles) {
         continue;
       }
       if (entry.isDirectory()) {
+        if (
+          relativePath === "tests/fixtures/compat" ||
+          relativePath.startsWith("tests/fixtures/compat/")
+        ) {
+          continue;
+        }
         if (
           !insideGenerated &&
           isForbiddenDirectory(relativePath, entry.name)
@@ -1973,6 +1997,156 @@ function hasComputedModuleCall(content, ranges, reviewed = null) {
   );
 }
 
+function physicalLineCount(content) {
+  if (content.length === 0) {
+    return 0;
+  }
+  const withoutTrailingNewline = content.endsWith("\n")
+    ? content.slice(0, -1)
+    : content;
+  return withoutTrailingNewline.split("\n").length;
+}
+
+function maskNonCode(content, ranges) {
+  const characters = content.split("");
+  for (const [start, end] of ranges) {
+    for (let index = start; index < end; index += 1) {
+      if (characters[index] !== "\n") {
+        characters[index] = " ";
+      }
+    }
+  }
+  return characters.join("");
+}
+
+function matchingBrace(masked, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < masked.length; index += 1) {
+    if (masked[index] === "{") {
+      depth += 1;
+    } else if (masked[index] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function lineOf(content, index) {
+  let line = 1;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (content[cursor] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+const FUNCTION_BLOCK_PATTERNS = [
+  /\bfunction\b[^{;]*?\{/gu,
+  /(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*(?::[^=;]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=;{]+)?=>\s*\{/gu,
+  /(?:^|\n)[ \t]*(?:(?:public|private|protected|static|async|readonly|override)\s+)*[A-Za-z_$][\w$]*\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::[^{;]+)?\{/gu,
+];
+
+const FUNCTION_BLOCK_KEYWORDS = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "catch",
+  "with",
+  "return",
+  "typeof",
+  "new",
+  "await",
+  "import",
+]);
+
+function inspectFunctionSizes(relativePath, content, add) {
+  const masked = maskNonCode(content, nonCodeRanges(content));
+  const starts = new Set();
+  for (const pattern of FUNCTION_BLOCK_PATTERNS) {
+    for (const match of masked.matchAll(pattern)) {
+      if (typeof match.index !== "number") {
+        continue;
+      }
+      const leadingWhitespace = match[0].search(/\S/u);
+      const start = match.index + Math.max(0, leadingWhitespace);
+      const firstToken = /[A-Za-z_$][\w$]*/u.exec(
+        masked.slice(start, start + 80),
+      )?.[0];
+      if (firstToken !== undefined && FUNCTION_BLOCK_KEYWORDS.has(firstToken)) {
+        continue;
+      }
+      const openIndex = match.index + match[0].lastIndexOf("{");
+      const closeIndex = matchingBrace(masked, openIndex);
+      if (closeIndex === -1) {
+        continue;
+      }
+      starts.add(`${start}:${closeIndex}`);
+    }
+  }
+  for (const span of starts) {
+    const [start, end] = span.split(":").map(Number);
+    const lines = lineOf(content, end) - lineOf(content, start) + 1;
+    if (lines > CLI_FUNCTION_LIMIT) {
+      add(
+        "cli.size",
+        relativePath,
+        `function starting at line ${lineOf(content, start)} has ${lines} lines; limit is ${CLI_FUNCTION_LIMIT}`,
+      );
+    }
+  }
+}
+
+async function checkCliSize(root, files, add) {
+  const cliRoot = "packages/cli";
+  for (const relativePath of sourceFilesForPackage(files, cliRoot)) {
+    if (CLI_SIZE_EXEMPTIONS.has(relativePath)) {
+      continue;
+    }
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    const lines = physicalLineCount(content);
+    if (lines > CLI_SOURCE_FILE_LIMIT) {
+      add(
+        "cli.size",
+        relativePath,
+        `file has ${lines} lines; limit is ${CLI_SOURCE_FILE_LIMIT}`,
+      );
+    }
+    inspectFunctionSizes(relativePath, content, add);
+  }
+
+  const eagerDirectories = [
+    "packages/cli/src/args/",
+    "packages/cli/src/commands/",
+  ];
+  for (const relativePath of sourceFilesForPackage(files, cliRoot)) {
+    if (
+      !eagerDirectories.some((directory) => relativePath.startsWith(directory))
+    ) {
+      continue;
+    }
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    if (
+      /^(?![ \t]*\/\/)[ \t]*import\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']@earendil-works\/pi-tui(?:\/[^"']*)?["']/mu.test(
+        content,
+      ) ||
+      /^(?![ \t]*\/\/)[ \t]*import\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["'](?:\.\.?\/)+tui(?:\.ts)?(?:\/[^"']*)?["']/mu.test(
+        content,
+      )
+    ) {
+      add(
+        "cli.import",
+        relativePath,
+        "eager CLI argument and command modules must not statically import the TUI",
+      );
+    }
+  }
+}
+
 async function checkSourceImports(root, files, add) {
   for (const spec of PACKAGE_SPECS) {
     const packageRoot = path.join(root, spec.dir);
@@ -2082,6 +2256,102 @@ async function checkControlCorpus(root, add) {
       "repo.controls",
       relativePath,
       `cannot read negative-control corpus: ${error.message}`,
+    );
+  }
+}
+
+const COMPAT_CORPUS_ROOT = "tests/fixtures/compat/0.1.0";
+
+function compatCorpusEntries(manifest) {
+  const entries = [];
+  const addEntry = (relativePath, digest) => {
+    if (
+      typeof relativePath === "string" &&
+      typeof digest === "string" &&
+      /^[a-f0-9]{64}$/u.test(digest)
+    ) {
+      entries.push([relativePath, digest]);
+    }
+  };
+  const files = manifest?.files;
+  if (Array.isArray(files)) {
+    for (const file of files) {
+      addEntry(file?.path, file?.sha256);
+    }
+  } else if (files !== null && typeof files === "object") {
+    for (const [relativePath, digest] of Object.entries(files)) {
+      addEntry(relativePath, digest);
+    }
+  }
+  if (entries.length === 0 && Array.isArray(manifest)) {
+    for (const file of manifest) {
+      addEntry(file?.path, file?.sha256);
+    }
+  }
+  return entries;
+}
+
+async function checkCompatCorpus(root, add) {
+  const corpusRoot = path.join(root, COMPAT_CORPUS_ROOT);
+  if (!existsSync(corpusRoot)) {
+    return;
+  }
+  const manifestRelative = `${COMPAT_CORPUS_ROOT}/MANIFEST.json`;
+  let manifest;
+  try {
+    manifest = JSON.parse(
+      await readFile(path.join(root, manifestRelative), "utf8"),
+    );
+  } catch (error) {
+    add(
+      "compat.corpus",
+      manifestRelative,
+      `cannot read the compatibility corpus manifest: ${error.message}`,
+    );
+    return;
+  }
+  const entries = compatCorpusEntries(manifest);
+  if (entries.length === 0) {
+    add(
+      "compat.corpus",
+      manifestRelative,
+      "the compatibility corpus manifest lists no files",
+    );
+    return;
+  }
+  const listed = new Set();
+  for (const [relativePath, digest] of entries) {
+    listed.add(relativePath);
+    const absolutePath = path.join(corpusRoot, relativePath);
+    let actual;
+    try {
+      actual = createHash("sha256")
+        .update(await readFile(absolutePath))
+        .digest("hex");
+    } catch (error) {
+      add(
+        "compat.corpus",
+        `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+        `corpus file listed in the manifest is missing: ${error.message}`,
+      );
+      continue;
+    }
+    if (actual !== digest) {
+      add(
+        "compat.corpus",
+        `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+        `corpus digest ${actual} does not match the manifest digest ${digest}`,
+      );
+    }
+  }
+  for (const relativePath of await walkFiles(corpusRoot, new Set())) {
+    if (relativePath === "MANIFEST.json" || listed.has(relativePath)) {
+      continue;
+    }
+    add(
+      "compat.corpus",
+      `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+      "corpus file is not listed in the manifest",
     );
   }
 }
@@ -2715,9 +2985,11 @@ export async function checkRepository({
       );
     }
     const name = path.basename(relativePath);
-    const classification = classifyForbiddenFile(name);
-    if (classification) {
-      add(classification[0], relativePath, classification[1]);
+    if (!relativePath.startsWith("tests/fixtures/compat/")) {
+      const classification = classifyForbiddenFile(name);
+      if (classification) {
+        add(classification[0], relativePath, classification[1]);
+      }
     }
   }
 
@@ -2728,6 +3000,7 @@ export async function checkRepository({
   await checkDocumentationContract(normalizedRoot, add);
   await checkPlatformDocumentation(normalizedRoot, add);
   await checkControlCorpus(normalizedRoot, add);
+  await checkCompatCorpus(normalizedRoot, add);
   checkEvalContract(normalizedRoot, add);
   // A pack started after the first root scan can still disappear before this
   // point. Ignore it during the scans above, but require it to be gone here;
@@ -2824,6 +3097,7 @@ export async function checkRepository({
   }
 
   await checkSourceImports(normalizedRoot, scanned, add);
+  await checkCliSize(normalizedRoot, scanned, add);
 
   if (requireBuilt) {
     await checkBuiltEntries(normalizedRoot, scanned, add);

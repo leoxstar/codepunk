@@ -770,14 +770,18 @@ const NEGATIVE_CASES = [
   {
     name: "reviewed computed import cannot hide another computed import",
     rule: "source.import",
-    path: "packages/cli/src/tui.ts",
+    path: "packages/cli/src/tui/host-commands.ts",
     async apply(root) {
-      return replaceFile(root, "packages/cli/src/tui.ts", (content) => {
-        return `${content}
+      return replaceFile(
+        root,
+        "packages/cli/src/tui/host-commands.ts",
+        (content) => {
+          return `${content}
 const extraModuleSpecifier = "codepunk-protocol";
 export const loadExtraModule = () => import(extraModuleSpecifier);
 `;
-      });
+        },
+      );
     },
   },
   {
@@ -1242,6 +1246,96 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
         await unstage();
         await removeFile();
       };
+    },
+  },
+  {
+    name: "CLI source file over six hundred lines",
+    rule: "cli.size",
+    path: "packages/cli/src/size-fixture.ts",
+    async apply(root) {
+      return createFileFixture(
+        root,
+        "packages/cli/src/size-fixture.ts",
+        `${Array.from(
+          { length: 601 },
+          (_, index) => `export const fixtureLine${index} = ${index};`,
+        ).join("\n")}\n`,
+      );
+    },
+  },
+  {
+    name: "CLI function declaration over one hundred fifty lines",
+    rule: "cli.size",
+    path: "packages/cli/src/function-fixture.ts",
+    async apply(root) {
+      return createFileFixture(
+        root,
+        "packages/cli/src/function-fixture.ts",
+        [
+          "export function oversizedFixture(): number {",
+          ...Array.from({ length: 148 }, () => "  void 0;"),
+          "  return 0;",
+          "}",
+          "",
+        ].join("\n"),
+      );
+    },
+  },
+  {
+    name: "CLI arrow function over one hundred fifty lines",
+    rule: "cli.size",
+    path: "packages/cli/src/arrow-fixture.ts",
+    async apply(root) {
+      return createFileFixture(
+        root,
+        "packages/cli/src/arrow-fixture.ts",
+        [
+          "export const oversizedArrow = (): number => {",
+          ...Array.from({ length: 148 }, () => "  void 0;"),
+          "  return 0;",
+          "};",
+          "",
+        ].join("\n"),
+      );
+    },
+  },
+  {
+    name: "CLI object method over one hundred fifty lines",
+    rule: "cli.size",
+    path: "packages/cli/src/method-fixture.ts",
+    async apply(root) {
+      return createFileFixture(
+        root,
+        "packages/cli/src/method-fixture.ts",
+        [
+          "export const oversizedObject = {",
+          "  method(): number {",
+          ...Array.from({ length: 148 }, () => "    void 0;"),
+          "    return 0;",
+          "  },",
+          "};",
+          "",
+        ].join("\n"),
+      );
+    },
+  },
+  {
+    name: "eager CLI command statically imports the TUI",
+    rule: "cli.import",
+    path: "packages/cli/src/commands/sessions.ts",
+    async apply(root) {
+      const relativePath = "packages/cli/src/commands/sessions.ts";
+      const absolutePath = path.join(root, relativePath);
+      if (existsSync(absolutePath)) {
+        return replaceFile(root, relativePath, () => {
+          return 'import "@earendil-works/pi-tui";\n';
+        });
+      }
+      return createFileFixture(
+        root,
+        relativePath,
+        'import "@earendil-works/pi-tui";\n',
+      );
     },
   },
 ];
