@@ -73,14 +73,36 @@ export function diffCommand(state: TuiState): TuiCommand {
         return;
       }
       try {
-        await notify(
-          context,
-          formatWorkspaceDiff(
-            await readWorkspaceDiff({
-              root: runtime.paths.deliveryRoot,
-            }),
-          ),
-        );
+        const diff = await readWorkspaceDiff({
+          root: runtime.paths.deliveryRoot,
+        });
+        try {
+          const { createDiffView } = await import("../components/diff-view.ts");
+          await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+            createDiffView(
+              {
+                title: `Working tree diff · ${diff.root}`,
+                source: {
+                  root: diff.root,
+                  status: diff.status,
+                  stat: diff.stat,
+                  staged: diff.staged,
+                  unstaged: diff.unstaged,
+                  untracked: diff.untracked
+                    .split(/\r?\n/u)
+                    .map((entry) => entry.trim())
+                    .filter((entry) => entry.length > 0),
+                  truncated: diff.truncated,
+                },
+              },
+              theme,
+              keybindings,
+              done,
+            ),
+          );
+        } catch {
+          await notify(context, formatWorkspaceDiff(diff));
+        }
       } catch (error) {
         context.ui.notify(
           `/diff failed: ${

@@ -24,6 +24,9 @@ const { Table } = await importSource(
 const { TableScreen } = await importSource(
   "packages/cli/src/tui/components/table-screen.ts",
 );
+const { DiffView, diffViewLines } = await importSource(
+  "packages/cli/src/tui/components/diff-view.ts",
+);
 
 const WIDTHS = [1, 2, 8, 12, 20, 40, 80, 120];
 const THEME = {
@@ -272,5 +275,102 @@ test("TableScreen renders a title, footer, and closes on escape or q", () => {
   screen.handleInput("\u001b");
   assert.equal(closed, 1);
   screen.handleInput("q");
+  assert.equal(closed, 2);
+});
+
+function diffSource(overrides = {}) {
+  return {
+    root: "/workspace/中文/🙂/project",
+    status: "M tracked.txt\n?? new.txt",
+    stat: "1 file changed, 1 insertion(+), 1 deletion(-)",
+    staged: "",
+    unstaged: [
+      "diff --git a/tracked.txt b/tracked.txt",
+      "--- a/tracked.txt",
+      "+++ b/tracked.txt",
+      "@@ -1 +1 @@",
+      "-one",
+      "+two",
+    ].join("\n"),
+    untracked: ["new.txt"],
+    truncated: false,
+    ...overrides,
+  };
+}
+
+test("DiffView renders a 500-line diff within every width and truncates", () => {
+  const patch = [
+    "diff --git a/big.txt b/big.txt",
+    "--- a/big.txt",
+    "+++ b/big.txt",
+    "@@ -1,500 +1,500 @@",
+    ...Array.from({ length: 500 }, (_, index) => ` line ${index + 1}`),
+  ].join("\n");
+  const view = new DiffView(
+    {
+      title: "Working tree diff · /workspace/中文/🙂/project",
+      source: diffSource({
+        staged: patch,
+        unstaged: "",
+        status: "M big.txt",
+      }),
+      maxLines: 100,
+    },
+    THEME,
+    KEYBINDINGS,
+    () => {},
+  );
+  for (const width of WIDTHS) {
+    assertWidthSafe(view.render(width), width);
+    view.invalidate();
+  }
+  const text = stripTerminalSequences(view.render(80).join("\n"));
+  assert.match(text, /Working tree diff/u);
+  assert.match(text, /M big\.txt/u);
+  assert.match(text, /@@ -1,500 \+1,500 @@/u);
+  assert.match(text, /… diff truncated \(404 lines\)/u);
+  assert.match(text, /esc close/u);
+});
+
+test("DiffView shows clean and untracked-only states", () => {
+  const clean = diffViewLines({
+    title: "Working tree diff",
+    source: diffSource({ status: "", stat: "", unstaged: "", untracked: [] }),
+  });
+  assert.deepEqual(clean, ["No changes."]);
+
+  const untracked = diffViewLines({
+    title: "Working tree diff",
+    source: diffSource({
+      status: "?? new.txt",
+      stat: "",
+      staged: "",
+      unstaged: "",
+      untracked: ["new.txt"],
+    }),
+  }).join("\n");
+  assert.match(untracked, /untracked files \(1; no patch until staged\)/u);
+  assert.match(untracked, /new\.txt/u);
+  assert.doesNotMatch(untracked, /@@/u);
+});
+
+test("DiffView closes on escape or q and ignores other input", () => {
+  let closed = 0;
+  const view = new DiffView(
+    {
+      title: "Working tree diff",
+      source: diffSource(),
+    },
+    THEME,
+    KEYBINDINGS,
+    () => {
+      closed += 1;
+    },
+  );
+  view.handleInput("x");
+  assert.equal(closed, 0);
+  view.handleInput("\u001b");
+  assert.equal(closed, 1);
+  view.handleInput("q");
   assert.equal(closed, 2);
 });

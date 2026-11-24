@@ -1822,12 +1822,17 @@ test("a real pty shows the working tree diff", async () => {
     });
     try {
       await waitForOutput(session, "codepunk · auto/auto", "startup");
+      const diffMark = session.output().length;
       await runCommandAfter(session, "/diff", "Working tree diff");
-      const output = session.output();
+      const output = session.output().slice(diffMark);
       assert.match(output, /M tracked\.txt/u);
       assert.match(output, /\?\? new\.txt/u);
       assert.match(output, /\+two/u);
       assert.match(output, /-one/u);
+      assert.match(output, /untracked files \(2; no patch until staged\)/u);
+      assert.match(output, /esc close/u);
+      assert.match(output, /│/u);
+      await closeOverlay(session);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
