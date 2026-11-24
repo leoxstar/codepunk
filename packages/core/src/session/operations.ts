@@ -11,6 +11,11 @@ const MAX_OPERATIONS_BYTES = 4 * 1024 * 1024;
 const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 60_000;
 
+// Serialize appends within one process before taking the cross-process claim
+// lock. Concurrent callers would otherwise create claim files faster than the
+// election window can drain them on Windows.
+const operationQueues = new Map<string, Promise<void>>();
+
 export type SessionOperationAction =
   "rename" | "archive" | "unarchive" | "delete" | "import";
 
@@ -153,19 +158,35 @@ async function withOperationLock<T>(
   home: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  return withClaimFileLock(
-    {
-      lockDir: `${operationsPath(home)}.lock.d`,
-      timeoutMs: LOCK_TIMEOUT_MS,
-      staleMs: LOCK_STALE_MS,
-      busyError: () =>
-        new SessionOperationError(
-          "session.operations_busy",
-          "session operation log is locked",
-        ),
-    },
-    operation,
-  );
+  const key = operationsPath(home);
+  const previous = operationQueues.get(key) ?? Promise.resolve();
+  let release: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => current);
+  operationQueues.set(key, tail);
+  await previous;
+  try {
+    return await withClaimFileLock(
+      {
+        lockDir: `${key}.lock.d`,
+        timeoutMs: LOCK_TIMEOUT_MS,
+        staleMs: LOCK_STALE_MS,
+        busyError: () =>
+          new SessionOperationError(
+            "session.operations_busy",
+            "session operation log is locked",
+          ),
+      },
+      operation,
+    );
+  } finally {
+    release();
+    if (operationQueues.get(key) === tail) {
+      operationQueues.delete(key);
+    }
+  }
 }
 
 export async function readSessionOperations(
