@@ -135,7 +135,12 @@ function startPty(command, args, { cwd, env }) {
   const exited = new Promise((resolve) => {
     child.on("close", (code, signal) => resolve({ code, signal }));
   });
-  return { child, exited, pidFile, output: () => output };
+  // `close` waits for stdio EOF, which a descendant can hold open after the
+  // process itself is gone. `terminated` reports the process exit separately.
+  const terminated = new Promise((resolve) => {
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
+  return { child, exited, terminated, pidFile, output: () => output };
 }
 
 async function killPtyGroup(session) {
@@ -143,21 +148,21 @@ async function killPtyGroup(session) {
   try {
     pid = Number.parseInt(await fs.readFile(session.pidFile, "utf8"), 10);
   } catch {
-    return;
+    return null;
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return;
+    return null;
   }
   if (process.platform === "win32") {
     await new Promise((resolve) => {
       execFile(
         "taskkill",
         ["/PID", String(pid), "/T", "/F"],
-        { windowsHide: true },
+        { windowsHide: true, timeout: 5_000 },
         () => resolve(),
       );
     });
-    return;
+    return pid;
   }
   try {
     process.kill(-pid, "SIGKILL");
@@ -166,31 +171,42 @@ async function killPtyGroup(session) {
       throw error;
     }
   }
+  return pid;
 }
 
 async function stopPty(session) {
+  const startedAt = Date.now();
+  let ptyPid = null;
   try {
-    await killPtyGroup(session);
-    if (session.child.exitCode !== null || session.child.signalCode !== null) {
-      return;
+    ptyPid = await killPtyGroup(session);
+    if (session.child.exitCode === null && session.child.signalCode === null) {
+      session.child.kill("SIGTERM");
+      const graceful = await waitForExit(session.terminated, 2_000);
+      if (graceful === null) {
+        session.child.kill("SIGKILL");
+        const forced = await waitForExit(session.terminated, 5_000);
+        if (forced === null) {
+          throw new Error(
+            [
+              `stopPty timed out after ${Date.now() - startedAt}ms`,
+              `wrapperPid=${session.child.pid ?? "unknown"}`,
+              `ptyPid=${ptyPid ?? "unknown"}`,
+              `exitCode=${session.child.exitCode}`,
+              `signal=${session.child.signalCode}`,
+              `lastOutput=${JSON.stringify(session.output().slice(-4000))}`,
+            ].join(" "),
+          );
+        }
+      }
     }
-    session.child.kill("SIGTERM");
-    let timer;
-    const result = await Promise.race([
-      session.exited,
-      new Promise((resolve) => {
-        timer = setTimeout(
-          () => resolve({ code: "timeout", signal: null }),
-          2_000,
-        );
-      }),
-    ]);
-    clearTimeout(timer);
-    if (result.code === "timeout") {
-      session.child.kill("SIGKILL");
-      await session.exited;
-    }
+    // A process that has terminated may never close its stdio pipes while a
+    // descendant holds them. Do not let cleanup wait for that indefinitely.
+    await waitForExit(session.exited, 250);
   } finally {
+    session.child.stdin?.destroy();
+    session.child.stdout?.destroy();
+    session.child.stderr?.destroy();
+    session.child.unref?.();
     await fs.rm(session.pidFile, { force: true });
   }
 }

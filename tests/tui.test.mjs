@@ -1169,12 +1169,32 @@ function startPty(command, args, { cwd, env }) {
   const exited = new Promise((resolve) => {
     child.on("close", (code, signal) => resolve({ code, signal }));
   });
+  // `close` waits for stdio EOF, which a descendant can hold open after the
+  // process itself is gone. `terminated` reports the process exit separately.
+  const terminated = new Promise((resolve) => {
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
   return {
     child,
     exited,
+    terminated,
     pidFile,
     output: () => output,
   };
+}
+
+async function waitForPtyExit(exited, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      exited,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function killPtyGroup(session) {
@@ -1182,21 +1202,21 @@ async function killPtyGroup(session) {
   try {
     pid = Number.parseInt(await fs.readFile(session.pidFile, "utf8"), 10);
   } catch {
-    return;
+    return null;
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return;
+    return null;
   }
   if (process.platform === "win32") {
     await new Promise((resolve) => {
       execFile(
         "taskkill",
         ["/PID", String(pid), "/T", "/F"],
-        { windowsHide: true },
+        { windowsHide: true, timeout: 5_000 },
         () => resolve(),
       );
     });
-    return;
+    return pid;
   }
   try {
     process.kill(-pid, "SIGKILL");
@@ -1205,31 +1225,45 @@ async function killPtyGroup(session) {
       throw error;
     }
   }
+  return pid;
 }
 
-async function stopPty(session) {
+async function stopPty(
+  session,
+  { gracefulMs = 2_000, killMs = 5_000, closeMs = 250 } = {},
+) {
+  const startedAt = Date.now();
+  let ptyPid = null;
   try {
-    await killPtyGroup(session);
-    if (session.child.exitCode !== null || session.child.signalCode !== null) {
-      return;
+    ptyPid = await killPtyGroup(session);
+    if (session.child.exitCode === null && session.child.signalCode === null) {
+      session.child.kill("SIGTERM");
+      const graceful = await waitForPtyExit(session.terminated, gracefulMs);
+      if (graceful === null) {
+        session.child.kill("SIGKILL");
+        const forced = await waitForPtyExit(session.terminated, killMs);
+        if (forced === null) {
+          throw new Error(
+            [
+              `stopPty timed out after ${Date.now() - startedAt}ms`,
+              `wrapperPid=${session.child.pid ?? "unknown"}`,
+              `ptyPid=${ptyPid ?? "unknown"}`,
+              `exitCode=${session.child.exitCode}`,
+              `signal=${session.child.signalCode}`,
+              `lastOutput=${JSON.stringify(session.output().slice(-4000))}`,
+            ].join(" "),
+          );
+        }
+      }
     }
-    session.child.kill("SIGTERM");
-    let timer;
-    const result = await Promise.race([
-      session.exited,
-      new Promise((resolve) => {
-        timer = setTimeout(
-          () => resolve({ code: "timeout", signal: null }),
-          2_000,
-        );
-      }),
-    ]);
-    clearTimeout(timer);
-    if (result.code === "timeout") {
-      session.child.kill("SIGKILL");
-      await session.exited;
-    }
+    // A process that has terminated may never close its stdio pipes while a
+    // descendant holds them. Do not let cleanup wait for that indefinitely.
+    await waitForPtyExit(session.exited, closeMs);
   } finally {
+    session.child.stdin?.destroy();
+    session.child.stdout?.destroy();
+    session.child.stderr?.destroy();
+    session.child.unref?.();
     await fs.rm(session.pidFile, { force: true });
   }
 }
@@ -1322,10 +1356,23 @@ async function runCommand(session, command, marker) {
   await waitForOutput(session, marker, command);
 }
 
-async function waitForQuiet(session, quietMs = 100) {
+async function waitForQuiet(session, quietMs = 100, timeoutMs = 10_000) {
+  const startedAt = Date.now();
   let lastLength = session.output().length;
   let quietSince = Date.now();
   while (Date.now() - quietSince < quietMs) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(
+        [
+          `waitForQuiet timed out after ${Date.now() - startedAt}ms`,
+          `quietMs=${quietMs}`,
+          `timeoutMs=${timeoutMs}`,
+          `exitCode=${session.child.exitCode}`,
+          `signal=${session.child.signalCode}`,
+          `lastOutput=${JSON.stringify(session.output().slice(-4000))}`,
+        ].join(" "),
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
     const length = session.output().length;
     if (length !== lastLength) {
@@ -1405,6 +1452,93 @@ async function waitForBashResult(home, command, minimumMatches = 1) {
     return matches >= minimumMatches ? latest : null;
   }, `bash result for ${command} (at least ${minimumMatches})`);
 }
+
+test("waitForQuiet rejects a continuously repainting session", async () => {
+  let output = "paint";
+  const session = {
+    output: () => {
+      output += "!";
+      return output;
+    },
+    child: { exitCode: null, signalCode: null },
+  };
+
+  await assert.rejects(waitForQuiet(session, 100, 250), (error) => {
+    assert.match(error.message, /waitForQuiet timed out after \d+ms/u);
+    assert.match(error.message, /quietMs=100/u);
+    assert.match(error.message, /timeoutMs=250/u);
+    assert.match(error.message, /exitCode=null/u);
+    assert.match(error.message, /signal=null/u);
+    assert.match(error.message, /lastOutput="paint!+"/u);
+    return true;
+  });
+});
+
+test("stopPty returns when a terminated pty never emits close", async () => {
+  const { EventEmitter } = await import("node:events");
+  await withTempDirectory("codepunk-stop-pty-close-", async (root) => {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdin = { destroy() {} };
+    child.stdout = { destroy() {} };
+    child.stderr = { destroy() {} };
+    child.kill = () => {
+      setTimeout(() => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      }, 10);
+      return true;
+    };
+    const session = {
+      child,
+      exited: new Promise(() => {}),
+      terminated: new Promise((resolve) =>
+        child.once("exit", (code, signal) => resolve({ code, signal })),
+      ),
+      pidFile: path.join(root, "missing.pid"),
+      output: () => "",
+    };
+
+    const startedAt = Date.now();
+    await stopPty(session);
+    assert.ok(Date.now() - startedAt < 1_000);
+  });
+});
+
+test("stopPty reports a bounded cleanup timeout", async () => {
+  const { EventEmitter } = await import("node:events");
+  await withTempDirectory("codepunk-stop-pty-timeout-", async (root) => {
+    const child = new EventEmitter();
+    child.pid = 4243;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdin = { destroy() {} };
+    child.stdout = { destroy() {} };
+    child.stderr = { destroy() {} };
+    child.kill = () => true;
+    const session = {
+      child,
+      exited: new Promise(() => {}),
+      terminated: new Promise(() => {}),
+      pidFile: path.join(root, "missing.pid"),
+      output: () => "",
+    };
+
+    await assert.rejects(
+      stopPty(session, { gracefulMs: 20, killMs: 30, closeMs: 10 }),
+      (error) => {
+        assert.match(error.message, /stopPty timed out after \d+ms/u);
+        assert.match(error.message, /wrapperPid=4243/u);
+        assert.match(error.message, /ptyPid=unknown/u);
+        assert.match(error.message, /exitCode=null/u);
+        assert.match(error.message, /lastOutput=""/u);
+        return true;
+      },
+    );
+  });
+});
 
 test("a real pty renders codepunk chrome and exit hints", async () => {
   await withTempDirectory("codepunk-tui-", async (root) => {
@@ -1846,78 +1980,90 @@ test("a real pty covers Goal, hooks, and structured review events", async () => 
   });
 });
 
-test("a real pty lists, reads, and stops durable background tasks", async () => {
-  await withTempDirectory("codepunk-tui-background-", async (root) => {
-    const project = path.join(root, "project");
-    const home = path.join(root, "home");
-    await fs.mkdir(project);
-    await fs.mkdir(home);
-    await execFileAsync("git", ["init", "-q"], { cwd: project });
-    await fs.writeFile(
-      path.join(home, "config.toml"),
-      '[sandbox]\nmode = "uncovered"\n',
-    );
-    const projectId = core.projectIdFor(project);
-    const paths = core.projectPaths(
-      { cwd: project, deliveryRoot: project, projectId },
-      home,
-    );
-    await core.ensureProjectRegistration(
-      {
-        cwd: project,
-        deliveryRoot: project,
-        projectId,
-        isGitRepository: true,
-      },
-      paths,
-    );
-    const seed = new core.BackgroundTaskManager({
-      paths,
-      sessionId: "seed-session",
-    });
-    const started = await seed.start({
-      id: "tui-background",
-      title: "TUI background task",
-      command: process.execPath,
-      args: ["-e", 'process.stdout.write("BGREADY\\n"); process.exit(0);'],
-      cwd: project,
-    });
-    await seed.wait(started.id);
-
-    const cli = await ensureBuilt();
-    const session = startPty(process.execPath, [cli], {
-      cwd: project,
-      env: {
-        ...BASE_ENV,
-        CODEPUNK_HOME: home,
-        PI_OFFLINE: "1",
-        TERM: "xterm-256color",
-        NO_COLOR: "1",
-      },
-    });
-    try {
-      await waitForOutput(session, "codepunk · auto/auto", "startup");
-      await runCommandAfter(session, "/ps", "tui-background");
-      await runCommandAfter(session, "/logs tui-background", "stdout:");
-      assert.match(session.output(), /BGREADY/u);
-      await runCommandAfter(
-        session,
-        "/stop tui-background",
-        "Background task tui-background: completed",
+test(
+  "a real pty lists, reads, and stops durable background tasks",
+  {
+    skip:
+      process.platform === "win32"
+        ? "background tasks require POSIX process groups"
+        : false,
+  },
+  async () => {
+    await withTempDirectory("codepunk-tui-background-", async (root) => {
+      const project = path.join(root, "project");
+      const home = path.join(root, "home");
+      await fs.mkdir(project);
+      await fs.mkdir(home);
+      await execFileAsync("git", ["init", "-q"], { cwd: project });
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        '[sandbox]\nmode = "uncovered"\n',
       );
-      session.child.stdin.write("/quit\r");
-      const result = await Promise.race([
-        session.exited,
-        new Promise((resolve) =>
-          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
-        ),
-      ]);
-      assert.deepEqual(result, { code: 0, signal: null });
-    } finally {
-      await stopPty(session);
-    }
-  });
-});
+      const projectId = core.projectIdFor(project);
+      const paths = core.projectPaths(
+        { cwd: project, deliveryRoot: project, projectId },
+        home,
+      );
+      await core.ensureProjectRegistration(
+        {
+          cwd: project,
+          deliveryRoot: project,
+          projectId,
+          isGitRepository: true,
+        },
+        paths,
+      );
+      const seed = new core.BackgroundTaskManager({
+        paths,
+        sessionId: "seed-session",
+      });
+      const started = await seed.start({
+        id: "tui-background",
+        title: "TUI background task",
+        command: process.execPath,
+        args: ["-e", 'process.stdout.write("BGREADY\\n"); process.exit(0);'],
+        cwd: project,
+      });
+      await seed.wait(started.id);
+
+      const cli = await ensureBuilt();
+      const session = startPty(process.execPath, [cli], {
+        cwd: project,
+        env: {
+          ...BASE_ENV,
+          CODEPUNK_HOME: home,
+          PI_OFFLINE: "1",
+          TERM: "xterm-256color",
+          NO_COLOR: "1",
+        },
+      });
+      try {
+        await waitForOutput(session, "codepunk · auto/auto", "startup");
+        await runCommandAfter(session, "/ps", "tui-background");
+        await runCommandAfter(session, "/logs tui-background", "stdout:");
+        assert.match(session.output(), /BGREADY/u);
+        await runCommandAfter(
+          session,
+          "/stop tui-background",
+          "Background task tui-background: completed",
+        );
+        session.child.stdin.write("/quit\r");
+        const result = await Promise.race([
+          session.exited,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ code: "timeout", signal: null }),
+              20_000,
+            ),
+          ),
+        ]);
+        assert.deepEqual(result, { code: 0, signal: null });
+      } finally {
+        await stopPty(session);
+      }
+    });
+  },
+);
 
 test("a real pty lists presets and roles and applies a preset", async () => {
   await withTempDirectory("codepunk-tui-p1-commands-", async (root) => {
@@ -2011,35 +2157,37 @@ test("a real pty lists presets and roles and applies a preset", async () => {
       await runCommandAfter(session, "/recap all", "Session recap");
       assert.match(session.output(), /autonomy\/profile: 1/u);
       assert.match(session.output(), /trust\/decision: 1/u);
-      await runCommandAfter(
-        session,
-        "/btw summarize the current state",
-        "btw task queued",
-      );
-      await runCommandAfter(session, "/ps", "Side tasks");
-      assert.match(session.output(), /btw\s+budget=1/u);
-      await waitFor(async () => {
-        const files = (
-          await fs.readdir(path.join(home, "projects"), { recursive: true })
-        ).filter((entry) => entry.endsWith(".jsonl"));
-        const sideFile = files.find((entry) =>
-          entry.includes("product/side-tasks"),
+      if (process.platform !== "win32") {
+        await runCommandAfter(
+          session,
+          "/btw summarize the current state",
+          "btw task queued",
         );
-        if (sideFile === undefined) {
-          return false;
-        }
-        const lines = (
-          await fs.readFile(path.join(home, "projects", sideFile), "utf8")
-        )
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line));
-        return lines.some(
-          (entry) =>
-            entry.type === "codepunk/side-task" &&
-            (entry.status === "completed" || entry.status === "failed"),
-        );
-      }, "side task settlement");
+        await runCommandAfter(session, "/ps", "Side tasks");
+        assert.match(session.output(), /btw\s+budget=1/u);
+        await waitFor(async () => {
+          const files = (
+            await fs.readdir(path.join(home, "projects"), { recursive: true })
+          ).filter((entry) => entry.endsWith(".jsonl"));
+          const sideFile = files.find((entry) =>
+            entry.includes("product/side-tasks"),
+          );
+          if (sideFile === undefined) {
+            return false;
+          }
+          const lines = (
+            await fs.readFile(path.join(home, "projects", sideFile), "utf8")
+          )
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          return lines.some(
+            (entry) =>
+              entry.type === "codepunk/side-task" &&
+              (entry.status === "completed" || entry.status === "failed"),
+          );
+        }, "side task settlement");
+      }
       const imagePath = path.join(project, "pixel.png");
       await fs.writeFile(imagePath, Buffer.from(IMAGE_PNG_BASE64, "base64"));
       await runCommandAfter(
