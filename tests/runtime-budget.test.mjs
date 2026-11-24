@@ -7,6 +7,7 @@ import test from "node:test";
 import { windowsSrtSkipReason } from "./support/helpers.mjs";
 import { importCore } from "./support/core.mjs";
 import { installScriptedStream, TEST_MODEL } from "./support/pi-model.mjs";
+import { readRecord } from "./support/fixtures.mjs";
 
 const core = await importCore();
 const WINDOWS_SRT_SKIP = await windowsSrtSkipReason(core);
@@ -23,6 +24,30 @@ async function setup() {
   const ledger = await core.EvidenceLedger.open(evidencePath);
   return { root, project, home, evidencePath, ledger };
 }
+
+test("the run ledger exposes the evidence port without an unsafe cast", async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "codepunk-run-ledger-")),
+  );
+  const evidenceDir = path.join(root, "evidence");
+  const ledger = new core.RunLedger(
+    { evidenceDir },
+    "session-run-ledger",
+    "run-run-ledger",
+  );
+  assert.throws(() => ledger.filePath, /not initialized/u);
+  assert.equal(ledger.head, null);
+  await assert.rejects(() => ledger.append({}), /not initialized/u);
+  await ledger.prepare("run-run-ledger");
+  assert.equal(
+    ledger.filePath,
+    path.join(evidenceDir, "session-run-ledger", "run-run-ledger.jsonl"),
+  );
+  const appended = await ledger.append(readRecord());
+  assert.equal(appended.seq, 1);
+  assert.equal(ledger.head, core.evidenceRecordHash(appended));
+  await fs.rm(root, { recursive: true, force: true });
+});
 
 test("tool call budget blocks before execution on the runtime host path", async () => {
   const paths = await setup();

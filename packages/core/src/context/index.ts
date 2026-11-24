@@ -107,12 +107,172 @@ function truncationNote(included: number, total: number): string {
 
 const TURN_BOUNDARY_MARKER = "[context truncated:";
 
+type AgentMessage = Parameters<typeof estimateMessageTokens>[0];
+
+const MAX_CONSERVATIVE_CHARS = 64 * 1024;
+
+function safeJsonStringify(value: unknown): string | null {
+  try {
+    const json = JSON.stringify(value);
+    return typeof json === "string" ? json : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasValidContentBlocks(content: unknown): boolean {
+  if (typeof content === "string") {
+    return true;
+  }
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.every((block) => {
+    if (typeof block !== "object" || block === null) {
+      return false;
+    }
+    const candidate = block as Record<string, unknown>;
+    if (candidate["type"] === "text") {
+      return typeof candidate["text"] === "string";
+    }
+    return candidate["type"] === "image";
+  });
+}
+
+function hasValidAssistantContent(content: unknown): boolean {
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.every((block) => {
+    if (typeof block !== "object" || block === null) {
+      return false;
+    }
+    const candidate = block as Record<string, unknown>;
+    if (candidate["type"] === "text") {
+      return typeof candidate["text"] === "string";
+    }
+    if (candidate["type"] === "thinking") {
+      return typeof candidate["thinking"] === "string";
+    }
+    return (
+      candidate["type"] === "toolCall" &&
+      typeof candidate["name"] === "string" &&
+      typeof candidate["arguments"] === "object" &&
+      candidate["arguments"] !== null &&
+      safeJsonStringify(candidate["arguments"]) !== null
+    );
+  });
+}
+
+function hasValidSections(sections: unknown): boolean {
+  if (sections === undefined) {
+    return true;
+  }
+  if (typeof sections !== "object" || sections === null) {
+    return false;
+  }
+  return Object.values(sections).every(
+    (section) => section === null || typeof section === "string",
+  );
+}
+
+function hasEstimableShape(message: Record<string, unknown>): boolean {
+  switch (message["role"]) {
+    case "system":
+      return (
+        hasValidContentBlocks(message["content"]) &&
+        hasValidSections(message["sections"]) &&
+        (message["toolsAdded"] === undefined ||
+          safeJsonStringify(message["toolsAdded"]) !== null)
+      );
+    case "user":
+    case "toolResult":
+    case "custom":
+      return hasValidContentBlocks(message["content"]);
+    case "assistant":
+      return hasValidAssistantContent(message["content"]);
+    case "bashExecution":
+      return (
+        typeof message["command"] === "string" &&
+        typeof message["output"] === "string"
+      );
+    case "branchSummary":
+    case "compactionSummary":
+      return typeof message["summary"] === "string";
+    default:
+      return false;
+  }
+}
+
+function readAgentMessage(message: unknown): AgentMessage | null {
+  if (typeof message !== "object" || message === null) {
+    return null;
+  }
+  const candidate = message as Record<string, unknown>;
+  return hasEstimableShape(candidate) ? (message as AgentMessage) : null;
+}
+
+function conservativeChars(value: unknown, visited: WeakSet<object>): number {
+  if (typeof value === "string") {
+    return Math.min(value.length, MAX_CONSERVATIVE_CHARS);
+  }
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value).length;
+  }
+  if (typeof value !== "object") {
+    return String(value).length;
+  }
+  if (visited.has(value)) {
+    return 0;
+  }
+  visited.add(value);
+  let chars = 2;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (chars >= MAX_CONSERVATIVE_CHARS) {
+        break;
+      }
+      chars += 1 + conservativeChars(item, visited);
+    }
+    return Math.min(chars, MAX_CONSERVATIVE_CHARS);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (chars >= MAX_CONSERVATIVE_CHARS) {
+      break;
+    }
+    chars += key.length + 1 + conservativeChars(item, visited);
+  }
+  return Math.min(chars, MAX_CONSERVATIVE_CHARS);
+}
+
+function conservativeMessageTokens(message: unknown): number {
+  const chars = conservativeChars(message, new WeakSet());
+  return Math.max(1, Math.ceil(Math.min(chars, MAX_CONSERVATIVE_CHARS) / 4));
+}
+
 function messageTokens(message: unknown): number {
-  return estimateMessageTokens(message as never);
+  const agentMessage = readAgentMessage(message);
+  if (agentMessage === null) {
+    return conservativeMessageTokens(message);
+  }
+  try {
+    const estimated = estimateMessageTokens(agentMessage);
+    return Number.isFinite(estimated)
+      ? estimated
+      : conservativeMessageTokens(message);
+  } catch {
+    return conservativeMessageTokens(message);
+  }
 }
 
 function toolResultContent(message: Record<string, unknown>): string {
-  return JSON.stringify(message["content"] ?? []);
+  return safeJsonStringify(message["content"] ?? []) ?? "";
 }
 
 function isAlreadyTruncated(message: Record<string, unknown>): boolean {
@@ -136,8 +296,8 @@ function turnBoundaryToolResult(
   const marker = [
     TURN_BOUNDARY_MARKER,
     " oldest tool output removed;",
-    ` tool=${JSON.stringify(message["toolName"] ?? "")}`,
-    ` call=${JSON.stringify(message["toolCallId"] ?? "")}`,
+    ` tool=${safeJsonStringify(message["toolName"] ?? "") ?? '""'}`,
+    ` call=${safeJsonStringify(message["toolCallId"] ?? "") ?? '""'}`,
     ` bytes=${Buffer.byteLength(original, "utf8")}`,
     ` tokens=${messageTokens(message)}`,
     ` sha256=${sha256Text(original)}`,
@@ -161,13 +321,21 @@ export function truncateContextAtTurnBoundary<T extends { role: string }>(
     0,
   );
   const latestUser = messages.findLastIndex(
-    (message) => message.role === "user",
+    (message) =>
+      typeof message === "object" &&
+      message !== null &&
+      message.role === "user",
   );
   const candidates: number[] = [];
   if (latestUser >= 0) {
     for (let index = 0; index < latestUser; index += 1) {
       const message = messages[index] as Record<string, unknown>;
-      if (message["role"] === "toolResult" && !isAlreadyTruncated(message)) {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        message["role"] === "toolResult" &&
+        !isAlreadyTruncated(message)
+      ) {
         candidates.push(index);
       }
     }

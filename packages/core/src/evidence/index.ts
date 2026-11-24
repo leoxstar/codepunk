@@ -32,6 +32,14 @@ export interface EvidenceOpenResult {
   head: string | null;
 }
 
+export interface EvidenceLedgerPort {
+  readonly filePath: string;
+  readonly all: readonly EvidenceRecord[];
+  readonly head: string | null;
+  readonly hasTruncatedTail: boolean;
+  append(input: EvidenceAppendInput): Promise<EvidenceRecord>;
+}
+
 export function evidenceRecordHash(record: EvidenceRecord): string {
   return recordHash(record);
 }
@@ -147,7 +155,7 @@ export async function readEvidenceFile(
   };
 }
 
-export class EvidenceLedger {
+export class EvidenceLedger implements EvidenceLedgerPort {
   readonly filePath: string;
   private records: EvidenceRecord[];
   private truncatedTail: boolean;

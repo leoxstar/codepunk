@@ -43,6 +43,7 @@ import {
   type EvidenceAppendInput,
   EvidenceLedger,
   readEvidenceFile,
+  type EvidenceLedgerPort,
 } from "../evidence/index.ts";
 import {
   filesystemFullStartupIssue,
@@ -180,7 +181,7 @@ export interface RuntimeSignResult {
   issues: string[];
 }
 
-export class RunLedger {
+export class RunLedger implements EvidenceLedgerPort {
   private current: EvidenceLedger | null = null;
   private currentPath: string | null = null;
   private readonly paths: ProjectPaths;
@@ -1199,7 +1200,7 @@ async function createRuntimeInner(
       mode: options.headless === true ? "headless" : "interactive",
       approval,
       autonomy,
-      ledger: ledger as unknown as EvidenceLedger,
+      ledger,
       reviewer,
       sandbox,
       approvalMode: () => config.approval.mode,

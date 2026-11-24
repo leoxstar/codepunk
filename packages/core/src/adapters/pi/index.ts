@@ -89,6 +89,27 @@ export class HostIsolationError extends Error {
   }
 }
 
+type ExtensionPathLoader = {
+  additionalExtensionPaths?: string[];
+};
+
+function additionalExtensionPaths(resourceLoader: unknown): string[] {
+  // SAFETY: Pi's public ResourceLoader interface does not expose this private
+  // array, but pinned 1.6.0 initializes it from DefaultResourceLoaderOptions
+  // and retains the same array reference for session.reload().
+  if (typeof resourceLoader !== "object" || resourceLoader === null) {
+    throw new HostIsolationError("Pi resource loader is not available");
+  }
+  const loader = resourceLoader as Partial<ExtensionPathLoader>;
+  const paths = loader.additionalExtensionPaths;
+  if (!Array.isArray(paths)) {
+    throw new HostIsolationError(
+      "pinned Pi resource loader no longer exposes additionalExtensionPaths",
+    );
+  }
+  return paths;
+}
+
 export interface ToolRegistrySnapshot {
   active: string[];
   registered: string[];
@@ -2081,27 +2102,13 @@ export async function createPiHost(
     };
     const replaceExtensionPaths = (paths: readonly string[]): void => {
       const normalized = paths.map((candidate) => normalizeAbsolute(candidate));
-      const loader =
-        // SAFETY: pi's resource loader exposes additionalExtensionPaths, and
-        // the shape is validated by the Array.isArray check below.
-        services!.resourceLoader as unknown as {
-          additionalExtensionPaths?: string[];
-        };
-      if (!Array.isArray(loader.additionalExtensionPaths)) {
-        throw new HostIsolationError(
-          "pinned Pi resource loader no longer exposes additionalExtensionPaths",
-        );
-      }
+      const loaderPaths = additionalExtensionPaths(services?.resourceLoader);
       allowedExtensionPaths.splice(
         0,
         allowedExtensionPaths.length,
         ...normalized,
       );
-      loader.additionalExtensionPaths.splice(
-        0,
-        loader.additionalExtensionPaths.length,
-        ...normalized,
-      );
+      loaderPaths.splice(0, loaderPaths.length, ...normalized);
     };
     return {
       session,

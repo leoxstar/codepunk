@@ -121,6 +121,26 @@ test("discovery canaries do not load and the registry is wrapped", async () => {
   }
 });
 
+test("replacing extension paths fails closed without the private Pi array", async () => {
+  const paths = await setup();
+  const { host } = await createHost(paths);
+  const resourceLoader = host.services.resourceLoader;
+  const originalPaths = resourceLoader.additionalExtensionPaths;
+  delete resourceLoader.additionalExtensionPaths;
+  try {
+    assert.throws(
+      () => host.replaceExtensionPaths([path.join(paths.project, "one.mjs")]),
+      (error) =>
+        error instanceof core.HostIsolationError &&
+        /no longer exposes additionalExtensionPaths/u.test(error.message),
+    );
+  } finally {
+    resourceLoader.additionalExtensionPaths = originalPaths;
+    await host.dispose();
+    await fs.rm(paths.root, { recursive: true, force: true });
+  }
+});
+
 test("Pi system prompt files cannot bypass the Codepunk context envelope", async () => {
   const paths = await setup();
   await fs.writeFile(

@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   getPackageDir,
   loadProjectContextFiles,
+  estimateTokens as estimateMessageTokens,
 } from "@earendil-works/pi-coding-agent";
 import { importCore } from "./support/core.mjs";
 import {
@@ -260,6 +261,239 @@ test("the host applies runtime facts through before_agent_start sections", async
     await host.dispose();
     await fs.rm(setup.root, { recursive: true, force: true });
     await fs.rm(setup.home, { recursive: true, force: true });
+  }
+});
+
+test("turn-boundary token estimation delegates known messages to Pi", () => {
+  const messages = [
+    {
+      role: "user",
+      content: [{ type: "text", text: "hello from the user" }],
+      timestamp: 1,
+    },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "hello from the assistant" },
+        { type: "thinking", thinking: "thinking block" },
+        { type: "toolCall", id: "call", name: "read", arguments: {} },
+      ],
+      api: "openai",
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "stop",
+      timestamp: 2,
+    },
+    {
+      role: "toolResult",
+      toolCallId: "call",
+      toolName: "read",
+      content: [{ type: "text", text: "hello from the tool" }],
+      details: {},
+      isError: false,
+      timestamp: 3,
+    },
+    {
+      role: "custom",
+      customType: "status",
+      content: [{ type: "text", text: "hello from custom" }],
+      display: false,
+      details: {},
+      timestamp: 4,
+    },
+  ];
+
+  const estimated = core.truncateContextAtTurnBoundary(messages, {
+    maxTokens: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(
+    estimated.tokensBefore,
+    messages.reduce(
+      (total, message) => total + estimateMessageTokens(message),
+      0,
+    ),
+  );
+});
+
+test("turn-boundary token estimation handles malformed messages safely", () => {
+  const malformed = [null, 42, "text", { role: "unknown" }, {}];
+  const estimated = core.truncateContextAtTurnBoundary(malformed, {
+    maxTokens: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(estimated.truncated, false);
+  assert.deepEqual(estimated.messages, malformed);
+  assert.ok(Number.isFinite(estimated.tokensBefore));
+  assert.ok(estimated.tokensBefore > 0);
+});
+
+test("turn-boundary token estimation survives known roles without content", () => {
+  const malformed = [
+    { role: "user" },
+    { role: "assistant" },
+    { role: "toolResult" },
+    { role: "custom" },
+  ];
+  for (const message of malformed) {
+    let estimated;
+    assert.doesNotThrow(() => {
+      estimated = core.truncateContextAtTurnBoundary([message], {
+        maxTokens: Number.MAX_SAFE_INTEGER,
+      });
+    }, `malformed ${message.role} message must not throw`);
+    assert.ok(Number.isFinite(estimated.tokensBefore));
+    assert.ok(estimated.tokensBefore > 0);
+  }
+});
+
+test("turn-boundary token estimation rejects NaN from malformed blocks", () => {
+  const badUser = { role: "user", content: [{ type: "text", text: 42 }] };
+  const badAssistant = {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: 42 }],
+  };
+  const badToolCall = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "call", name: 42, arguments: {} }],
+  };
+  const toolResult = {
+    role: "toolResult",
+    toolCallId: "call",
+    toolName: "read",
+    content: [{ type: "text", text: "tool output" }],
+    details: {},
+    isError: false,
+    timestamp: 2,
+  };
+  const currentUser = {
+    role: "user",
+    content: [{ type: "text", text: "current request" }],
+    timestamp: 3,
+  };
+  for (const malformed of [badUser, badAssistant, badToolCall]) {
+    const estimated = core.truncateContextAtTurnBoundary(
+      [malformed, toolResult, currentUser],
+      { maxTokens: Number.MAX_SAFE_INTEGER },
+    );
+    assert.ok(Number.isFinite(estimated.tokensBefore));
+    assert.equal(estimated.truncated, false);
+    assert.equal(estimated.droppedToolResults, 0);
+    assert.ok(estimated.tokensBefore > 0);
+  }
+});
+
+test("turn-boundary token estimation handles a null message before a user", () => {
+  const estimated = core.truncateContextAtTurnBoundary(
+    [null, { role: "user", content: "hi" }],
+    { maxTokens: Number.MAX_SAFE_INTEGER },
+  );
+  assert.ok(Number.isFinite(estimated.tokensBefore));
+  assert.ok(estimated.tokensBefore > 0);
+});
+
+test("turn-boundary token estimation delegates every Pi role to Pi", () => {
+  const messages = [
+    { role: "system", content: "system", timestamp: 1 },
+    {
+      role: "bashExecution",
+      command: "command",
+      output: "output",
+      exitCode: 0,
+      cancelled: false,
+      truncated: false,
+      timestamp: 2,
+    },
+    {
+      role: "branchSummary",
+      summary: "branch",
+      fromId: null,
+      timestamp: 3,
+    },
+    {
+      role: "compactionSummary",
+      summary: "compaction",
+      tokensBefore: 1,
+      timestamp: 4,
+    },
+  ];
+  const estimated = core.truncateContextAtTurnBoundary(messages, {
+    maxTokens: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(
+    estimated.tokensBefore,
+    messages.reduce(
+      (total, message) => total + estimateMessageTokens(message),
+      0,
+    ),
+  );
+});
+
+test("turn-boundary token estimation gives malformed values a positive estimate", () => {
+  const cycle = {};
+  cycle.self = cycle;
+  for (const message of [cycle, 42n]) {
+    const estimated = core.truncateContextAtTurnBoundary([message], {
+      maxTokens: Number.MAX_SAFE_INTEGER,
+    });
+    assert.ok(Number.isFinite(estimated.tokensBefore));
+    assert.ok(estimated.tokensBefore > 0);
+  }
+});
+
+test("turn-boundary truncation handles unsafe tool identity values", () => {
+  const circularName = {};
+  circularName.self = circularName;
+  const circularCallId = {};
+  circularCallId.self = circularCallId;
+  const currentUser = {
+    role: "user",
+    content: [{ type: "text", text: "current request" }],
+    timestamp: 2,
+  };
+  const malformedValues = [
+    { toolName: 42n },
+    { toolName: circularName },
+    { toolCallId: 42n },
+    { toolCallId: circularCallId },
+  ];
+  for (const override of malformedValues) {
+    const message = {
+      role: "toolResult",
+      toolCallId: "call",
+      toolName: "read",
+      content: [{ type: "text", text: "x".repeat(400) }],
+      details: {},
+      isError: false,
+      timestamp: 1,
+      ...override,
+    };
+    const estimated = core.truncateContextAtTurnBoundary(
+      [message, currentUser],
+      {
+        maxTokens: 1,
+      },
+    );
+    assert.ok(Number.isFinite(estimated.tokensBefore));
+    assert.ok(Number.isFinite(estimated.tokensAfter));
+    assert.equal(estimated.truncated, true);
+    assert.equal(estimated.droppedToolResults, 1);
+    assert.match(
+      estimated.messages[0].content[0].text,
+      /reason=turn-boundary/u,
+    );
   }
 });
 

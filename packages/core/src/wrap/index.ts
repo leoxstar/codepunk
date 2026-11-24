@@ -30,9 +30,9 @@ import {
 } from "../artifacts/index.ts";
 import type { ApprovalMode } from "../config/index.ts";
 import {
-  EvidenceLedger,
   fileContentHash,
   outputSha,
+  type EvidenceLedgerPort,
 } from "../evidence/index.ts";
 import { canonicalJson, recordHash, sha256Text } from "../platform/hash.ts";
 import {
@@ -97,7 +97,7 @@ export interface ToolWrapOptions {
   networkAllowedDomains?: readonly string[];
   /** Operator-configured egress deny list; shown in the same explanation. */
   networkDeniedDomains?: readonly string[];
-  ledger: EvidenceLedger;
+  ledger: EvidenceLedgerPort;
   sandbox?: ShellProvider | null;
   shellUnavailableReason?: string | (() => string);
   workerId?: string;
