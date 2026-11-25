@@ -31,6 +31,10 @@ registerCommand evidence	Show current run evidence count
 registerCommand models	Select a recent or favorite model
 registerCommand favorite	Toggle the current model in favorites
 registerShortcut f2	Cycle through recent models
+registerShortcut alt+m	Cycle work mode (plan/standard/auto/auto-approve)
+registerShortcut alt+t	Open the unified task and subagent center
+registerShortcut alt+r	Open the interactive rewind picker
+registerShortcut f1	Open searchable command help
 registerCommand budget	Show model token and cost usage against the budget
 registerCommand doctor	Run codepunk doctor
 registerCommand policy	Show effective codepunk policy
@@ -43,6 +47,8 @@ registerCommand permission	Show or change approval, autonomy, and sandbox modes
 registerCommand cp-export	Export a redacted audit transcript
 registerCommand subagent	Start a background child Pi session
 registerCommand agents	Review, sign, merge, or discard background subagents
+registerCommand tasks	Open the unified interactive task and subagent center
+registerCommand rewind	Interactively rewind recent file checkpoints and/or conversation branches
 registerCommand ps	List background tasks
 registerCommand logs	Show bounded background task logs
 registerCommand stop	Stop a background task

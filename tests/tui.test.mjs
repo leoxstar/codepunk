@@ -2086,7 +2086,8 @@ test("a real pty shows the working tree diff", async () => {
       assert.match(output, /\?\? new\.txt/u);
       assert.match(output, /\+two/u);
       assert.match(output, /-one/u);
-      assert.match(output, /untracked files \(2; no patch until staged\)/u);
+      assert.match(output, /untracked files \(1; no patch until staged\)/u);
+      assert.match(output, /internal \.codepunk\/ file\(s\) omitted/u);
       assert.match(output, /esc close/u);
       assert.match(output, /│/u);
       await closeOverlay(session);
@@ -6225,13 +6226,13 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       await runCommandAfter(
         session,
         "/import session.jsonl",
-        "Pi session import is not supported",
+        "External session import is not supported",
       );
       await runCommandAfter(session, "/share", "Use /cp-export");
       await runCommandAfter(
         session,
         "/bug a synthetic report hint",
-        "Pi's /bug flow can upload a session transcript",
+        "The built-in /bug flow can upload a session transcript",
       );
       await runCommandAfter(
         session,
