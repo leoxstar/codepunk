@@ -142,9 +142,9 @@ export function createWebFetchTool(
     label: "web_fetch",
     description:
       "Fetch one http(s) URL and return bounded text (JSON, plain text, or raw HTML). " +
-      "Each call needs human approval; the domain deny list and private-host guard always apply.",
+      "Public reads are routine; the domain deny list and private-host guard always apply.",
     promptSnippet:
-      "Fetch a URL with web_fetch when a live web resource is needed; every call is approved by the operator",
+      "Fetch a URL with web_fetch when a live web resource is needed; private hosts and denied domains are refused",
     parameters: {
       type: "object",
       properties: {

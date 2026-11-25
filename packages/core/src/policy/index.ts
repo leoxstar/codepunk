@@ -883,6 +883,7 @@ const READ_ONLY_SHELL_WORDS = new Set([
   "pwd",
   "ls",
   "cat",
+  "grep",
   "head",
   "tail",
   "wc",
@@ -1341,6 +1342,52 @@ function addReadTargets(scan: ShellScan): void {
     }
     return;
   }
+  if (firstWord === "grep") {
+    let patternSeen = false;
+    for (let index = 0; index < args.length; index += 1) {
+      const word = args[index]!;
+      if (word === "--") {
+        continue;
+      }
+      if (word === "-f" || word === "--file") {
+        const value = args[index + 1];
+        if (value !== undefined) {
+          read(value);
+          index += 1;
+        }
+        continue;
+      }
+      if (word.startsWith("--file=")) {
+        read(word.slice("--file=".length));
+        continue;
+      }
+      if (/^-f.+/u.test(word)) {
+        read(word.slice(2));
+        continue;
+      }
+      if (word === "-e" || word === "--regexp") {
+        patternSeen = true;
+        index += 1;
+        continue;
+      }
+      if (
+        (word.startsWith("-e") && word.length > 2) ||
+        word.startsWith("--regexp=")
+      ) {
+        patternSeen = true;
+        continue;
+      }
+      if (word.startsWith("-")) {
+        continue;
+      }
+      if (!patternSeen) {
+        patternSeen = true;
+        continue;
+      }
+      read(word);
+    }
+    return;
+  }
   if (
     firstWord === "printf" ||
     firstWord === "echo" ||
@@ -1427,6 +1474,177 @@ function addMutationTargets(scan: ShellScan): void {
   }
 }
 
+function splitReadOnlyShellPipeline(command: string): string[] | null {
+  const segments: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  const push = (end: number): boolean => {
+    const segment = command.slice(start, end).trim();
+    if (segment.length === 0) {
+      return false;
+    }
+    segments.push(segment);
+    return true;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "$" || character === "`") {
+      return null;
+    }
+    if (
+      character === ";" ||
+      character === "<" ||
+      character === ">" ||
+      character === "\n" ||
+      character === "\r" ||
+      character === "(" ||
+      character === ")"
+    ) {
+      return null;
+    }
+    if (character === "&") {
+      if (command[index + 1] !== "&") {
+        return null;
+      }
+      if (!push(index)) {
+        return null;
+      }
+      index += 1;
+      start = index + 1;
+      continue;
+    }
+    if (character === "|") {
+      if (command[index + 1] === "|") {
+        return null;
+      }
+      if (!push(index)) {
+        return null;
+      }
+      start = index + 1;
+    }
+  }
+  if (quote !== null || escaped) {
+    return null;
+  }
+  if (!push(command.length)) {
+    return null;
+  }
+  return segments;
+}
+
+/**
+ * Read-only pipelines are allowed only when every segment is independently
+ * classifiable as a read. The parser deliberately accepts only `&&` and `|`;
+ * redirection, command substitution, boolean `||`, and background separators
+ * remain at the normal approval gate.
+ */
+function readOnlyPipelineDecision(
+  request: PolicyRequest,
+  command: string,
+): PathDecision | null {
+  const segments = splitReadOnlyShellPipeline(command);
+  if (segments === null) {
+    return null;
+  }
+  let currentCwd = request.cwd;
+  let pathTarget: string | null = null;
+  for (const [index, segment] of segments.entries()) {
+    const scan = shellScan(segment);
+    if (scan.dangerous) {
+      return {
+        decision: "deny",
+        reason: "dangerous shell pipeline segment is denied",
+        target: null,
+        approvalClass: "destructive",
+      };
+    }
+    if (scan.complex) {
+      return null;
+    }
+    if (scan.firstWord === "cd") {
+      if (index !== 0 || segments.length < 2 || scan.environment.length > 0) {
+        return null;
+      }
+      const args = scan.commandWords.slice(1);
+      if (
+        args.length !== 1 ||
+        args[0]!.length === 0 ||
+        args[0]!.startsWith("-") ||
+        /[$`{}*?[\]()]/u.test(args[0]!)
+      ) {
+        return null;
+      }
+      const check = decisionForPath(
+        { ...request, cwd: currentCwd },
+        args[0],
+        false,
+      );
+      if (check.decision !== "allow") {
+        return check;
+      }
+      if (check.target !== null) {
+        currentCwd = check.target;
+      }
+      pathTarget = check.target;
+      continue;
+    }
+    if (
+      scan.environment.length > 0 ||
+      scan.writeTargets.length > 0 ||
+      scan.sedTargets.length > 0 ||
+      !isReadOnlyShellCommand(scan)
+    ) {
+      return null;
+    }
+    addReadTargets(scan);
+    for (const target of scan.readTargets) {
+      if (/\$|[{}*?[\]]/u.test(target)) {
+        return {
+          decision: "ask",
+          reason: "dynamic read path requires approval",
+          target: null,
+          approvalClass: "sensitive",
+        };
+      }
+      const check = decisionForPath(
+        { ...request, cwd: currentCwd },
+        target,
+        false,
+      );
+      pathTarget = check.target ?? pathTarget;
+      if (check.decision !== "allow") {
+        return check;
+      }
+    }
+  }
+  return {
+    decision: "allow",
+    reason: "read-only shell pipeline is allowed",
+    target: pathTarget,
+    approvalClass: "routine",
+  };
+}
+
 function findExactExecRule(request: PolicyRequest): PolicyRule | null {
   if (request.argv === undefined) {
     return null;
@@ -1506,6 +1724,35 @@ function shellDecision(request: PolicyRequest): {
     };
   }
   if (scan.complex) {
+    const pipeline = readOnlyPipelineDecision(request, command);
+    if (pipeline !== null) {
+      if (pipeline.decision !== "allow") {
+        return {
+          decision: pipeline.decision,
+          reason: pipeline.reason,
+          rule: {
+            id: `shell.read.${pipeline.decision}`,
+            tool: request.tool,
+            decision: pipeline.decision,
+            command,
+          },
+          pathTarget: pipeline.target,
+          approvalClass: pipeline.approvalClass,
+        };
+      }
+      return {
+        decision: "allow",
+        reason: pipeline.reason,
+        rule: {
+          id: "shell.read.pipeline",
+          tool: request.tool,
+          decision: "allow",
+          command,
+        },
+        pathTarget: pipeline.target ?? pathTarget,
+        approvalClass: "routine",
+      };
+    }
     return {
       decision: "ask",
       reason: "shell structure requires approval",
@@ -1700,16 +1947,16 @@ function toolDecision(request: PolicyRequest): {
   }
   if (request.tool === "web_fetch") {
     return {
-      decision: "ask",
+      decision: "allow",
       reason:
-        "web fetch runs in-process outside the sandbox and needs approval",
+        "public web reads are allowed; the fetch tool still enforces private-host and deny-list guards",
       rule: {
-        id: "web.fetch.ask",
+        id: "web.fetch.allow",
         tool: request.tool,
-        decision: "ask",
+        decision: "allow",
       },
       pathTarget: null,
-      approvalClass: "network",
+      approvalClass: "routine",
     };
   }
   if (request.tool === "memory_search") {

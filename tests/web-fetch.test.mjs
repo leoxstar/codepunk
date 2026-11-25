@@ -23,11 +23,12 @@ test("web_fetch is registered with an external execution policy", () => {
   assert.equal(policy.resultBudgetBytes, 256 * 1_024);
 });
 
-test("web_fetch policy decision is ask with the network approval class", () => {
+test("web_fetch policy decision is an allowed routine read", () => {
   const decision = core.decidePolicy(request({ tool: "web_fetch" }));
-  assert.equal(decision.decision, "ask");
-  assert.equal(decision.approval_class, "network");
-  assert.equal(decision.rule, "web.fetch.ask");
+  assert.equal(decision.decision, "allow");
+  assert.equal(decision.approval_class, "routine");
+  assert.equal(decision.rule, "web.fetch.allow");
+  assert.equal(decision.requires_approval, false);
   assert.equal(decision.match.tool, "web_fetch");
 });
 

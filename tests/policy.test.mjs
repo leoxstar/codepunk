@@ -402,7 +402,6 @@ test("auto mode keeps destructive shell at the approval gate", async () => {
     "git branch -D topic",
     "git push --force",
     "git push origin main",
-    "echo ok | cat",
     "date +%A > clock.txt",
   ]) {
     const policy = core.decidePolicy(
@@ -472,6 +471,48 @@ test("auto mode keeps destructive shell at the approval gate", async () => {
     cwd: WORKSPACE,
   });
   assert.equal(autoMutation.decision, "allow");
+});
+
+test("read-only shell pipelines are routine without an approval", async () => {
+  for (const command of [
+    "echo ok | cat",
+    "pwd && ls | head -20",
+    `cd ${WORKSPACE} && grep -o '"date": "[^"]*"' artifact.txt | head -20`,
+    "cd src && cat a.ts | head -5",
+  ]) {
+    const policy = core.decidePolicy(
+      request({ tool: "bash", command, userDefault: "allow" }),
+    );
+    assert.equal(policy.decision, "allow", command);
+    assert.equal(policy.approval_class, "routine", command);
+    assert.equal(policy.requires_approval, false, command);
+    const gate = await core.resolvePermissionGate({
+      policy,
+      autonomy: null,
+      approvalMode: "ask",
+      tool: "bash",
+      command,
+      cwd: WORKSPACE,
+    });
+    assert.equal(gate.decision, "allow", command);
+  }
+});
+
+test("read-only pipeline shortcuts keep mutation and escape checks", () => {
+  for (const command of [
+    "rm -rf build",
+    "echo ok > clock.txt",
+    "echo $(date)",
+    "rg --pre ./pre README.md",
+    "cd .. && cat outside.txt",
+    "cat ../outside.txt",
+  ]) {
+    const policy = core.decidePolicy(
+      request({ tool: "bash", command, userDefault: "allow" }),
+    );
+    assert.notEqual(policy.decision, "allow", command);
+    assert.notEqual(policy.approval_class, "routine", command);
+  }
 });
 
 test("auto mode keeps network and package-index commands at the approval gate", async () => {
@@ -723,6 +764,7 @@ test("common workspace inspection commands stay read-only without approval", () 
     "tree .",
     "du -sh .",
     "which git",
+    "rg needle | head",
   ]) {
     const decision = core.decidePolicy(
       request({ tool: "bash", command, userDefault: "allow" }),
@@ -745,7 +787,6 @@ test("common workspace inspection commands stay read-only without approval", () 
     "du --files0-from list.txt",
     "tail -f log.txt",
     "git status; touch probe.txt",
-    "rg needle | head",
   ]) {
     const decision = core.decidePolicy(
       request({ tool: "bash", command, userDefault: "allow" }),
