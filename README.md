@@ -469,11 +469,11 @@ restart. All changes are written to `~/.codepunk/config.toml`. Sandbox mode is
 saved for the next session because the shell provider is bound when the host
 starts. Other TOML sections and comments are preserved.
 
-The approval selector offers `Allow once`, `Allow this exact command for the
-session`, `Always allow this exact command`, `Deny`, and `Deny with guidance
-for the model` when the action is a simple shell argv. If the request has no
-reusable argv and cwd, the two exact-command options are hidden. Session
-approval applies only to the same tool, argv, and working directory.
+The approval selector offers `Allow once`, `Allow for session`,
+`Always allow exact`, `Deny`, and `Deny with guidance` when the action is a
+simple shell argv. If the request has no reusable argv and cwd, only
+`Allow once` and `Deny` are shown. Session approval applies only to the same
+tool, argv, and working directory.
 Persistent approval first opens a separate rule preview
 showing the exact argv, cwd, match scope, and storage location; cancelling the
 preview writes nothing. Confirming rewrites the scoped rule file with the same

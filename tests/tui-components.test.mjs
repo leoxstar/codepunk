@@ -205,7 +205,7 @@ test("Table renders a width-safe empty state", () => {
     columns: [{ label: "ID" }, { label: "ARGV" }],
     rows: [],
     emptyText:
-      'No scoped rules. Choose "Always allow this exact command" on an approval to create one.',
+      'No scoped rules. Choose "Always allow exact" on an approval to create one.',
   });
   for (const width of WIDTHS) {
     const lines = table.render(width);
@@ -388,14 +388,14 @@ const APPROVAL_CHOICES = [
   { key: "a", label: "Allow once", decision: "allow", scope: "once" },
   {
     key: "s",
-    label: "Allow this exact command for the session",
+    label: "Allow for session",
     decision: "allow",
     scope: "session",
     requiresTrust: true,
   },
   {
     key: "p",
-    label: "Always allow this exact command",
+    label: "Always allow exact",
     decision: "allow",
     scope: "persistent",
     requiresTrust: true,
@@ -403,7 +403,7 @@ const APPROVAL_CHOICES = [
   { key: "d", label: "Deny", decision: "deny", scope: "once" },
   {
     key: "g",
-    label: "Deny with guidance for the model",
+    label: "Deny with guidance",
     decision: "deny",
     scope: "once",
     guidance: true,
@@ -443,7 +443,7 @@ function createCard({ trusted = true, request = approvalRequest(), onDone }) {
   );
 }
 
-test("ApprovalCard renders the full request and defaults to Deny", () => {
+test("ApprovalCard renders the full request and defaults to Allow once", () => {
   let result = "unset";
   const card = createCard({ onDone: (choice) => (result = choice) });
   for (const width of WIDTHS) {
@@ -457,16 +457,17 @@ test("ApprovalCard renders the full request and defaults to Deny", () => {
   assert.match(text, /exact argv: touch probe\.txt/u);
   assert.match(text, /cwd: \/workspace/u);
   assert.match(text, /why: write outside/u);
-  assert.match(text, /> d  Deny/u);
   assert.match(text, /a  Allow once/u);
-  assert.match(text, /s  Allow this exact command for the session/u);
-  assert.match(text, /p  Always allow this exact command/u);
+  assert.match(text, /s  Allow for session/u);
+  assert.match(text, /p  Always allow exact/u);
   assert.match(text, /g  Deny with guidance/u);
+  assert.match(text, /> a  Allow once/u);
+  assert.doesNotMatch(text, /references:/u);
   assert.match(text, /esc cancel/u);
   assert.doesNotMatch(text, /\bpi\b|π/iu);
   card.handleInput("\r");
-  assert.equal(result.key, "d");
-  assert.equal(result.decision, "deny");
+  assert.equal(result.key, "a");
+  assert.equal(result.decision, "allow");
 });
 
 test("ApprovalCard single keys and persistent confirmation", () => {
@@ -495,7 +496,7 @@ test("ApprovalCard single keys and persistent confirmation", () => {
   assert.equal(result, "unset");
   assert.match(
     stripTerminalSequences(card.render(80).join("\n")),
-    /> d  Deny/u,
+    /> a  Allow once/u,
   );
   card.handleInput("p");
   card.handleInput("\r");
@@ -510,8 +511,8 @@ test("ApprovalCard hides session and persistent choices when untrusted", () => {
     onDone: (choice) => (result = choice),
   });
   const text = stripTerminalSequences(card.render(80).join("\n"));
-  assert.doesNotMatch(text, /Allow this exact command for the session/u);
-  assert.doesNotMatch(text, /Always allow this exact command/u);
+  assert.doesNotMatch(text, /Allow for session/u);
+  assert.doesNotMatch(text, /Always allow exact/u);
   assert.match(text, /workspace is untrusted/u);
   card.handleInput("s");
   assert.equal(result, "unset");
@@ -527,20 +528,42 @@ test("ApprovalCard arrows move the selection and escape cancels", () => {
   card.handleInput("\u001b[B");
   assert.match(
     stripTerminalSequences(card.render(80).join("\n")),
-    /> g  Deny with guidance/u,
+    /> s  Allow for session/u,
   );
-  card.handleInput("k");
+  card.handleInput("\u001b[B");
+  card.handleInput("\u001b[B");
+  card.handleInput("\u001b[B");
   assert.match(
     stripTerminalSequences(card.render(80).join("\n")),
-    /> d  Deny/u,
+    /> g  Deny with guidance/u,
   );
+  card.handleInput("\u001b[A");
+  card.handleInput("\u001b[A");
+  card.handleInput("\u001b[A");
   card.handleInput("\u001b[A");
   assert.match(
     stripTerminalSequences(card.render(80).join("\n")),
-    /> p  Always allow this exact command/u,
+    /> a  Allow once/u,
   );
   card.handleInput("\u001b");
   assert.equal(result, null);
+});
+
+test("ApprovalCard offers only Allow once and Deny without reusable argv", () => {
+  let result = null;
+  const card = createCard({
+    request: approvalRequest({ argv: undefined, cwd: undefined }),
+    onDone: (choice) => (result = choice),
+  });
+  const text = stripTerminalSequences(card.render(80).join("\n"));
+  assert.match(text, /a  Allow once/u);
+  assert.match(text, /d  Deny/u);
+  assert.doesNotMatch(text, /Allow for session/u);
+  assert.doesNotMatch(text, /Always allow exact/u);
+  assert.doesNotMatch(text, /Deny with guidance/u);
+  assert.match(text, /> a  Allow once/u);
+  card.handleInput("\r");
+  assert.equal(result.key, "a");
 });
 
 test("ApprovalCard keeps CJK, emoji, ANSI, and long argv within width", () => {

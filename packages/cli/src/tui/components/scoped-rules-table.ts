@@ -27,7 +27,7 @@ export function scopedRulesTableOptions(view: ScopedRulesView): TableOptions {
       shortHash(rule.rule_sha256),
     ]),
     emptyText:
-      'No scoped rules. Choose "Always allow this exact command" on an approval to create one.',
+      'No scoped rules. Choose "Always allow exact" on an approval to create one.',
     ...(hidden === 0 ? {} : { overflowText: `… ${hidden} more` }),
   };
 }

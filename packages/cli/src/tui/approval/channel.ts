@@ -12,14 +12,14 @@ const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
   { key: "a", label: "Allow once", decision: "allow", scope: "once" },
   {
     key: "s",
-    label: "Allow this exact command for the session",
+    label: "Allow for session",
     decision: "allow",
     scope: "session",
     requiresTrust: true,
   },
   {
     key: "p",
-    label: "Always allow this exact command",
+    label: "Always allow exact",
     decision: "allow",
     scope: "persistent",
     requiresTrust: true,
@@ -27,7 +27,7 @@ const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
   { key: "d", label: "Deny", decision: "deny", scope: "once" },
   {
     key: "g",
-    label: "Deny with guidance for the model",
+    label: "Deny with guidance",
     decision: "deny",
     scope: "once",
     guidance: true,
@@ -81,10 +81,10 @@ export class TuiApprovalChannel implements ApprovalChannel {
       request.argv !== undefined &&
       request.argv.length > 0 &&
       request.cwd !== undefined;
-    const choices = APPROVAL_CHOICES.filter(
-      (choice) =>
-        choice.requiresTrust !== true ||
-        (canReuseExact && this.workspaceTrusted),
+    const choices = APPROVAL_CHOICES.filter((choice) =>
+      canReuseExact
+        ? choice.requiresTrust !== true || this.workspaceTrusted
+        : choice.scope === "once" && choice.guidance !== true,
     );
     const inline = await this.askInline(request, choices);
     if (inline.used) {

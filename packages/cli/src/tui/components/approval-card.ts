@@ -58,15 +58,12 @@ export class ApprovalCard implements Component {
       options.request.argv !== undefined &&
       options.request.argv.length > 0 &&
       options.request.cwd !== undefined;
-    this.choices = options.choices.filter(
-      (choice) =>
-        choice.requiresTrust !== true ||
-        (canReuseExact && options.workspaceTrusted),
+    this.choices = options.choices.filter((choice) =>
+      canReuseExact
+        ? choice.requiresTrust !== true || options.workspaceTrusted
+        : choice.scope === "once" && choice.guidance !== true,
     );
-    const denyIndex = this.choices.findIndex(
-      (choice) => choice.decision === "deny" && choice.guidance !== true,
-    );
-    this.selectedIndex = denyIndex === -1 ? 0 : denyIndex;
+    this.selectedIndex = 0;
   }
 
   render(width: number): readonly string[] {

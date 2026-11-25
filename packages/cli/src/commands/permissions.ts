@@ -238,7 +238,7 @@ async function permissionsRules(options: CliOptions): Promise<number> {
       return 0;
     }
     process.stdout.write(
-      'scoped rules: none; choose "Always allow this exact command" in an approval, or pass --scoped-rules <path>\n',
+      'scoped rules: none; choose "Always allow exact" in an approval, or pass --scoped-rules <path>\n',
     );
     return 0;
   }

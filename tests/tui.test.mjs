@@ -934,10 +934,7 @@ test("no-model onboarding treats the Pi unknown sentinel as absent", async () =>
 test("a failed persistent write allows only the current call", async () => {
   const { TuiApprovalChannel } = await importSource("packages/cli/src/tui.ts");
   const notifications = [];
-  const selections = [
-    "Always allow this exact command",
-    "Save exact rule and allow",
-  ];
+  const selections = ["Always allow exact", "Save exact rule and allow"];
   const channel = new TuiApprovalChannel(true);
   channel.setWorkspaceTrusted(true);
   channel.attach({
@@ -1013,16 +1010,12 @@ test("untrusted TUI approval selector", async () => {
   assert.equal(deniedScope.answer, "allow");
   assert.equal(deniedScope.scope, "once");
   assert.equal(title.includes("workspace is untrusted"), true);
-  assert.deepEqual(options, [
-    "Allow once",
-    "Deny",
-    "Deny with guidance for the model",
-  ]);
+  assert.deepEqual(options, ["Allow once", "Deny", "Deny with guidance"]);
 
   channel.setWorkspaceTrusted(true);
   await channel.ask(request);
-  assert.ok(options.includes("Allow this exact command for the session"));
-  assert.ok(options.includes("Always allow this exact command"));
+  assert.ok(options.includes("Allow for session"));
+  assert.ok(options.includes("Always allow exact"));
 });
 
 test("TuiApprovalChannel uses the inline approval card when available", async () => {
@@ -4783,14 +4776,8 @@ test(
           session.output().slice(allowMark),
           /coverage: (?:srt [^;]+ enforced|no srt sandbox; this command runs directly)/u,
         );
-        assert.match(
-          session.output().slice(allowMark),
-          /Allow this exact command for the session/u,
-        );
-        assert.match(
-          session.output().slice(allowMark),
-          /Always allow this exact command/u,
-        );
+        assert.match(session.output().slice(allowMark), /Allow for session/u);
+        assert.match(session.output().slice(allowMark), /Always allow exact/u);
         session.child.stdin.write("a");
         await waitFor(
           () =>
@@ -4923,7 +4910,7 @@ test(
         await waitForOutputAfter(
           first,
           mark,
-          "Always allow this exact command",
+          "Always allow exact",
           "persistent approval option",
         );
         first.child.stdin.write("p");

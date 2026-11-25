@@ -257,7 +257,7 @@ export async function scopedRulesSummary(
   if (filePath === null) {
     return [
       "Scoped rules: none.",
-      'Approval choices that say "Always allow this exact command" write here.',
+      'Approval choices that say "Always allow exact" write here.',
     ].join("\n");
   }
   try {
