@@ -1283,7 +1283,7 @@ test("trust grant applies to the next session", async () => {
     const answer = (request) => ({
       request_id: request.request_id,
       answer: "allow",
-      scope: "session",
+      scope: "persistent",
       channel: "tui",
       channel_id: request.channel_id,
       nonce_sha256: request.nonce_sha256,
@@ -1348,7 +1348,7 @@ test("trust grant applies to the next session", async () => {
       toolCallId: "next-call",
     });
     assert.equal(granted.approved, true);
-    assert.equal(granted.evidence.scope, "session");
+    assert.equal(granted.evidence.scope, "persistent");
     assert.equal(calls, 3);
     const reused = await next.request({
       ...input,

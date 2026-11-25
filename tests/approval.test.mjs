@@ -366,7 +366,81 @@ test("reused approvals require an exact action and reject unknown scopes", async
   assert.match(unknownScope.reason, /did not match/u);
 });
 
-test("untrusted workspace rejects session and persistent approvals", async () => {
+test("session approvals reuse per file path and per tool in untrusted workspaces", async () => {
+  const broker = new core.ApprovalBroker({ workspaceTrusted: false });
+  let calls = 0;
+  broker.registerChannel({
+    id: "tui-main",
+    kind: "tui",
+    isTTY: true,
+    async ask(request) {
+      calls += 1;
+      return answerFor(request, { scope: "session" });
+    },
+  });
+  const input = {
+    sessionId: "session-1",
+    workerId: "worker-1",
+    cwd: "/workspace",
+    tool: "write",
+  };
+  const first = await broker.request({
+    ...input,
+    toolCallId: "write-1",
+    path: "/workspace/notes.md",
+    argsSha256: `sha256:${"1".repeat(64)}`,
+  });
+  assert.equal(first.approved, true);
+  assert.equal(calls, 1);
+
+  const samePath = await broker.request({
+    ...input,
+    toolCallId: "write-2",
+    path: "/workspace/notes.md",
+    argsSha256: `sha256:${"2".repeat(64)}`,
+  });
+  assert.equal(samePath.approved, true);
+  assert.equal(
+    samePath.evidence.reused_from_request_id,
+    first.evidence.request_id,
+  );
+  assert.equal(calls, 1);
+
+  const otherPath = await broker.request({
+    ...input,
+    toolCallId: "write-3",
+    path: "/workspace/other.md",
+  });
+  assert.equal(otherPath.approved, true);
+  assert.equal(calls, 2);
+
+  const fetch = {
+    ...input,
+    tool: "web_fetch",
+  };
+  await broker.request({
+    ...fetch,
+    toolCallId: "fetch-1",
+    argsSha256: `sha256:${"3".repeat(64)}`,
+  });
+  const fetchReused = await broker.request({
+    ...fetch,
+    toolCallId: "fetch-2",
+    argsSha256: `sha256:${"4".repeat(64)}`,
+  });
+  assert.equal(fetchReused.approved, true);
+  assert.equal(calls, 3);
+
+  await broker.request({
+    ...input,
+    tool: "edit",
+    toolCallId: "edit-1",
+    path: "/workspace/notes.md",
+  });
+  assert.equal(calls, 4);
+});
+
+test("untrusted workspace allows session reuse but rejects persistent rules", async () => {
   await withTempDirectory("codepunk-approval-untrusted-", async (root) => {
     const scopedRules = path.join(root, "scoped-rules.toml");
     let answerScope = "once";
@@ -391,18 +465,35 @@ test("untrusted workspace rejects session and persistent approvals", async () =>
     assert.equal(once.approved, true);
     assert.equal(once.evidence.scope, "once");
 
-    for (const scope of ["session", "persistent"]) {
-      answerScope = scope;
-      const rejected = await broker.request({
-        ...input,
-        toolCallId: `call-${scope}`,
-      });
-      assert.equal(rejected.approved, false, scope);
-      assert.equal(rejected.failure, "scope_untrusted", scope);
-      assert.match(rejected.reason, /approval\.scope_untrusted/u);
-      assert.equal(rejected.evidence.scope, scope);
-      await assert.rejects(fs.stat(scopedRules), { code: "ENOENT" });
-    }
+    answerScope = "session";
+    const session = await broker.request({
+      ...input,
+      toolCallId: "call-session",
+    });
+    assert.equal(session.approved, true);
+    assert.equal(session.evidence.scope, "session");
+    const reused = await broker.request({
+      ...input,
+      workerId: "worker-2",
+      toolCallId: "call-session-reused",
+    });
+    assert.equal(reused.approved, true);
+    assert.equal(
+      reused.evidence.reused_from_request_id,
+      session.evidence.request_id,
+    );
+
+    answerScope = "persistent";
+    const rejected = await broker.request({
+      ...input,
+      argv: ["/bin/mkdir", "other"],
+      toolCallId: "call-persistent",
+    });
+    assert.equal(rejected.approved, false);
+    assert.equal(rejected.failure, "scope_untrusted");
+    assert.match(rejected.reason, /approval\.scope_untrusted/u);
+    assert.equal(rejected.evidence.scope, "persistent");
+    await assert.rejects(fs.stat(scopedRules), { code: "ENOENT" });
   });
 });
 

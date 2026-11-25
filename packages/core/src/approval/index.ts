@@ -51,8 +51,10 @@ interface PendingApproval {
 
 interface SessionGrant {
   tool: string;
-  argv: string[];
-  cwd: string;
+  // A stable selector for the approved action. Shell calls use their exact
+  // argv, file mutations use the target path, and other tools fall back to
+  // the tool name. It deliberately excludes hashes that change with content.
+  key: string;
   scope: Exclude<ApprovalScope, "once">;
   channel: ApprovalAnswer["channel"];
   // The request a human actually answered. Reused grants name it in evidence.
@@ -325,7 +327,7 @@ export class ApprovalBroker {
     if (
       !correlationMismatch &&
       answer.answer === "allow" &&
-      scope !== "once" &&
+      scope === "persistent" &&
       !this.workspaceTrusted
     ) {
       return {
@@ -333,28 +335,26 @@ export class ApprovalBroker {
         answer,
         evidence: approvalEvidence(request, answer),
         reason:
-          "approval.scope_untrusted: an untrusted workspace only allows once; " +
-          "run `codepunk trust grant` and start a new session for session or persistent approvals",
+          "approval.scope_untrusted: persistent rules need workspace trust; " +
+          "use session approval, or run `codepunk trust grant` and start a new session",
         failure: "scope_untrusted",
       };
     }
     const scopeShapeMismatch =
       !correlationMismatch &&
       scope !== "once" &&
-      (request.argv === undefined || request.cwd === undefined);
+      (request.tool === undefined ||
+        (scope === "persistent" &&
+          (request.argv === undefined || request.cwd === undefined)));
     const approved =
       !correlationMismatch && !scopeShapeMismatch && answer.answer === "allow";
     if (approved && scope !== "once" && !scopeShapeMismatch) {
       const tool = request.tool;
-      if (
-        tool !== undefined &&
-        request.argv !== undefined &&
-        request.cwd !== undefined
-      ) {
+      const key = tool === undefined ? null : approvalGrantKey(request);
+      if (tool !== undefined && key !== null) {
         this.sessionGrants.push({
           tool,
-          argv: [...request.argv],
-          cwd: normalizeAbsolute(request.cwd),
+          key,
           scope,
           channel: answer.channel,
           requestId: request.request_id,
@@ -377,26 +377,38 @@ export class ApprovalBroker {
   }
 
   private matchSessionGrant(request: ApprovalRequest): SessionGrant | null {
-    if (!this.workspaceTrusted) {
+    if (request.tool === undefined) {
       return null;
     }
-    if (
-      request.tool === undefined ||
-      request.argv === undefined ||
-      request.cwd === undefined
-    ) {
+    const key = approvalGrantKey(request);
+    if (key === null) {
       return null;
     }
-    const cwd = normalizeAbsolute(request.cwd);
     const grant = this.sessionGrants.find(
-      (candidate) =>
-        candidate.tool === request.tool &&
-        candidate.cwd === cwd &&
-        candidate.argv.length === request.argv!.length &&
-        candidate.argv.every((value, index) => value === request.argv![index]),
+      (candidate) => candidate.tool === request.tool && candidate.key === key,
     );
     return grant ?? null;
   }
+}
+
+/**
+ * The identity a session grant reuses. Shell calls stay exact, file
+ * mutations reuse per target path, and every other tool reuses per tool
+ * inside the same working directory. `once` and `persistent` scopes never
+ * consult this key.
+ */
+function approvalGrantKey(request: ApprovalRequest): string | null {
+  const cwd = request.cwd === undefined ? "" : normalizeAbsolute(request.cwd);
+  if (request.argv !== undefined && request.argv.length > 0) {
+    return `argv\0${cwd}\0${request.argv.join("\0")}`;
+  }
+  if (request.path !== undefined && request.path.length > 0) {
+    return `path\0${normalizeAbsolute(request.path)}`;
+  }
+  if (request.tool !== undefined) {
+    return `tool\0${cwd}\0${request.tool}`;
+  }
+  return null;
 }
 
 function approvalEvidence(
