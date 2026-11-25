@@ -1933,16 +1933,14 @@ test("a real pty renders codepunk chrome and exit hints", async () => {
       await waitForOutput(session, "codepunk · auto/auto", "startup");
       await waitForQuiet(session, 250);
       const output = stripAnsi(session.output());
-      assert.match(output, /codepunk · auto\/auto/u);
+      assert.match(output, /codepunk · auto\/auto · session [0-9A-Z]{10}/u);
       assert.match(
         output,
-        /project .* · session .* · next sandbox uncovered · fs workspace/u,
-      );
-      assert.match(
-        output,
-        /permissions custom · trust trusted · shell disabled · evidence 0 · budget off/u,
+        /permissions custom · trust trusted · shell disabled · evidence 0/u,
       );
       assert.match(output, /session [0-9A-Z]{10}/u);
+      assert.doesNotMatch(output, /project [0-9a-f]{16}/u);
+      assert.doesNotMatch(output, /next sandbox uncovered · fs workspace/u);
       assert.doesNotMatch(output, /v1\.5\.2/u);
       session.child.stdin.write("/quit\r");
       const exited = await Promise.race([
@@ -6042,7 +6040,6 @@ test("a real pty shows and persists permission modes", async () => {
         session.output(),
         /permissions read-only · trust trusted · shell explicit-unsandboxed/u,
       );
-      assert.match(session.output(), /next sandbox required · fs workspace/u);
       await runCommandAfter(
         session,
         "/permissions sandbox uncovered",

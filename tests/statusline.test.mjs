@@ -7,36 +7,51 @@ const { renderStatusline } = await importSource(
 );
 
 const values = {
-  model: "codepunk · local/model",
-  session: "project p · session s",
-  sandbox: "next sandbox required",
+  model: "local/model",
+  session: "session s",
+  sandbox: "sandbox required",
   filesystem: "fs workspace",
   policy: "permissions standard · trust trusted",
   budget: "budget off",
 };
 
-test("the default statusline keeps the established three groups", () => {
+test("the default statusline stays on one compact line", () => {
+  assert.equal(
+    renderStatusline(["policy"], values),
+    "permissions standard · trust trusted",
+  );
+  assert.equal(
+    renderStatusline(["model", "policy"], values),
+    "local/model · permissions standard · trust trusted",
+  );
   assert.equal(
     renderStatusline(
       ["model", "session", "sandbox", "filesystem", "policy", "budget"],
       values,
     ),
     [
-      "codepunk · local/model",
-      "project p · session s · next sandbox required · fs workspace",
-      "permissions standard · trust trusted · budget off",
-    ].join("\n"),
+      "local/model",
+      "session s",
+      "sandbox required",
+      "fs workspace",
+      "permissions standard · trust trusted",
+      "budget off",
+    ].join(" · "),
   );
 });
 
 test("statusline segments follow configured order and omission", () => {
   assert.equal(
     renderStatusline(["budget", "model", "filesystem"], values),
-    ["budget off", "codepunk · local/model", "fs workspace"].join("\n"),
+    "budget off · local/model · fs workspace",
   );
   assert.equal(
     renderStatusline(["policy", "budget"], values),
     "permissions standard · trust trusted · budget off",
   );
-  assert.equal(renderStatusline(["sandbox"], values), "next sandbox required");
+  assert.equal(renderStatusline(["sandbox"], values), "sandbox required");
+  assert.equal(
+    renderStatusline(["model", "budget"], { ...values, budget: "" }),
+    "local/model",
+  );
 });
