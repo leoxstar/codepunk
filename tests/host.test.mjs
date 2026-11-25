@@ -615,7 +615,7 @@ test(
   },
 );
 
-test("plan and todo tool calls persist and are injected on the next turn", async () => {
+test("plan and todo state is injected as runtime context, not a user message", async () => {
   const paths = await setup();
   const { host, store } = await createHost(paths, { model: TEST_MODEL });
   try {
@@ -647,6 +647,20 @@ test("plan and todo tool calls persist and are injected on the next turn", async
       return { type: "text", text: "work recorded" };
     });
 
+    const textOf = (message) =>
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .map((part) => (part.type === "text" ? part.text : ""))
+            .join("\n");
+    const userTexts = (context) =>
+      context.messages.filter((message) => message.role === "user").map(textOf);
+    const systemText = (context) =>
+      context.messages
+        .filter((message) => message.role === "system")
+        .map(textOf)
+        .join("\n\n");
+
     await host.session.prompt("record the work");
     const events = store.allEvents;
     assert.equal(
@@ -662,19 +676,34 @@ test("plan and todo tool calls persist and are injected on the next turn", async
     assert.equal(planEvent.data.steps.length, 2);
     assert.equal(todoEvent.data.items.length, 1);
 
+    assert.equal(calls.length, 3);
+    for (const context of calls.slice(1)) {
+      assert.deepEqual(
+        userTexts(context),
+        ["record the work"],
+        "negative control: runtime work state must not be appended as a user message",
+      );
+      assert.notEqual(
+        context.messages.at(-1)?.role,
+        "user",
+        "negative control: a request after a tool result must not end in a synthetic user message",
+      );
+    }
+    assert.doesNotMatch(systemText(calls[0]), /<codepunk_work_state>/u);
+    assert.match(systemText(calls[1]), /<codepunk_plan/u);
+    assert.match(systemText(calls[1]), /in_progress: implement/u);
+    assert.doesNotMatch(systemText(calls[1]), /<codepunk_todos/u);
+    assert.match(systemText(calls[2]), /<codepunk_plan/u);
+    assert.match(systemText(calls[2]), /<codepunk_todos/u);
+
     await host.session.prompt("show the current work");
     const nextContext = calls.at(-1);
     assert.ok(nextContext);
-    const injected = nextContext.messages
-      .filter((message) => message.role === "user")
-      .map((message) =>
-        Array.isArray(message.content)
-          ? message.content
-              .map((part) => (part.type === "text" ? part.text : ""))
-              .join("\n")
-          : String(message.content),
-      )
-      .join("\n");
+    assert.deepEqual(userTexts(nextContext), [
+      "record the work",
+      "show the current work",
+    ]);
+    const injected = systemText(nextContext);
     assert.match(injected, /<codepunk_plan/u);
     assert.match(injected, /in_progress: implement/u);
     assert.match(injected, /<codepunk_todos/u);

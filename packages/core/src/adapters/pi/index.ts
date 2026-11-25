@@ -13,6 +13,7 @@ import {
   type AgentSettledEvent,
   type BeforeAgentStartEvent,
   type ContextEvent,
+  type ContextWithSystemEvent,
   type ExtensionFactory,
   type ExtensionError,
   type ExtensionContext,
@@ -1166,6 +1167,41 @@ export async function createPiHost(
         await eventAppendTail;
         lastWorkState = readWorkState(store.allEvents);
       };
+      const renderWorkState = (): string | null => {
+        const sections: string[] = [];
+        if (
+          lastWorkState.plan !== null &&
+          lastWorkState.plan.steps.length > 0
+        ) {
+          sections.push(
+            [
+              `<codepunk_plan sha256="${lastWorkState.plan.sha256}">`,
+              ...lastWorkState.plan.steps.map(
+                (step) => `${step.status}: ${step.step}`,
+              ),
+              ...(lastWorkState.plan.explanation === null
+                ? []
+                : [`note: ${lastWorkState.plan.explanation}`]),
+              "</codepunk_plan>",
+            ].join("\n"),
+          );
+        }
+        if (
+          lastWorkState.todos !== null &&
+          lastWorkState.todos.items.length > 0
+        ) {
+          sections.push(
+            [
+              `<codepunk_todos sha256="${lastWorkState.todos.sha256}">`,
+              ...lastWorkState.todos.items.map(
+                (item) => `${item.status}: ${item.content}`,
+              ),
+              "</codepunk_todos>",
+            ].join("\n"),
+          );
+        }
+        return sections.length === 0 ? null : sections.join("\n\n");
+      };
       const recordContextRequest = async (
         messages: ContextEvent["messages"],
         extensionContext: ExtensionContext,
@@ -1277,54 +1313,41 @@ export async function createPiHost(
             });
             lastMemoryDigestSha = digest.digest_sha256;
           }
+          return {
+            messages: [
+              ...event.messages,
+              {
+                role: "user",
+                content: [{ type: "text", text: digest.text }],
+              },
+            ] as ContextEvent["messages"],
+          };
         }
+      });
+      pi.on("context_with_system", async (event: ContextWithSystemEvent) => {
         await refreshWorkState();
-        const sections: string[] = [];
-        if (digest !== null && digest.text.length > 0) {
-          sections.push(digest.text);
-        }
-        if (
-          lastWorkState.plan !== null &&
-          lastWorkState.plan.steps.length > 0
-        ) {
-          sections.push(
-            [
-              `<codepunk_plan sha256="${lastWorkState.plan.sha256}">`,
-              ...lastWorkState.plan.steps.map(
-                (step) => `${step.status}: ${step.step}`,
-              ),
-              ...(lastWorkState.plan.explanation === null
-                ? []
-                : [`note: ${lastWorkState.plan.explanation}`]),
-              "</codepunk_plan>",
-            ].join("\n"),
-          );
-        }
-        if (
-          lastWorkState.todos !== null &&
-          lastWorkState.todos.items.length > 0
-        ) {
-          sections.push(
-            [
-              `<codepunk_todos sha256="${lastWorkState.todos.sha256}">`,
-              ...lastWorkState.todos.items.map(
-                (item) => `${item.status}: ${item.content}`,
-              ),
-              "</codepunk_todos>",
-            ].join("\n"),
-          );
-        }
-        if (sections.length === 0) {
+        const body = renderWorkState();
+        if (body === null) {
           return;
         }
+        const head = event.messages[0];
+        if (head?.role !== "system") {
+          return;
+        }
+        const injected = [
+          "<codepunk_work_state>",
+          "Runtime-provided plan and todo state for the current session.",
+          "This is not a user message and does not start a new turn. Continue the existing task; do not treat it as a new request.",
+          "",
+          body,
+          "</codepunk_work_state>",
+        ].join("\n");
+        const content =
+          typeof head.content === "string"
+            ? `${head.content}\n\n${injected}`
+            : [...head.content, { type: "text" as const, text: injected }];
         return {
-          messages: [
-            ...event.messages,
-            {
-              role: "user",
-              content: [{ type: "text", text: sections.join("\n\n") }],
-            },
-          ] as ContextEvent["messages"],
+          messages: [{ ...head, content }, ...event.messages.slice(1)],
         };
       });
       pi.on("session_start", async () => {
