@@ -3,6 +3,10 @@ import {
   BORDERED_MIN_WIDTH,
   frameLines,
   isCloseInput,
+  nextScrollOffset,
+  parseScrollInput,
+  scrollFooter,
+  sliceViewport,
   type PanelKeybindings,
   type PanelTheme,
   type PanelTone,
@@ -21,6 +25,7 @@ export interface PanelOptions {
   readonly title: string;
   readonly sections: readonly PanelSection[];
   readonly footer?: string;
+  readonly viewportHeight?: number;
 }
 
 const TONE_COLOR: Record<PanelTone, "text" | "muted" | "warning" | "error"> = {
@@ -36,7 +41,9 @@ export class Panel implements Component {
   private readonly keybindings: PanelKeybindings;
   private readonly onClose: () => void;
   private readonly blocks: readonly TextBlock[];
-  private cachedWidth = -1;
+  private scrollOffset = 0;
+  private lastTotalLines = 0;
+  private cachedKey = "";
   private cachedLines: readonly string[] = [];
 
   constructor(
@@ -60,21 +67,29 @@ export class Panel implements Component {
 
   render(width: number): readonly string[] {
     const safeWidth = Math.max(1, Math.floor(width));
-    if (this.cachedWidth === safeWidth) {
+    const cacheKey = `${safeWidth}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
+    if (this.cachedKey === cacheKey) {
       return this.cachedLines;
     }
+    const allBody = this.bodyLines(safeWidth);
+    this.lastTotalLines = allBody.length;
+    const viewport = sliceViewport(
+      allBody,
+      this.scrollOffset,
+      this.options.viewportHeight,
+    );
+    this.scrollOffset = viewport.offset;
+    const footer = scrollFooter(this.options.footer, viewport);
     const rendered = frameLines(
       {
         title: this.options.title,
-        body: this.bodyLines(safeWidth),
-        ...(this.options.footer === undefined
-          ? {}
-          : { footer: this.options.footer }),
+        body: viewport.visible,
+        ...(footer === undefined ? {} : { footer }),
       },
       safeWidth,
       this.theme,
     );
-    this.cachedWidth = safeWidth;
+    this.cachedKey = `${safeWidth}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
     this.cachedLines = rendered;
     return rendered;
   }
@@ -82,11 +97,25 @@ export class Panel implements Component {
   handleInput(data: string): void {
     if (isCloseInput(data, this.keybindings)) {
       this.onClose();
+      return;
     }
+    if (this.options.viewportHeight === undefined) {
+      return;
+    }
+    const direction = parseScrollInput(data);
+    if (direction === null) {
+      return;
+    }
+    this.scrollOffset = nextScrollOffset(
+      this.scrollOffset,
+      direction,
+      this.lastTotalLines,
+      this.options.viewportHeight,
+    );
   }
 
   invalidate(): void {
-    this.cachedWidth = -1;
+    this.cachedKey = "";
     this.cachedLines = [];
     for (const block of this.blocks) {
       block.invalidate();

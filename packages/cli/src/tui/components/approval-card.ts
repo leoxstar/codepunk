@@ -161,6 +161,18 @@ export class ApprovalCard implements Component {
     const body = [
       ...new TextBlock({
         lines: formatApproval(this.options.request).split("\n"),
+        style: (line) => {
+          if (line.startsWith("+") && !line.startsWith("+++")) {
+            return this.theme.fg("success", line);
+          }
+          if (line.startsWith("-") && !line.startsWith("---")) {
+            return this.theme.fg("error", line);
+          }
+          if (line.startsWith("@@")) {
+            return this.theme.fg("accent", line);
+          }
+          return line;
+        },
       }).render(inner),
     ];
     body.push("");

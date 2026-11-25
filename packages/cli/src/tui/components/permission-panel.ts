@@ -1,5 +1,6 @@
 import type { CodepunkRuntime } from "codepunk-core";
 import { permissionSummary } from "../format/status.ts";
+import { defaultViewportHeight } from "./frame.ts";
 import {
   Panel,
   type PanelKeybindings,
@@ -145,6 +146,7 @@ export function createPermissionPanel(
       title: "codepunk permissions",
       sections: permissionPanelSections(runtime),
       footer: "esc close",
+      viewportHeight: defaultViewportHeight(),
     },
     theme,
     keybindings,

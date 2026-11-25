@@ -1,5 +1,6 @@
 import type { CodepunkRuntime } from "codepunk-core";
 import { formatStatusSummary } from "../format/status-summary.ts";
+import { defaultViewportHeight } from "./frame.ts";
 import {
   Panel,
   type PanelKeybindings,
@@ -11,13 +12,13 @@ const STATUS_GROUPS: readonly {
   readonly label: string;
   readonly keys: readonly string[];
 }[] = [
-  { label: "Project", keys: ["project", "cwd"] },
-  { label: "Session", keys: ["session", "model", "thinking", "context"] },
+  { label: "Project", keys: ["project", "cwd", "config", "sessions"] },
+  {
+    label: "Session",
+    keys: ["session", "model", "thinking", "context", "usage", "budget"],
+  },
   { label: "Permissions", keys: ["permissions", "sandbox", "trust"] },
-  { label: "Capabilities", keys: ["capabilities"] },
-  { label: "Evidence", keys: ["evidence"] },
-  { label: "Usage", keys: ["usage", "budget"] },
-  { label: "Paths", keys: ["config", "sessions"] },
+  { label: "Capabilities & Evidence", keys: ["capabilities", "evidence"] },
 ];
 
 /**
@@ -75,6 +76,7 @@ export function createStatusPanel(
       title: "codepunk status",
       sections: statusPanelSections(runtime),
       footer: "esc close",
+      viewportHeight: defaultViewportHeight(),
     },
     theme,
     keybindings,
