@@ -915,7 +915,10 @@ export async function resolveWorkspaceTrust(input: {
   }
   const mode = workspaceTrustMode(grants);
   return {
-    trusted: available.every((kind) => grants[kind]),
+    // A workspace that grants nothing is never trusted, even when it
+    // discovers no resources at all: an explicit `--no-trust` or a revoked
+    // decision must not read as trusted because the check would be vacuous.
+    trusted: mode !== "none" && available.every((kind) => grants[kind]),
     mode,
     grants,
     available,

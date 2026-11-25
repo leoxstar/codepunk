@@ -407,6 +407,31 @@ test("a project MCP file alone does not require a trust decision", async () => {
   });
 });
 
+test("an explicit no-trust run stays untrusted without project resources", async () => {
+  await withTempDirectory("codepunk-trust-explicit-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    const untrusted = await core.resolveWorkspaceTrust({
+      cwd: project,
+      root: project,
+      home,
+      override: false,
+    });
+    assert.equal(untrusted.mode, "none");
+    assert.equal(untrusted.source, "flag");
+    assert.equal(untrusted.trusted, false);
+    const defaulted = await core.resolveWorkspaceTrust({
+      cwd: project,
+      root: project,
+      home,
+    });
+    assert.equal(defaulted.source, "no-resources");
+    assert.equal(defaulted.trusted, true);
+  });
+});
+
 test("project instruction files require the workspace decision", async () => {
   await withTempDirectory("codepunk-trust-instructions-", async (root) => {
     const project = path.join(root, "project");
