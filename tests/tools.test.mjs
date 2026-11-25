@@ -564,6 +564,7 @@ test("large tool output becomes a hash-bound artifact", async () => {
   assert.equal(record.output_sha256, core.outputSha(largeOutput));
   assert.ok(record.output_preview.length <= core.OUTPUT_PREVIEW_CHARS);
   const artifactPath = path.join(paths.root, record.output_ref);
+  assert.match(visible, new RegExp(`path=${escapeRegExp(artifactPath)}`, "u"));
   assert.equal(await fs.readFile(artifactPath, "utf8"), largeOutput);
   assert.equal(core.validateEvidenceForClass(record).ok, true);
 

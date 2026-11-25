@@ -50,6 +50,8 @@ export interface PolicyRequest {
   additionalRoots?: readonly string[];
   deliveryRoot?: string;
   codepunkHome?: string;
+  /** The product-owned artifact root, readable but never writable by policy. */
+  artifactRoot?: string;
   mode?: "interactive" | "headless" | "worker";
   autonomy?: AutonomyProfile;
   approvalMode?: ApprovalMode;

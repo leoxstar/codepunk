@@ -1118,6 +1118,71 @@ test("codepunk state is never readable through file tools", () => {
   assert.match(projectState.reason, /project codepunk state/u);
 });
 
+test("tool output artifacts are readable but never writable", async () => {
+  await withTempDirectory("codepunk-policy-artifact-", async (root) => {
+    const workspace = path.join(root, "workspace");
+    const home = path.join(root, "home");
+    const artifacts = path.join(home, "projects", "project-1", "artifacts");
+    const session = path.join(artifacts, "session-1");
+    const artifact = path.join(session, "output.txt");
+    await fs.mkdir(workspace);
+    await fs.mkdir(session, { recursive: true });
+    await fs.writeFile(artifact, "current weather\n");
+    const base = request({
+      cwd: workspace,
+      workspaceRoot: workspace,
+      deliveryRoot: workspace,
+      codepunkHome: home,
+      artifactRoot: artifacts,
+    });
+
+    const read = core.decidePolicy({
+      ...base,
+      tool: "read",
+      args: { path: artifact },
+    });
+    assert.equal(read.decision, "allow");
+    assert.match(read.reason, /artifact/u);
+
+    const shellRead = core.decidePolicy({
+      ...base,
+      tool: "bash",
+      command: `cat ${JSON.stringify(artifact)}`,
+      userDefault: "allow",
+    });
+    assert.equal(shellRead.decision, "allow");
+    assert.equal(shellRead.approval_class, "routine");
+
+    const adjacentHomeFile = core.decidePolicy({
+      ...base,
+      tool: "read",
+      args: { path: path.join(home, "config.toml") },
+    });
+    assert.equal(adjacentHomeFile.decision, "deny");
+
+    const write = core.decidePolicy({
+      ...base,
+      tool: "write",
+      args: { path: artifact, content: "replace\n" },
+      writeSet: [workspace],
+    });
+    assert.notEqual(write.decision, "allow");
+
+    if (await canCreateFileSymlink()) {
+      const outside = path.join(root, "outside.txt");
+      const link = path.join(session, "escape.txt");
+      await fs.writeFile(outside, "secret\n");
+      await fs.symlink(outside, link);
+      const escaped = core.decidePolicy({
+        ...base,
+        tool: "read",
+        args: { path: link },
+      });
+      assert.notEqual(escaped.decision, "allow");
+    }
+  });
+});
+
 test("git metadata cannot be written and reads need approval", () => {
   for (const candidate of [
     ".git/hooks/pre-commit",

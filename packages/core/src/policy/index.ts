@@ -221,6 +221,17 @@ function decisionForPath(
       approvalClass: "routine",
     };
   }
+  if (!mutating && request.artifactRoot !== undefined) {
+    const realArtifactRoot = resolveRealPath(request.artifactRoot);
+    if (isInsidePath(realArtifactRoot, realTarget)) {
+      return {
+        decision: "allow",
+        reason: "tool output artifact is readable",
+        target: realTarget,
+        approvalClass: "routine",
+      };
+    }
+  }
   const workspaceRoots = [
     request.workspaceRoot,
     ...(request.additionalRoots ?? []),

@@ -1170,6 +1170,9 @@ export async function wrapToolDefinition(
             : {}),
           deliveryRoot: options.deliveryRoot,
           codepunkHome: options.codepunkHome,
+          ...(options.artifactsDir !== undefined
+            ? { artifactRoot: options.artifactsDir }
+            : {}),
           ...(options.mode !== undefined ? { mode: options.mode } : {}),
           approvalMode,
           ...(options.filesystem !== undefined
@@ -2087,6 +2090,9 @@ export async function wrapUserBashCommand(
         : {}),
       deliveryRoot: options.deliveryRoot,
       codepunkHome: options.codepunkHome,
+      ...(options.artifactsDir !== undefined
+        ? { artifactRoot: options.artifactsDir }
+        : {}),
       ...(options.mode !== undefined ? { mode: options.mode } : {}),
       approvalMode,
       ...(options.filesystem !== undefined

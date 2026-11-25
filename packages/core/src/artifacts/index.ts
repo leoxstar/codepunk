@@ -9,6 +9,7 @@ export const APPROX_CHARS_PER_TOKEN = 4;
 
 export interface ToolOutputArtifact {
   ref: string;
+  absolutePath: string;
   sha256: string;
   bytes: number;
   tokens: number;
@@ -62,7 +63,7 @@ export function boundedToolOutput(
   const reference =
     artifact === null
       ? `showing ${summary.length} of ${text.length} characters`
-      : `ref=${artifact.ref} sha256=${artifact.sha256} bytes=${artifact.bytes}`;
+      : `path=${artifact.absolutePath} sha256=${artifact.sha256} bytes=${artifact.bytes}`;
   return `${summary}\n\n[${marker}: ${reference}]`;
 }
 
@@ -82,6 +83,7 @@ export async function writeToolOutputArtifact(options: {
   await atomicWriteFile(target, options.output);
   return {
     ref: ["artifacts", options.sessionId, `${id}.txt`].join("/"),
+    absolutePath: target,
     sha256: outputSha(options.output),
     bytes: Buffer.byteLength(options.output),
     tokens: estimateTextTokens(options.output),
