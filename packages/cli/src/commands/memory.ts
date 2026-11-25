@@ -62,6 +62,9 @@ export async function commandMemory(options: CliOptions): Promise<number> {
     maxTokens: config.memory.max_tokens,
     defaultScope: config.memory.default_scope,
   });
+  for (const warning of memory.warnings) {
+    process.stderr.write(`codepunk: warning: ${warning}\n`);
+  }
   const command = options.positionals[1] ?? "list";
   const scope = options.scope ?? config.memory.default_scope;
   if (command === "export") {

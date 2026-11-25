@@ -105,6 +105,30 @@ test("user and project scopes stay isolated", async () => {
   });
 });
 
+test("corrupt memory lines are skipped with an explicit warning", async () => {
+  await withTempDirectory("codepunk-memory-corrupt-", async (root) => {
+    const { paths } = await makeProject(root);
+    await fs.mkdir(paths.memoryDir, { recursive: true });
+    await fs.writeFile(
+      path.join(paths.memoryDir, "records.jsonl"),
+      '{"id":"broken"\n',
+      "utf8",
+    );
+    const memory = await core.MemoryManager.open({
+      paths,
+      enabled: true,
+      maxTokens: 200,
+      defaultScope: "project",
+      now: fixedClock(),
+    });
+    assert.equal(memory.storeFor("project").records.length, 0);
+    assert.match(
+      memory.warnings.join("\n"),
+      /memory line 1 is corrupt and was skipped/u,
+    );
+  });
+});
+
 test("project scopes do not cross project ids", async () => {
   await withTempDirectory("codepunk-memory-projects-", async (root) => {
     const { paths: firstPaths } = await makeProject(root, "first");

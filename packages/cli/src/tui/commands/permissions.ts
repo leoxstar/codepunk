@@ -168,6 +168,9 @@ export function memoryCommand(state: TuiState): TuiCommand {
     name: "memory",
     description: "List, search, delete, or archive memory",
     handler: commandContext(state, async (runtime, context, args) => {
+      if (runtime.memory.warnings.length > 0) {
+        context.ui.notify(runtime.memory.warnings.join("\n"), "warning");
+      }
       const tokens = args.split(/\s+/u).filter(Boolean);
       const subcommand = tokens[0];
       const argument = tokens.slice(1).join(" ");
