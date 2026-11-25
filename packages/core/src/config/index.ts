@@ -44,6 +44,11 @@ export const STATUSLINE_SEGMENTS = [
 ] as const;
 export type StatuslineSegment = (typeof STATUSLINE_SEGMENTS)[number];
 
+const DEFAULT_STATUSLINE_SEGMENTS: readonly StatuslineSegment[] = [
+  "policy",
+  "budget",
+];
+
 export const KEYMAP_ACTIONS = ["model_cycle", "background"] as const;
 export type KeymapAction = (typeof KEYMAP_ACTIONS)[number];
 export type KeymapBinding = Record<KeymapAction, string>;
@@ -411,7 +416,7 @@ export function defaultConfig(): CodepunkConfig {
     tui: {
       mode: "fullscreen",
       theme: "codepunk",
-      statusline: [...STATUSLINE_SEGMENTS],
+      statusline: [...DEFAULT_STATUSLINE_SEGMENTS],
       keymap: { model_cycle: "f2", background: "off" },
       header: true,
       footer: true,
