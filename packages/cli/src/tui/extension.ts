@@ -22,6 +22,8 @@ import {
   favoriteCommand,
 } from "./commands/models.ts";
 import { mcpCommand } from "./commands/mcp.ts";
+import { rewindCommand } from "./commands/rewind.ts";
+import { tasksCommand } from "./commands/tasks.ts";
 import {
   permissionsCommand,
   permissionCommand,
@@ -94,6 +96,8 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   cp_exportCommand,
   subagentCommand,
   agentsCommand,
+  tasksCommand,
+  rewindCommand,
   psCommand,
   logsCommand,
   stopCommand,
@@ -168,4 +172,56 @@ function registerShortcuts(
       },
     );
   }
+  pi.registerShortcut("alt+m" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Cycle work mode (plan/standard/auto/auto-approve)",
+    handler: async (context) => {
+      const { cycleWorkMode } = await import("./format/mode-cycle.ts");
+      await cycleWorkMode(state, context);
+    },
+  });
+  pi.registerShortcut("alt+t" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Open the unified task and subagent center",
+    handler: async (context) => {
+      const runtime = state.runtime;
+      if (runtime === null) {
+        context.ui.notify("codepunk runtime is not ready", "error");
+        return;
+      }
+      const { showTaskCenter } = await import("./commands/tasks.ts");
+      await showTaskCenter(state, runtime, context as never);
+    },
+  });
+  pi.registerShortcut("alt+r" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Open the interactive rewind picker",
+    handler: async (context) => {
+      const { openRewindPicker } = await import("./commands/rewind.ts");
+      await openRewindPicker(state, context as never);
+    },
+  });
+  pi.registerShortcut("f1" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Open searchable command help",
+    handler: async (context) => {
+      const [
+        { createHelpBrowser },
+        { codepunkHelp },
+        { defaultViewportHeight },
+      ] = await Promise.all([
+        import("./components/help-browser.ts"),
+        import("./chrome/help.ts"),
+        import("./components/frame.ts"),
+      ]);
+      await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+        createHelpBrowser(
+          {
+            title: "Codepunk help",
+            text: codepunkHelp(),
+            viewportHeight: defaultViewportHeight(),
+          },
+          theme,
+          keybindings,
+          done,
+        ),
+      );
+    },
+  });
 }

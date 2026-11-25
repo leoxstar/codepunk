@@ -4,7 +4,7 @@ import {
   type CodepunkRuntime,
 } from "codepunk-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
 import { codepunkHelp } from "./help.ts";
 import { selectedModel } from "./model.ts";
@@ -21,11 +21,10 @@ import {
   resumeSession,
   startNewSession,
 } from "../commands/session.ts";
-import {
-  configurePermissions,
-  showSettingsMenu,
-} from "../commands/permission-actions.ts";
+import { configurePermissions } from "../commands/permission-actions.ts";
+import { showInteractiveSettingsMenu } from "../commands/settings.ts";
 import { configureTrust } from "../commands/trust-actions.ts";
+import { refreshWorkWidget } from "./work-widget.ts";
 import { promptForMissingModel } from "../format/model.ts";
 import { sessionSummary } from "../format/status-summary.ts";
 import { availableModels, selectModelReference } from "../format/model.ts";
@@ -33,7 +32,12 @@ import { noAuthenticatedModelsMessage } from "./model.ts";
 
 function component(text: () => string, visible: () => boolean): Component {
   return {
-    render: () => (visible() ? text().split("\n") : []),
+    render: (width: number) =>
+      visible()
+        ? text()
+            .split("\n")
+            .map((line) => truncateToWidth(line, Math.max(1, width), "…"))
+        : [],
     invalidate: () => {},
   };
 }
@@ -234,7 +238,21 @@ async function handleConfigSlashCommand(
     return await handleModelInput(state, context, runtime, trimmed);
   }
   if (isSlashCommand(trimmed, "/help")) {
-    context.ui.notify(codepunkHelp(), "info");
+    const query = trimmed.slice("/help".length).trim();
+    if (query.length === 0) {
+      context.ui.notify(codepunkHelp(), "info");
+      return true;
+    }
+    const lower = query.toLowerCase();
+    const matched = codepunkHelp()
+      .split("\n")
+      .filter((line) => line.toLowerCase().includes(lower));
+    context.ui.notify(
+      matched.length === 0
+        ? `No commands matching "${query}". Press F1 to browse all commands.`
+        : [`Commands matching "${query}":`, ...matched].join("\n"),
+      "info",
+    );
     return true;
   }
   if (
@@ -243,7 +261,7 @@ async function handleConfigSlashCommand(
     isSlashCommand(trimmed, "/config")
   ) {
     const argument = trimmed.replace(/^\/(?:settings?|config)/u, "").trim();
-    await showSettingsMenu(state, context, argument);
+    await showInteractiveSettingsMenu(state, context, argument);
     return true;
   }
   if (isSlashCommand(trimmed, "/scoped-models")) {
@@ -252,7 +270,7 @@ async function handleConfigSlashCommand(
         "Model scope is file-backed in codepunk.",
         `Set model.enabled in ${runtime.paths.home}/config.toml, for example:`,
         '  enabled = ["gateway/primary-model", "openai/gpt-5"]',
-        "Pi's selector only changes in-memory host state in this build, so codepunk does not open it.",
+        "The built-in selector only changes in-memory host state in this build, so codepunk does not open it.",
       ].join("\n"),
       "info",
     );
@@ -289,7 +307,7 @@ async function handlePiSlashCommand(
   if (isSlashCommand(trimmed, "/import")) {
     context.ui.notify(
       [
-        "Pi session import is not supported in codepunk.",
+        "External session import is not supported in codepunk.",
         "Codepunk sessions keep their own evidence chain; use /cp-sessions or `codepunk --session <id>`.",
         "For a model endpoint, use `codepunk models import <base-url> --provider <id>` in a shell.",
       ].join("\n"),
@@ -310,7 +328,7 @@ async function handlePiSlashCommand(
   if (isSlashCommand(trimmed, "/bug")) {
     context.ui.notify(
       [
-        "Pi's /bug flow can upload a session transcript to the Pi developers.",
+        "The built-in /bug flow can upload a session transcript to an external service.",
         "Codepunk keeps session data local; use /cp-export for a redacted transcript.",
         "Attach that export manually if you need to report a Codepunk defect.",
       ].join("\n"),
@@ -381,6 +399,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
     });
   }
   refreshStatus(state, context);
+  refreshWorkWidget(state, context);
   if (!tui.widgets) {
     context.ui.setWidget("codepunk", undefined);
   }

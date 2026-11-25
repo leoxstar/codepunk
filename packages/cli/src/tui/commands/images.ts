@@ -1,3 +1,4 @@
+import { captureClipboardImage } from "../format/clipboard-image.ts";
 import {
   assertImageGenerationAllowed,
   assertImageInputAllowed,
@@ -201,11 +202,29 @@ export function imageCommand(state: TuiState): TuiCommand {
     handler: commandContext(state, async (runtime, context, args) => {
       const trimmed = args.trim();
       if (trimmed.length === 0) {
-        context.ui.notify("usage: /image <path> [prompt]", "warning");
+        context.ui.notify(
+          "usage: /image <path|--clipboard|paste> [prompt]",
+          "warning",
+        );
         return;
       }
       const [requested, ...promptParts] = trimmed.split(/\s+/u);
-      const imagePath = path.resolve(runtime.paths.cwd, requested!);
+      let imagePath: string;
+      if (requested === "--clipboard" || requested === "paste") {
+        try {
+          imagePath = await captureClipboardImage(runtime.paths.deliveryRoot);
+        } catch (error) {
+          context.ui.notify(
+            `/image clipboard failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            "warning",
+          );
+          return;
+        }
+      } else {
+        imagePath = path.resolve(runtime.paths.cwd, requested!);
+      }
       const started = Date.now();
       let approval: TuiApprovalEvidence | null = null;
       let image: ConfirmedImageInput | null = null;

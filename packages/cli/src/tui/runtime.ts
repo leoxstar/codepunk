@@ -72,6 +72,7 @@ export function applyReplacedRuntime(
 ): void {
   state.context = context;
   state.channel.attach(context);
+  state.questionChannel?.attach(context);
   context.ui.setWidget("subagents", undefined);
   state.ready = true;
   state.lastRunId = runtime.host.currentRunId;

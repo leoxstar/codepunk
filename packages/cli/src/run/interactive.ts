@@ -27,6 +27,8 @@ type ExtensionFactory = NonNullable<
   RuntimeOptions["additionalExtensionFactories"]
 >[number];
 type ApprovalChannel = NonNullable<RuntimeOptions["approvalChannel"]>;
+type QuestionChannel = NonNullable<RuntimeOptions["questionChannel"]>;
+type SubagentExecutor = NonNullable<RuntimeOptions["subagentExecutor"]>;
 type WorkspaceTrust = Awaited<ReturnType<typeof resolveRunWorkspaceTrust>>;
 type ConfigOverrides = NonNullable<RuntimeOptions["configOverrides"]>;
 
@@ -95,6 +97,8 @@ interface TuiRuntimeBuilderContext {
   options: CliOptions;
   extension: ExtensionFactory;
   channel: ApprovalChannel;
+  questionChannel: QuestionChannel;
+  subagentExecutor: SubagentExecutor;
   workspaceTrust: WorkspaceTrust;
   overrides: ConfigOverrides;
 }
@@ -111,7 +115,15 @@ interface TuiRuntimeSelection {
 function createRuntimeBuilder(
   context: TuiRuntimeBuilderContext,
 ): (selection: TuiRuntimeSelection) => Promise<CodepunkRuntime> {
-  const { options, extension, channel, workspaceTrust, overrides } = context;
+  const {
+    options,
+    extension,
+    channel,
+    questionChannel,
+    subagentExecutor,
+    workspaceTrust,
+    overrides,
+  } = context;
   return async (selection) =>
     createRuntime({
       cwd: process.cwd(),
@@ -140,6 +152,8 @@ function createRuntimeBuilder(
         ? { headlessPolicyPath: options.headlessPolicy }
         : {}),
       approvalChannel: channel,
+      questionChannel,
+      subagentExecutor,
       allowUnsandboxedShell:
         options.allowUnsandboxedShell || options.dangerouslyBypass,
       allowFullFilesystem: options.dangerouslyBypass,
@@ -147,6 +161,7 @@ function createRuntimeBuilder(
       bindMode: "tui",
       allowPlugins: options.allowPlugins,
       disableMcp: options.noMcp,
+      deferMcp: true,
       disableSkills: options.noSkills,
       disablePlugins: options.noPlugins,
       bare: options.bare,
@@ -240,6 +255,17 @@ function watchSandboxStatus(
       context.ui.notify(`${lines.join(". ")}.`, "warning");
     }
   })();
+  void (async () => {
+    await runtime.mcpReady;
+    const context = state.context;
+    if (state.shuttingDown || state.runtime !== runtime || context === null) {
+      return;
+    }
+    tui.refreshStatus(state, context);
+    for (const warning of runtime.mcpStartupWarnings) {
+      context.ui.notify(`codepunk warning: ${warning}`, "warning");
+    }
+  })();
 }
 
 function startTitleAndBuildWatch(state: TuiState): () => void {
@@ -321,10 +347,12 @@ export async function runTui(options: CliOptions): Promise<number> {
       ? sessionSelector(options.session)
       : { sessionId: forkedSessionId };
   const channel = new tui.TuiApprovalChannel();
+  const questionChannel = new tui.TuiQuestionChannel();
   const state: TuiState = {
     runtime: null,
     context: null,
     channel,
+    questionChannel,
     lastRunId: null,
     lastEvidence: 0,
     warningsShown: false,
@@ -336,6 +364,7 @@ export async function runTui(options: CliOptions): Promise<number> {
     childHostArgv: [process.execPath, fileURLToPath(import.meta.url)],
     resumeHint: new ResumeHint(),
   };
+  const subagentExecutor = tui.createTuiSubagentExecutor(state);
   // Pi's quit path ends in process.exit, so the hint is written from an exit
   // listener once the shutdown handler has armed it.
   state.resumeHint?.installOnExit();
@@ -350,6 +379,8 @@ export async function runTui(options: CliOptions): Promise<number> {
     options,
     extension,
     channel,
+    questionChannel,
+    subagentExecutor,
     workspaceTrust,
     overrides,
   });

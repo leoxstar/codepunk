@@ -107,6 +107,24 @@ async function main(argv: string[]): Promise<number> {
   return runTui(options);
 }
 
+function installCrashGuards(): void {
+  const reportFatal = (label: string, error: unknown): void => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `codepunk: ${label}: ${message}\nRun \`codepunk doctor\` to inspect local configuration and environment state.\n`,
+    );
+    process.exitCode = error instanceof ConfigError ? 2 : 1;
+  };
+  process.on("uncaughtException", (error) => {
+    reportFatal("unexpected error", error);
+  });
+  process.on("unhandledRejection", (reason) => {
+    reportFatal("unhandled rejection", reason);
+  });
+}
+
+installCrashGuards();
+
 main(process.argv.slice(2))
   .then((code) => {
     process.exitCode = code;

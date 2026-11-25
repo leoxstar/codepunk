@@ -310,9 +310,11 @@ async function showScopedRulesTable(
     const [
       { createTableScreen },
       { scopedRulesTableOptions, scopedRulesTitle },
+      { defaultViewportHeight },
     ] = await Promise.all([
       import("../components/table-screen.ts"),
       import("../components/scoped-rules-table.ts"),
+      import("../components/frame.ts"),
     ]);
     await context.ui.custom<void>((_tui, theme, keybindings, done) =>
       createTableScreen(
@@ -320,6 +322,7 @@ async function showScopedRulesTable(
           title: scopedRulesTitle(view, runtime.autonomy.profile),
           table: scopedRulesTableOptions(view),
           footer: "esc close",
+          viewportHeight: defaultViewportHeight(),
           ...(view.filePath === null ? {} : { note: `file: ${view.filePath}` }),
         },
         theme,
@@ -555,45 +558,13 @@ export async function showPermissionsMenu(
 }
 
 /**
- * `/settings` opens the same selector surface; config paths and the status
- * panel stay available as explicit entries instead of being the only answer.
+ * `/settings` delegates to the interactive settings menu in `settings.ts`.
  */
 export async function showSettingsMenu(
   state: TuiState,
   context: ExtensionContext,
   argument: string,
 ): Promise<void> {
-  const runtime = state.runtime;
-  if (runtime === null) {
-    context.ui.notify("codepunk runtime is not ready", "error");
-    return;
-  }
-  const trimmed = argument.trim();
-  if (trimmed === "permissions" || trimmed === "permission") {
-    await showPermissionsMenu(state, context);
-    return;
-  }
-  for (;;) {
-    const selected = await context.ui.select("codepunk settings", [
-      "Permissions",
-      "Config paths",
-      "Close",
-    ]);
-    if (selected === undefined || selected === "Close") {
-      return;
-    }
-    if (selected === "Permissions") {
-      await showPermissionsMenu(state, context);
-      continue;
-    }
-    context.ui.notify(
-      [
-        "codepunk settings are file-backed.",
-        `config: ${runtime.paths.home}/config.toml`,
-        "Use /permissions to change approval, autonomy, sandbox, and filesystem modes.",
-        "Use /model for the model and /thinking for the reasoning level.",
-      ].join("\n"),
-      "info",
-    );
-  }
+  const { showInteractiveSettingsMenu } = await import("./settings.ts");
+  await showInteractiveSettingsMenu(state, context, argument);
 }

@@ -19,6 +19,8 @@ import {
 import { formatSessionList } from "codepunk-core";
 import { formatStatusSummary } from "../format/status-summary.ts";
 import { physicalModel, modelOnboardingMessage } from "../chrome/model.ts";
+import { refreshStatus } from "../chrome/statusline.ts";
+import { refreshWorkWidget } from "../chrome/work-widget.ts";
 import { codepunkHelp } from "../chrome/help.ts";
 import { initializeProjectInstructions } from "../format/init.ts";
 import {
@@ -77,7 +79,11 @@ export function diffCommand(state: TuiState): TuiCommand {
           root: runtime.paths.deliveryRoot,
         });
         try {
-          const { createDiffView } = await import("../components/diff-view.ts");
+          const [{ createDiffView }, { defaultViewportHeight }] =
+            await Promise.all([
+              import("../components/diff-view.ts"),
+              import("../components/frame.ts"),
+            ]);
           await context.ui.custom<void>((_tui, theme, keybindings, done) =>
             createDiffView(
               {
@@ -94,6 +100,7 @@ export function diffCommand(state: TuiState): TuiCommand {
                     .filter((entry) => entry.length > 0),
                   truncated: diff.truncated,
                 },
+                viewportHeight: defaultViewportHeight(),
               },
               theme,
               keybindings,
@@ -229,35 +236,62 @@ export function plan_modeCommand(state: TuiState): TuiCommand {
       const subcommand = args.trim();
       try {
         if (subcommand === "" || subcommand === "status") {
-          await notify(
-            context,
-            formatPlanModeStatus(
-              runtime.planMode.state(),
-              readWorkState(runtime.session.allEvents).plan,
-            ),
-          );
+          const current = runtime.planMode.state();
+          const plan = readWorkState(runtime.session.allEvents).plan;
+          if (
+            subcommand === "" &&
+            current?.mode === "planning" &&
+            plan !== null &&
+            plan.steps.length > 0 &&
+            typeof context.ui.select === "function"
+          ) {
+            const action = await context.ui.select(
+              formatPlanModeStatus(current, plan),
+              ["Approve and execute plan", "Keep planning", "Exit plan mode"],
+            );
+            if (action === "Approve and execute plan") {
+              const next = await runtime.planMode.approve();
+              refreshWorkWidget(state, context);
+              refreshStatus(state, context);
+              await notify(context, `Plan mode: ${next.mode}`);
+              return;
+            }
+            if (action === "Exit plan mode") {
+              const next = await runtime.planMode.exit();
+              refreshWorkWidget(state, context);
+              refreshStatus(state, context);
+              await notify(context, `Plan mode: ${next.mode}`);
+              return;
+            }
+            return;
+          }
+          await notify(context, formatPlanModeStatus(current, plan));
           return;
         }
         if (subcommand === "on") {
-          const state = await runtime.planMode.enter();
+          const next = await runtime.planMode.enter();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
           await notify(
             context,
             [
-              `Plan mode: ${state.mode}`,
+              `Plan mode: ${next.mode}`,
               "Only read-only tools are available. Record a plan, then run /plan-mode approve.",
             ].join("\n"),
           );
           return;
         }
         if (subcommand === "approve") {
-          const state = await runtime.planMode.approve();
+          const next = await runtime.planMode.approve();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
           const planHash =
-            state.plan_sha256 ??
+            next.plan_sha256 ??
             planContentHash(readWorkState(runtime.session.allEvents).plan);
           await notify(
             context,
             [
-              `Plan mode: ${state.mode}`,
+              `Plan mode: ${next.mode}`,
               planHash === null
                 ? "No plan hash is bound."
                 : `Approved plan hash: ${planHash}`,
@@ -266,8 +300,10 @@ export function plan_modeCommand(state: TuiState): TuiCommand {
           return;
         }
         if (subcommand === "off") {
-          const state = await runtime.planMode.exit();
-          await notify(context, `Plan mode: ${state.mode}`);
+          const next = await runtime.planMode.exit();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
+          await notify(context, `Plan mode: ${next.mode}`);
           return;
         }
         context.ui.notify(

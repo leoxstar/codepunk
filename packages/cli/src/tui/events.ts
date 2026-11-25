@@ -13,6 +13,7 @@ import { isFallbackModel, writeUserThinkingSelection } from "codepunk-core";
 import { recordRecentModel } from "../model-history.ts";
 import { physicalModel } from "./chrome/model.ts";
 import { refreshStatus } from "./chrome/statusline.ts";
+import { refreshWorkWidget } from "./chrome/work-widget.ts";
 import { modelReference } from "./format/model.ts";
 import { persistPiDefaultModel } from "./model.ts";
 import { setupChrome } from "./chrome/setup.ts";
@@ -33,6 +34,7 @@ async function handleSessionStart(
     ...pi.getCommands().map((command) => command.name),
   ]);
   channel.attach(context);
+  state.questionChannel?.attach(context);
   context.ui.addAutocompleteProvider((current) => ({
     ...(current.triggerCharacters === undefined
       ? {}
@@ -164,6 +166,7 @@ async function handleAgentStart(
   context.ui.setTitle(
     `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
   );
+  refreshWorkWidget(state, context);
   refreshStatus(state, context);
 }
 
@@ -175,6 +178,7 @@ async function handleAgentSettled(
     `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
   );
   state.lastEvidence = state.runtime?.ledger.all.length ?? state.lastEvidence;
+  refreshWorkWidget(state, context);
   refreshStatus(state, context);
 }
 

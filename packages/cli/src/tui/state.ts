@@ -12,11 +12,13 @@ import type {
 import type { MergeRecord, TaskHandoff, Verdict } from "codepunk-protocol";
 import type { ResumeHint } from "../exit-hint.ts";
 import type { TuiApprovalChannel } from "./approval/channel.ts";
+import type { TuiQuestionChannel } from "./approval/question-channel.ts";
 
 export interface TuiState {
   runtime: CodepunkRuntime | null;
   context: ExtensionContext | null;
   channel: TuiApprovalChannel;
+  questionChannel?: TuiQuestionChannel;
   lastRunId: string | null;
   lastEvidence: number;
   warningsShown: boolean;

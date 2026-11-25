@@ -115,9 +115,14 @@ async function showAgentsTable(
   context: ExtensionCommandContext,
 ): Promise<void> {
   try {
-    const [{ createTableScreen }, { agentsTableOptions }] = await Promise.all([
+    const [
+      { createTableScreen },
+      { agentsTableOptions },
+      { defaultViewportHeight },
+    ] = await Promise.all([
       import("../components/table-screen.ts"),
       import("../components/agents-table.ts"),
+      import("../components/frame.ts"),
     ]);
     await context.ui.custom<void>((_tui, theme, keybindings, done) =>
       createTableScreen(
@@ -125,6 +130,7 @@ async function showAgentsTable(
           title: "Background subagents",
           table: agentsTableOptions(state),
           footer: "esc close",
+          viewportHeight: defaultViewportHeight(),
         },
         theme,
         keybindings,

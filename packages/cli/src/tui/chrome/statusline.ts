@@ -64,7 +64,7 @@ export function renderHeader(state: TuiState): string {
   if (runtime === null) {
     return "codepunk · starting";
   }
-  return `codepunk · ${modelStatus(runtime)} · session ${runtime.session.sessionId.slice(0, 12)}`;
+  return `codepunk · ${modelStatus(runtime)} · session ${runtime.session.sessionId.slice(0, 12)} · Alt+M mode · Alt+T tasks · F1 help`;
 }
 
 export function renderStatus(state: TuiState): string {
@@ -79,11 +79,21 @@ export function renderStatus(state: TuiState): string {
       ? ""
       : formatBudgetStatus(budget);
   const agents = agentStatus(state);
+  const planMode = runtime.planMode.state();
+  const planBadge =
+    planMode?.mode === "planning"
+      ? "plan"
+      : planMode?.mode === "executing"
+        ? "plan:exec"
+        : null;
+  const mcpBadge = runtime.mcpStatus === "connecting" ? "mcp connecting" : null;
   const policy = [
+    ...(planBadge === null ? [] : [planBadge]),
     `permissions ${profile}`,
     `trust ${trustDisplay(runtime.workspaceTrust)}`,
     `shell ${currentShellStatus(runtime)}`,
     `evidence ${evidenceCount(runtime)}`,
+    ...(mcpBadge === null ? [] : [mcpBadge]),
     ...(agents === null ? [] : [agents]),
   ].join(" · ");
   return renderStatusline(runtime.config.tui.statusline, {

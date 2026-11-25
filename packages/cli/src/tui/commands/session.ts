@@ -140,19 +140,59 @@ export async function resumeSession(
   } else if (entries.length === 1) {
     targetId = entries[0]!.id;
   } else {
-    const visible = entries.slice(0, 20);
-    const labels = visible.map((entry) =>
-      sessionChoiceLabel(entry, runtime.session.sessionId),
-    );
-    const title =
-      entries.length > visible.length
-        ? `Resume session (showing 20 of ${entries.length}; type /resume <text> to search)`
-        : "Resume session";
-    const selected = await context.ui.select(title, labels);
-    if (selected === undefined) {
-      return;
+    let pickedViaCustom = false;
+    if (typeof context.ui.custom === "function") {
+      try {
+        const [{ createSessionPicker }, { defaultViewportHeight }] =
+          await Promise.all([
+            import("../components/session-picker.ts"),
+            import("../components/frame.ts"),
+          ]);
+        const items = entries.map((entry) => ({
+          id: entry.id,
+          title: entry.title ?? "",
+          updatedAt: entry.updated_at,
+          pinned: entry.pinned === true,
+          current: entry.id === runtime.session.sessionId,
+          label: sessionChoiceLabel(entry, runtime.session.sessionId),
+        }));
+        const picked = await context.ui.custom<string | null>(
+          (_tui, theme, keybindings, done) =>
+            createSessionPicker(
+              {
+                title: "Resume session",
+                items,
+                viewportHeight: defaultViewportHeight(),
+              },
+              theme,
+              keybindings,
+              done,
+            ),
+        );
+        pickedViaCustom = true;
+        if (picked === null || picked === undefined) {
+          return;
+        }
+        targetId = picked;
+      } catch {
+        pickedViaCustom = false;
+      }
     }
-    targetId = entries[labels.indexOf(selected)]?.id;
+    if (!pickedViaCustom) {
+      const visible = entries.slice(0, 20);
+      const labels = visible.map((entry) =>
+        sessionChoiceLabel(entry, runtime.session.sessionId),
+      );
+      const title =
+        entries.length > visible.length
+          ? `Resume session (showing 20 of ${entries.length}; type /resume <text> to search)`
+          : "Resume session";
+      const selected = await context.ui.select(title, labels);
+      if (selected === undefined) {
+        return;
+      }
+      targetId = entries[labels.indexOf(selected)]?.id;
+    }
   }
   if (targetId === undefined) {
     return;
