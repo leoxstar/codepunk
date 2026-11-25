@@ -12,10 +12,10 @@ import type {
 import { isFallbackModel, writeUserThinkingSelection } from "codepunk-core";
 import { recordRecentModel } from "../model-history.ts";
 import { physicalModel } from "./chrome/model.ts";
+import { refreshStatus } from "./chrome/statusline.ts";
 import { modelReference } from "./format/model.ts";
 import { persistPiDefaultModel } from "./model.ts";
 import { setupChrome } from "./chrome/setup.ts";
-import { setRuntimeStatus } from "./chrome/status.ts";
 import { stopRunningSubagents } from "./format/subagents.ts";
 import type { TuiApprovalChannel } from "./approval/channel.ts";
 import type { TuiState } from "./state.ts";
@@ -127,14 +127,8 @@ async function handleModelSelect(
     setupChrome(state, context);
     return;
   }
-  const saved = await persistPiDefaultModel(runtime, (message, level) =>
+  await persistPiDefaultModel(runtime, (message, level) =>
     context.ui.notify(message, level),
-  );
-  setRuntimeStatus(
-    state,
-    context,
-    "model",
-    saved ? `${event.model.provider}/${event.model.id}` : "not saved",
   );
   setupChrome(state, context);
 }
@@ -151,7 +145,7 @@ async function handleThinkingLevelSelect(
   runtime.config.model.thinking = event.level;
   try {
     await writeUserThinkingSelection(runtime.paths, event.level);
-    setRuntimeStatus(state, context, "thinking", event.level);
+    refreshStatus(state, context);
   } catch (error) {
     context.ui.notify(
       `thinking changed for this session; config was not saved: ${
@@ -170,7 +164,7 @@ async function handleAgentStart(
   context.ui.setTitle(
     `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
   );
-  setRuntimeStatus(state, context, "run", state.lastRunId ?? "running");
+  refreshStatus(state, context);
 }
 
 async function handleAgentSettled(
@@ -181,8 +175,7 @@ async function handleAgentSettled(
     `codepunk · session ${state.runtime?.session.sessionId ?? "starting"}`,
   );
   state.lastEvidence = state.runtime?.ledger.all.length ?? state.lastEvidence;
-  setRuntimeStatus(state, context, "evidence", String(state.lastEvidence));
-  setRuntimeStatus(state, context, "run", "settled");
+  refreshStatus(state, context);
 }
 
 async function handleSessionShutdown(

@@ -7,12 +7,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
 import { codepunkHelp } from "./help.ts";
-import { selectedModel, renderStatus, evidenceCount } from "./model.ts";
-import {
-  currentShellStatus,
-  sandboxStatusLines,
-  setRuntimeStatus,
-} from "./status.ts";
+import { selectedModel } from "./model.ts";
+import { refreshStatus, renderHeader } from "./statusline.ts";
+import { sandboxStatusLines } from "./status.ts";
 import { EditorBridge } from "./widgets.ts";
 import { isSlashCommand } from "../host-commands.ts";
 import { formatConfigReload } from "../format/reload.ts";
@@ -38,35 +35,15 @@ function component(text: () => string, visible: () => boolean): Component {
   };
 }
 
-function chromeHeader(state: TuiState, header: boolean): Component {
-  return component(
-    () => renderStatus(state),
-    () => header,
-  );
-}
-
-function chromeFooter(
-  state: TuiState,
-  cwd: string,
-  footer: boolean,
-): Component {
-  return component(
-    () => `${renderStatus(state)}\n${cwd}`,
-    () => footer,
-  );
-}
-
 async function handleShellInput(
   runtime: CodepunkRuntime,
   context: ExtensionContext,
   trimmed: string,
-  command: string,
 ): Promise<boolean> {
   if (trimmed === "!" || trimmed === "!!") {
     context.ui.notify("usage: !<command> or !!<command>", "warning");
     return true;
   }
-  context.ui.setStatus("shell", `editor:${command.slice(0, 24)}`);
   if (runtime.plugins.enabled) {
     context.ui.notify("! is disabled while Pi plugins are enabled", "warning");
     return true;
@@ -376,10 +353,22 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
   const tui = runtime.config.tui;
   const title = ["codepunk", `session ${runtime.session.sessionId}`];
   context.ui.setTitle(title.join(" · "));
-  context.ui.setHeader(() => chromeHeader(state, tui.header));
-  context.ui.setFooter(() =>
-    chromeFooter(state, runtime.paths.cwd, tui.footer),
+  context.ui.setHeader(() =>
+    component(
+      () => renderHeader(state),
+      () => tui.header,
+    ),
   );
+  if (tui.footer) {
+    context.ui.setFooter(undefined);
+  } else {
+    context.ui.setFooter(() =>
+      component(
+        () => "",
+        () => false,
+      ),
+    );
+  }
   context.ui.setWidget(
     "model-onboarding",
     selectedModel(runtime) === undefined
@@ -393,20 +382,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
       placement: "aboveEditor",
     });
   }
-  const statuses: Array<[string, string]> = [
-    [
-      "permissions",
-      `approvals:${runtime.config.approval.mode},autonomy:${runtime.autonomy.profile}`,
-    ],
-    ["thinking", runtime.host.session.thinkingLevel],
-    ["shell", currentShellStatus(runtime)],
-    ["next-sandbox", runtime.config.sandbox.mode],
-    ["evidence", String(evidenceCount(runtime))],
-    ["run", state.lastRunId ?? "ready"],
-  ];
-  for (const [key, value] of statuses) {
-    setRuntimeStatus(state, context, key, value);
-  }
+  refreshStatus(state, context);
   if (!tui.widgets) {
     context.ui.setWidget("codepunk", undefined);
   }
@@ -416,7 +392,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         const trimmed = text.trim();
         const command = trimmed.split(/\s+/u)[0] ?? "";
         if (trimmed.startsWith("!")) {
-          return await handleShellInput(runtime, context, trimmed, command);
+          return await handleShellInput(runtime, context, trimmed);
         }
         if (command.startsWith("/skill:")) {
           return await handleSkillInput(runtime, context, trimmed, command);

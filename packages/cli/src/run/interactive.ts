@@ -222,12 +222,7 @@ function watchSandboxStatus(
         placement: "aboveEditor",
       });
     }
-    tui.setRuntimeStatus(
-      state,
-      context,
-      "shell",
-      tui.currentShellStatus(runtime),
-    );
+    tui.refreshStatus(state, context);
     if (runtime.shellPreflightIssue !== null) {
       state.sandboxNoticeShown = true;
       context.ui.notify(

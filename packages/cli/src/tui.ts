@@ -7,6 +7,7 @@ export * from "./tui/events.ts";
 export * from "./tui/extension.ts";
 export * from "./tui/runtime.ts";
 export * from "./tui/chrome/model.ts";
+export * from "./tui/chrome/statusline.ts";
 export * from "./tui/chrome/setup.ts";
 export * from "./tui/chrome/help.ts";
 export * from "./tui/chrome/status.ts";

@@ -1,14 +1,4 @@
-import {
-  isFallbackModel,
-  permissionProfileFor,
-  type CodepunkRuntime,
-} from "codepunk-core";
-import { renderStatusline } from "../../statusline.ts";
-import { budgetSnapshot, formatBudgetStatus } from "../format/status.ts";
-import { trustDisplay } from "../format/trust.ts";
-import { currentShellStatus } from "./status.ts";
-
-import type { TuiState } from "../state.ts";
+import { isFallbackModel, type CodepunkRuntime } from "codepunk-core";
 
 export function evidenceCount(runtime: CodepunkRuntime): number {
   return runtime.ledger.all.length;
@@ -31,24 +21,6 @@ export function selectedModel(
   return isUnknownModel(model) ? undefined : model;
 }
 
-function lastRoutedModel(runtime: CodepunkRuntime): string | undefined {
-  for (
-    let index = runtime.host.session.messages.length - 1;
-    index >= 0;
-    index--
-  ) {
-    const message = runtime.host.session.messages[index]!;
-    if (
-      message.role === "assistant" &&
-      message.stopReason !== "error" &&
-      message.stopReason !== "aborted"
-    ) {
-      return `${message.provider}/${message.model}`;
-    }
-  }
-  return undefined;
-}
-
 export function physicalModel(
   runtime: CodepunkRuntime,
 ): CodepunkRuntime["host"]["session"]["model"] | undefined {
@@ -59,42 +31,6 @@ export function physicalModel(
   return selected !== undefined && !isFallbackModel(selected)
     ? selected
     : undefined;
-}
-
-function modelStatus(runtime: CodepunkRuntime): string {
-  const selected = selectedModel(runtime);
-  if (selected === undefined) {
-    return `codepunk · ${runtime.config.model.provider ?? "auto"}/${runtime.config.model.id ?? "auto"}`;
-  }
-  if (isFallbackModel(selected)) {
-    const primary = physicalModel(runtime);
-    const primaryReference =
-      primary === undefined ? "unrouted" : `${primary.provider}/${primary.id}`;
-    const routed = lastRoutedModel(runtime);
-    return `codepunk · auto -> ${primaryReference}${
-      routed !== undefined && routed !== primaryReference
-        ? ` (last ${routed})`
-        : ""
-    }`;
-  }
-  return `codepunk · ${selected.provider}/${selected.id}`;
-}
-
-export function renderStatus(state: TuiState): string {
-  const runtime = state.runtime;
-  if (runtime === null) {
-    return "codepunk · starting";
-  }
-  const profile = permissionProfileFor(runtime.config);
-  const budget = budgetSnapshot(runtime);
-  return renderStatusline(runtime.config.tui.statusline, {
-    model: modelStatus(runtime),
-    session: `project ${runtime.paths.projectId} · session ${runtime.session.sessionId.slice(0, 12)}`,
-    sandbox: `next sandbox ${runtime.config.sandbox.mode}`,
-    filesystem: `fs ${runtime.config.filesystem.mode}`,
-    policy: `permissions ${profile} · trust ${trustDisplay(runtime.workspaceTrust)} · shell ${currentShellStatus(runtime)} · evidence ${evidenceCount(runtime)}`,
-    budget: formatBudgetStatus(budget),
-  });
 }
 
 export function modelOnboardingMessage(

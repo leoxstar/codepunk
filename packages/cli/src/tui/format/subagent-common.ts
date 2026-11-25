@@ -7,7 +7,7 @@ import {
   type SubagentStreamEvent,
 } from "codepunk-core";
 import type { BackgroundSubagent, TuiState } from "../state.ts";
-import { setRuntimeStatus } from "../chrome/status.ts";
+import { refreshStatus } from "../chrome/statusline.ts";
 export interface SubagentInvocation {
   task: string;
   profileName?: string;
@@ -287,17 +287,6 @@ export function updateSubagentStatus(state: TuiState): void {
   if (state.context === null) {
     return;
   }
-  const records = [...(state.subagents?.values() ?? [])];
-  const running = records.filter(
-    (record) => record.status === "running",
-  ).length;
-  setRuntimeStatus(
-    state,
-    state.context,
-    "agents",
-    records.length === 0
-      ? "none"
-      : `${running} running / ${records.length} total`,
-  );
+  refreshStatus(state, state.context);
   applySubagentWidget(state);
 }
