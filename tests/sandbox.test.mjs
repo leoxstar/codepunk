@@ -150,6 +150,7 @@ test(
   "a canceled sandbox initialization does not cancel another process",
   { skip: REAL_SRT_SKIP },
   async () => {
+    const CHILD_TIMEOUT_MS = 30_000;
     const children = ["cancel", "survive"].map((role) => {
       const child = spawn(
         process.execPath,
@@ -159,14 +160,41 @@ test(
       let output = "";
       let stderr = "";
       const exited = new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          child.kill("SIGKILL");
+          reject(
+            new Error(
+              `sandbox reset child ${role} did not exit within ${CHILD_TIMEOUT_MS}ms`,
+            ),
+          );
+        }, CHILD_TIMEOUT_MS);
         child.stdout.on("data", (chunk) => {
           output += chunk;
         });
         child.stderr.on("data", (chunk) => {
           stderr += chunk;
         });
-        child.on("error", reject);
-        child.on("close", (code, signal) => resolve({ code, signal }));
+        child.on("error", (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.on("close", (code, signal) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
       });
       return {
         child,

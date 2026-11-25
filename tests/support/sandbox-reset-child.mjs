@@ -21,31 +21,50 @@ config.network.strictAllowlist = true;
 config.javaAgentJarPath = `${process.cwd()}/definitely-missing-java-agent.jar`;
 
 const manager = sandboxModule.SandboxManager;
-if (!manager.isSupportedPlatform()) {
-  console.log(JSON.stringify({ skipped: "unsupported host platform" }));
-} else {
-  const dependencies = await manager.checkDependenciesAsync();
-  if (dependencies.errors.length > 0) {
-    console.log(JSON.stringify({ skipped: "unavailable srt dependencies" }));
-  } else {
-    const initialize = manager.initialize(config);
-    let initializedAfterReset = "not rejected";
-    const resetStarted =
-      role === "cancel" ? manager.reset() : Promise.resolve();
-    try {
-      await initialize;
-    } catch (error) {
-      initializedAfterReset = error.message;
-    }
-    await resetStarted;
 
-    console.log(
-      JSON.stringify({
+function writeResult(result) {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(`${JSON.stringify(result)}\n`, (error) => {
+      if (error === null || error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
+
+let result;
+try {
+  if (!manager.isSupportedPlatform()) {
+    result = { skipped: "unsupported host platform" };
+  } else {
+    const dependencies = await manager.checkDependenciesAsync();
+    if (dependencies.errors.length > 0) {
+      result = { skipped: "unavailable srt dependencies" };
+    } else {
+      const initialize = manager.initialize(config);
+      let initializedAfterReset = "not rejected";
+      const resetStarted =
+        role === "cancel" ? manager.reset() : Promise.resolve();
+      try {
+        await initialize;
+      } catch (error) {
+        initializedAfterReset = error.message;
+      }
+      await resetStarted;
+      result = {
         canceled:
           initializedAfterReset === "initialize() was cancelled by reset()",
         message: initializedAfterReset,
         ...(role === "survive" ? { initialized: true, reset: false } : {}),
-      }),
-    );
+      };
+    }
   }
+} finally {
+  // On Linux initialize() starts a socat bridge that keeps the event loop
+  // alive until reset() tears it down. Exit deterministically either way.
+  await manager.reset().catch(() => undefined);
 }
+await writeResult(result);
+process.exit(0);
