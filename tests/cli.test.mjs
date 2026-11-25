@@ -1363,6 +1363,61 @@ test("permission commands show effective modes, explain commands, and persist pr
   });
 });
 
+test("scoped autonomy refuses to persist without a valid rules file", async () => {
+  await withTempDirectory("codepunk-cli-scoped-guard-", async (root) => {
+    const { project, home } = await makeProject(root);
+    const configPath = path.join(home, "config.toml");
+    const before = await fs.readFile(configPath, "utf8");
+
+    await assert.rejects(
+      () =>
+        runCli(["permissions", "autonomy", "scoped"], {
+          cwd: project,
+          home,
+        }),
+      (error) => {
+        assert.equal(error.code, 2);
+        assert.match(
+          error.stderr,
+          /scoped autonomy requires autonomy\.scoped_rules/u,
+        );
+        return true;
+      },
+    );
+    assert.equal(await fs.readFile(configPath, "utf8"), before);
+    const stillUsable = await runCli(["permissions"], { cwd: project, home });
+    assert.match(stillUsable.stdout, /autonomy: ask/u);
+
+    const context = await core.findDeliveryRoot(project);
+    const paths = core.projectPaths(context, home);
+    const persisted = await core.persistScopedRule({
+      paths,
+      argv: [SCOPED_RULE_COMMAND, "approved-exact.txt"],
+      cwd: project,
+      filePath: path.join(home, "scoped-rules.toml"),
+    });
+    await fs.writeFile(
+      configPath,
+      [
+        "[sandbox]",
+        'mode = "uncovered"',
+        "",
+        "[autonomy]",
+        'profile = "ask"',
+        `scoped_rules = ${JSON.stringify(persisted.path)}`,
+        "",
+      ].join("\n"),
+    );
+    const enabled = await runCli(["permissions", "autonomy", "scoped"], {
+      cwd: project,
+      home,
+    });
+    assert.match(enabled.stdout, /permissions autonomy set to scoped/u);
+    const shown = await runCli(["permissions"], { cwd: project, home });
+    assert.match(shown.stdout, /autonomy: scoped/u);
+  });
+});
+
 test("install refuses the unpublished placeholder version", async () => {
   await withTempDirectory("codepunk-cli-install-", async (root) => {
     const { project, home } = await makeProject(root);

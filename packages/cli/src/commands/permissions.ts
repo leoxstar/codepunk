@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   APPROVAL_MODE_NAMES,
   AutonomyController,
+  ConfigError,
   PERMISSION_PROFILES,
   PERMISSION_PROFILE_NAMES,
   SrtSandbox,
@@ -565,7 +566,17 @@ async function permissionsUpdate(
       filesystem: value as FilesystemMode,
     };
   }
-  const { paths } = await resolveProject(options);
+  const { paths, config } = await resolveProject(options);
+  if (group === "autonomy" && value === "scoped") {
+    const rulesPath = config.autonomy.scoped_rules;
+    if (rulesPath === null || rulesPath.length === 0) {
+      throw new ConfigError(
+        "scoped autonomy requires autonomy.scoped_rules in the user config; set an absolute rules file path first, then rerun this command",
+        "autonomy.scoped_rules",
+      );
+    }
+    await loadScopedRules(rulesPath, paths);
+  }
   await writeUserPermissionSelection(paths, update);
   process.stdout.write(
     [
