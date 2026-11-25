@@ -59,6 +59,11 @@ import {
 import { agentShellEnvironment, type ShellProvider } from "../sandbox/index.ts";
 import { toolExecutionPolicy } from "../tools/index.ts";
 import {
+  diagnoseFileContent,
+  formatDiagnosticsSummary,
+  formatEditAnchorHints,
+} from "../diagnostics/index.ts";
+import {
   evaluatePlanModeGate,
   type PlanModeState,
   type WorkState,
@@ -496,6 +501,13 @@ function approvalArguments(
       sha256: sha256Text(canonicalJson(params2)),
     };
   }
+  if (tool === "web_search" && typeof params["query"] === "string") {
+    const params2 = { query: redactOutputPreview(params["query"]) };
+    return {
+      preview: boundedApprovalPreview(JSON.stringify(params2, null, 2)),
+      sha256: sha256Text(canonicalJson(params2)),
+    };
+  }
   if (!isMcpProductTool(tool)) {
     return null;
   }
@@ -522,7 +534,7 @@ function coveragePreview(
   if (tool === "write" || tool === "edit") {
     return "path and write-set policy enforced; file tools do not run inside srt";
   }
-  if (tool === "web_fetch") {
+  if (tool === "web_fetch" || tool === "web_search") {
     return "in-process request; approving grants only this call; the domain deny list and private-host guard still apply";
   }
   return undefined;
@@ -537,7 +549,7 @@ function approvalReason(
   if (policy.approval_class !== "network") {
     return reason;
   }
-  if (policy.match.tool === "web_fetch") {
+  if (policy.match.tool === "web_fetch" || policy.match.tool === "web_search") {
     return `${reason}; approving grants only this request, and the domain deny list still applies`;
   }
   if (allowedDomains === undefined || allowedDomains.length === 0) {
@@ -1986,9 +1998,58 @@ export async function wrapToolDefinition(
             await options.onMemorySearch?.(retrieval);
           }
         }
-        return artifact === null
-          ? result
-          : resultWithBoundedOutput(result, visibleOutput);
+        let finalResult =
+          artifact === null
+            ? result
+            : resultWithBoundedOutput(result, visibleOutput);
+        if (
+          isMutation &&
+          target !== null &&
+          outcome === "completed" &&
+          after !== null &&
+          after.exists
+        ) {
+          const diagnostics = diagnoseFileContent(
+            target,
+            after.bytes.toString("utf8"),
+          );
+          if (diagnostics.length > 0) {
+            const summary = formatDiagnosticsSummary(label, diagnostics);
+            finalResult = {
+              ...finalResult,
+              content: [
+                ...(finalResult.content ?? []),
+                { type: "text", text: `\n${summary}` },
+              ],
+            };
+          }
+        } else if (
+          definition.name === "edit" &&
+          outcome !== "completed" &&
+          before !== null &&
+          before.exists
+        ) {
+          const searchText =
+            typeof params["oldText"] === "string"
+              ? params["oldText"]
+              : typeof params["old_string"] === "string"
+                ? params["old_string"]
+                : "";
+          const hints =
+            searchText.length > 0
+              ? formatEditAnchorHints(before.bytes.toString("utf8"), searchText)
+              : null;
+          if (hints !== null) {
+            finalResult = {
+              ...finalResult,
+              content: [
+                ...(finalResult.content ?? []),
+                { type: "text", text: `\n${hints}` },
+              ],
+            };
+          }
+        }
+        return finalResult;
       } finally {
         releaseMutation?.();
       }

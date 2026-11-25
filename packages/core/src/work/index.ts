@@ -47,6 +47,8 @@ const PLAN_MODE_READ_ONLY_TOOLS = new Set([
   "search",
   "plan",
   "todo",
+  "ask_user",
+  "subagent",
   "memory_search",
   "list_mcp_resources",
   "list_mcp_resource_templates",

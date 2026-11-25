@@ -120,9 +120,11 @@ function toolEffects(tool: string): Effects {
     case "read":
     case "search":
     case "memory_search":
+    case "subagent":
       return { fs: "read", shell: false, network: false };
     case "plan":
     case "todo":
+    case "ask_user":
       return { fs: "none", shell: false, network: false };
     case "write":
     case "edit":
@@ -135,6 +137,7 @@ function toolEffects(tool: string): Effects {
     case "list_mcp_resource_templates":
     case "read_mcp_resource":
     case "web_fetch":
+    case "web_search":
       return { fs: "none", shell: false, network: true };
     default:
       return { fs: "unknown", shell: false, network: false };
@@ -158,10 +161,15 @@ export function coverageFor(
   if (tool === "read" || tool === "search" || tool === "memory_search") {
     return "app-layer";
   }
-  if (tool === "web_fetch") {
+  if (tool === "web_fetch" || tool === "web_search") {
     return "app-layer";
   }
-  if (tool === "plan" || tool === "todo") {
+  if (
+    tool === "plan" ||
+    tool === "todo" ||
+    tool === "ask_user" ||
+    tool === "subagent"
+  ) {
     return "app-layer";
   }
   if (tool === "write" || tool === "edit") {
@@ -1956,13 +1964,60 @@ function toolDecision(request: PolicyRequest): {
       approvalClass: check.approvalClass,
     };
   }
-  if (request.tool === "web_fetch") {
+  if (request.tool === "web_fetch" || request.tool === "web_search") {
     return {
       decision: "allow",
       reason:
-        "public web reads are allowed; the fetch tool still enforces private-host and deny-list guards",
+        "public web reads are allowed; the tool still enforces private-host and deny-list guards",
       rule: {
-        id: "web.fetch.allow",
+        id:
+          request.tool === "web_search"
+            ? "web.search.allow"
+            : "web.fetch.allow",
+        tool: request.tool,
+        decision: "allow",
+      },
+      pathTarget: null,
+      approvalClass: "routine",
+    };
+  }
+  if (request.tool === "ask_user") {
+    if (request.mode === "worker" || request.mode === "headless") {
+      return {
+        decision: "deny",
+        reason: "non-interactive sessions cannot prompt the user",
+        rule: null,
+        pathTarget: null,
+        approvalClass: "unknown",
+      };
+    }
+    return {
+      decision: "allow",
+      reason: "interactive user clarification is allowed",
+      rule: {
+        id: "ask_user.allow",
+        tool: request.tool,
+        decision: "allow",
+      },
+      pathTarget: null,
+      approvalClass: "routine",
+    };
+  }
+  if (request.tool === "subagent") {
+    if (request.mode === "worker") {
+      return {
+        decision: "deny",
+        reason: "depth-1 workers cannot spawn nested subagents",
+        rule: null,
+        pathTarget: null,
+        approvalClass: "unknown",
+      };
+    }
+    return {
+      decision: "allow",
+      reason: "read-only subagent delegation is allowed",
+      rule: {
+        id: "subagent.read_only.allow",
         tool: request.tool,
         decision: "allow",
       },

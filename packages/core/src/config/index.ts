@@ -251,6 +251,9 @@ const TOOL_NAMES = [
   "memory_search",
   "exec",
   "web_fetch",
+  "web_search",
+  "ask_user",
+  "subagent",
   "plan",
   "todo",
 ] as const;
@@ -464,6 +467,9 @@ export function defaultConfig(): CodepunkConfig {
         "search",
         "memory_search",
         "web_fetch",
+        "web_search",
+        "ask_user",
+        "subagent",
         "plan",
         "todo",
       ],
@@ -1827,6 +1833,58 @@ export async function writeUserThinkingSelection(
       ),
       0o600,
     );
+    return filePath;
+  });
+}
+
+export interface TuiPreferencesUpdate {
+  hideThinking?: boolean;
+  header?: boolean;
+  status?: boolean;
+  widgets?: boolean;
+  compaction?: CompactionMode;
+}
+
+export async function writeUserTuiPreferences(
+  paths: ProjectPaths,
+  update: TuiPreferencesUpdate,
+): Promise<string> {
+  const tuiValues = new Map<string, string>();
+  if (update.hideThinking !== undefined) {
+    tuiValues.set("hide_thinking", update.hideThinking ? "true" : "false");
+  }
+  if (update.header !== undefined) {
+    tuiValues.set("header", update.header ? "true" : "false");
+  }
+  if (update.status !== undefined) {
+    tuiValues.set("status", update.status ? "true" : "false");
+  }
+  if (update.widgets !== undefined) {
+    tuiValues.set("widgets", update.widgets ? "true" : "false");
+  }
+  const contextValues = new Map<string, string>();
+  if (update.compaction !== undefined) {
+    if (update.compaction !== "auto" && update.compaction !== "manual") {
+      throw new ConfigError(
+        "context.compaction must be auto or manual",
+        "context.compaction",
+      );
+    }
+    contextValues.set("compaction", tomlString(update.compaction));
+  }
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
+  if (tuiValues.size === 0 && contextValues.size === 0) {
+    return filePath;
+  }
+  return withUserConfigLock(paths, async () => {
+    let content = await readUserConfigContent(filePath);
+    if (tuiValues.size > 0) {
+      content = upsertSectionValues(content, "tui", tuiValues);
+    }
+    if (contextValues.size > 0) {
+      content = upsertSectionValues(content, "context", contextValues);
+    }
+    await atomicWriteFile(filePath, content, 0o600);
     return filePath;
   });
 }

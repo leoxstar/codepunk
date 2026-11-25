@@ -166,10 +166,13 @@ export interface RuntimeOptions {
   projectTrustSource?: WorkspaceTrustSource;
   allowMissingModel?: boolean;
   disableMcp?: boolean;
+  deferMcp?: boolean;
   disableSkills?: boolean;
   disablePlugins?: boolean;
   bare?: boolean;
   approvalChannel?: ApprovalChannel | null;
+  questionChannel?: import("../tools/ask-user.ts").AskUserChannel | null;
+  subagentExecutor?: import("../tools/subagent.ts").SubagentToolExecutor | null;
   bindMode?: "print" | "tui";
   runId?: string;
   additionalExtensionFactories?: readonly InlineExtension[];
@@ -253,6 +256,9 @@ export interface CodepunkRuntime {
     memory: boolean;
   };
   mcpServers: readonly string[];
+  mcpStatus: "ready" | "connecting" | "skipped" | "failed";
+  mcpReady: Promise<void>;
+  mcpStartupWarnings: readonly string[];
   workspaceTrust: WorkspaceTrust;
   memory: MemoryManagerType;
   session: SessionStoreType;
@@ -470,6 +476,8 @@ function effectiveTools(
     // caller cannot observe or continue.
     requested.delete("plan");
     requested.delete("todo");
+    requested.delete("ask_user");
+    requested.delete("subagent");
     if (headlessPolicy === null) {
       requested.delete("shell");
       requested.delete("bash");
@@ -1086,26 +1094,26 @@ async function createRuntimeInner(
   }
   const mcpStarts: McpServerStart[] = [];
   let mcp: McpBundle;
+  let mcpStatus: CodepunkRuntime["mcpStatus"] = "ready";
+  let mcpReady: Promise<void> = Promise.resolve();
+  let startDeferredMcp = false;
+  const mcpStartupWarnings: string[] = [];
+  const hasMcpConfig = await fs
+    .access(path.join(paths.home, "mcp.toml"))
+    .then(() => true)
+    .catch(() => false);
   if (disableMcp) {
     mcp = emptyMcpBundle();
-    if (
-      await fs
-        .access(path.join(paths.home, "mcp.toml"))
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    mcpStatus = "skipped";
+    if (hasMcpConfig) {
       loadedConfig.warnings.push(
         `MCP is disabled by ${bare ? "--bare" : "--no-mcp"}; user MCP servers are not started in this session`,
       );
     }
   } else if (selectedModel === undefined) {
     mcp = emptyMcpBundle();
-    if (
-      await fs
-        .access(path.join(paths.home, "mcp.toml"))
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    mcpStatus = "skipped";
+    if (hasMcpConfig) {
       loadedConfig.warnings.push(
         "MCP servers are not started because no model is selected; select a model with /model and run /reload in the TUI (or restart) to load MCP tools",
       );
@@ -1115,16 +1123,16 @@ async function createRuntimeInner(
     // already have run arbitrary code at startup. Do not start an uncovered
     // process the session can never be allowed to use.
     mcp = emptyMcpBundle();
-    if (
-      await fs
-        .access(path.join(paths.home, "mcp.toml"))
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    mcpStatus = "skipped";
+    if (hasMcpConfig) {
       loadedConfig.warnings.push(
         "read-only autonomy does not start MCP servers; leave read-only and run /reload in the TUI (or restart) to start them",
       );
     }
+  } else if (options.deferMcp === true && hasMcpConfig) {
+    mcp = emptyMcpBundle();
+    mcpStatus = "connecting";
+    startDeferredMcp = true;
   } else {
     try {
       mcp = await loadMcpTools({
@@ -1358,6 +1366,12 @@ async function createRuntimeInner(
       },
       onRunEnd: runEnded,
       extraTools: [...mcp.tools, ...mcp.resourceTools],
+      ...(options.questionChannel !== undefined
+        ? { questionChannel: options.questionChannel }
+        : {}),
+      ...(options.subagentExecutor !== undefined
+        ? { subagentExecutor: options.subagentExecutor }
+        : {}),
       ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
     });
   } catch (error) {
@@ -1417,6 +1431,53 @@ async function createRuntimeInner(
   }
   for (const start of mcpStarts) {
     await host.recordEvent("mcp/server_start", start);
+  }
+  let runtimeDisposed = false;
+  if (startDeferredMcp) {
+    mcpReady = (async () => {
+      const deferredStarts: McpServerStart[] = [];
+      try {
+        const next = await loadMcpTools({
+          paths,
+          strict: false,
+          onServerStart: (start) => {
+            deferredStarts.push(start);
+          },
+        });
+        if (runtimeDisposed) {
+          await next.close().catch(() => undefined);
+          return;
+        }
+        await host.replaceExtraTools([...next.tools, ...next.resourceTools]);
+        await host.session.reload();
+        if (runtimeDisposed) {
+          await next.close().catch(() => undefined);
+          return;
+        }
+        const previous = mcp;
+        mcp = next;
+        await previous.close().catch(() => undefined);
+        for (const start of deferredStarts) {
+          await host
+            .recordEvent("mcp/server_start", start)
+            .catch(() => undefined);
+        }
+        for (const failure of next.failures) {
+          mcpStartupWarnings.push(
+            `MCP server ${failure.server} skipped: ${failure.message}`,
+          );
+        }
+        mcpStatus =
+          next.failures.length > 0 && next.servers.length === 0
+            ? "failed"
+            : "ready";
+      } catch (error) {
+        mcpStatus = "failed";
+        mcpStartupWarnings.push(
+          `MCP startup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    })();
   }
 
   const applyApprovalMode = (
@@ -1536,6 +1597,15 @@ async function createRuntimeInner(
     },
     get mcpServers() {
       return mcp.servers;
+    },
+    get mcpStatus() {
+      return mcpStatus;
+    },
+    get mcpReady() {
+      return mcpReady;
+    },
+    get mcpStartupWarnings() {
+      return mcpStartupWarnings;
     },
     workspaceTrust,
     memory,
@@ -2033,6 +2103,7 @@ async function createRuntimeInner(
       };
     },
     async dispose() {
+      runtimeDisposed = true;
       let hookFailure: unknown = null;
       const sandboxClosed = closePendingSandbox();
       try {

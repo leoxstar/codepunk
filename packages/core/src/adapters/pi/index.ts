@@ -151,6 +151,9 @@ export interface CreatePiHostOptions extends ToolWrapOptions {
   onRunEnd?: (runId: string) => Promise<void> | void;
   additionalExtensionFactories?: readonly InlineExtension[];
   extraTools?: readonly ToolDefinition<any, any, any>[];
+  questionChannel?: import("../../tools/ask-user.ts").AskUserChannel | null;
+  subagentExecutor?:
+    import("../../tools/subagent.ts").SubagentToolExecutor | null;
   extraInstruction?: string;
   runtimeFacts?: {
     now: Date | (() => Date);
@@ -1986,6 +1989,12 @@ export async function createPiHost(
           : {}),
         ...(options.networkDeniedDomains !== undefined
           ? { networkDeny: options.networkDeniedDomains }
+          : {}),
+        ...(options.questionChannel !== undefined
+          ? { questionChannel: options.questionChannel }
+          : {}),
+        ...(options.subagentExecutor !== undefined
+          ? { subagentExecutor: options.subagentExecutor }
           : {}),
         memory: options.memory ?? null,
         work,

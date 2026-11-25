@@ -52,6 +52,9 @@ const TOOL_NAMES = new Set([
   "memory_search",
   "exec",
   "web_fetch",
+  "web_search",
+  "ask_user",
+  "subagent",
   "plan",
   "todo",
 ]);

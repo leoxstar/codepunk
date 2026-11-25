@@ -207,6 +207,35 @@ export {
   type WorkToolOptions,
 } from "./tools/index.ts";
 export {
+  ASK_USER_TOOL_NAME,
+  createAskUserTool,
+  type AskUserAnswer,
+  type AskUserChannel,
+  type AskUserOption,
+  type AskUserRequest,
+} from "./tools/ask-user.ts";
+export {
+  SUBAGENT_TOOL_NAME,
+  createSubagentTool,
+  type SubagentToolExecutor,
+  type SubagentToolOutcome,
+  type SubagentToolRequest,
+} from "./tools/subagent.ts";
+export {
+  WEB_SEARCH_TOOL_NAME,
+  createWebSearchTool,
+  parseDuckDuckGoHtml,
+  type WebSearchResultItem,
+  type WebSearchToolOptions,
+} from "./websearch/index.ts";
+export {
+  diagnoseFileContent,
+  formatDiagnosticsSummary,
+  formatEditAnchorHints,
+  lineAnchorHash,
+  type FileDiagnostic,
+} from "./diagnostics/index.ts";
+export {
   createPlanTool,
   createTodoTool,
   evaluatePlanModeGate,
@@ -301,7 +330,9 @@ export {
   writeUserModelSelection,
   writeUserPluginsEnabled,
   writeUserThinkingSelection,
+  writeUserTuiPreferences,
   type ApprovalMode,
+  type TuiPreferencesUpdate,
   type CodepunkConfig,
   type CompactionMode,
   type ConfigOverrides,

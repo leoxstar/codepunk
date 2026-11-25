@@ -13,6 +13,9 @@ import {
 import { createMemorySearchTool, type MemoryManager } from "../memory/index.ts";
 import { createSearchTool } from "../search/index.ts";
 import { createWebFetchTool } from "../webfetch/index.ts";
+import { createWebSearchTool } from "../websearch/index.ts";
+import { createAskUserTool, type AskUserChannel } from "./ask-user.ts";
+import { createSubagentTool, type SubagentToolExecutor } from "./subagent.ts";
 import {
   createPlanTool,
   createTodoTool,
@@ -34,6 +37,9 @@ export const CODEPUNK_TOOL_NAMES = [
   "search",
   "memory_search",
   "web_fetch",
+  "web_search",
+  "ask_user",
+  "subagent",
   "plan",
   "todo",
 ] as const;
@@ -96,6 +102,24 @@ export const TOOL_EXECUTION_POLICIES: Readonly<
     sideEffect: "external",
     idempotent: false,
     resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  web_search: {
+    sideEffect: "external",
+    idempotent: true,
+    resultBudgetBytes: 128 * 1_024,
+    retry: "never",
+  },
+  ask_user: {
+    sideEffect: "none",
+    idempotent: false,
+    resultBudgetBytes: 16 * 1_024,
+    retry: "never",
+  },
+  subagent: {
+    sideEffect: "read",
+    idempotent: false,
+    resultBudgetBytes: 64 * 1_024,
     retry: "never",
   },
   plan: {
@@ -174,8 +198,11 @@ export function createCodepunkToolDefinitions(
     workspaceRoot?: string;
     additionalRoots?: readonly string[];
     work?: WorkToolOptions | null;
-    /** Operator-denied domains applied to every web_fetch call. */
+    /** Operator-denied domains applied to every web_fetch and web_search call. */
     networkDeny?: readonly string[];
+    questionChannel?: AskUserChannel | null;
+    subagentExecutor?: SubagentToolExecutor | null;
+    webSearchEndpoint?: string;
   } = {},
 ): ToolDefinition<any, any, any>[] {
   const defaultEnabled: string[] = [
@@ -234,7 +261,21 @@ export function createCodepunkToolDefinitions(
         ? {}
         : { deniedDomains: options.networkDeny },
     ),
+    createWebSearchTool({
+      ...(options.networkDeny === undefined
+        ? {}
+        : { deniedDomains: options.networkDeny }),
+      ...(options.webSearchEndpoint === undefined
+        ? {}
+        : { endpoint: options.webSearchEndpoint }),
+    }),
   );
+  if (options.mode !== "worker" && options.mode !== "headless") {
+    all.push(
+      createAskUserTool(options.questionChannel ?? null),
+      createSubagentTool(options.subagentExecutor ?? null),
+    );
+  }
   if (options.work !== null && options.work !== undefined) {
     all.push(
       createPlanTool({
