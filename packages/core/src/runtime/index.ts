@@ -956,7 +956,14 @@ async function createRuntimeInner(
       });
     const pendingSandbox = new DeferredSandbox(sandboxReady, {
       cancelPendingInitialization: () => {
-        void SandboxManager.reset();
+        // On Linux srt's initialize() spawns a socat bridge. A reset() that
+        // lands while that bridge is being created is not visible to the
+        // library's cleanup, so the bridge survives and keeps the process
+        // alive. Let initialization settle and close the provider through
+        // DeferredSandbox's late-close path instead.
+        if (process.platform !== "linux") {
+          void SandboxManager.reset();
+        }
       },
     });
     sandbox = pendingSandbox;
