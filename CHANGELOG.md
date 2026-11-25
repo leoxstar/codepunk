@@ -16,6 +16,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/plan <request>` enters read-only plan mode and submits the request as a
   planning round; `/plan` without arguments still shows the recorded plan.
 
+### Changed
+
+- The TUI now uses Pi's built-in cwd/model/context footer plus one compact
+  Codepunk status line. `tui.statusline` defaults to `policy`, adding `budget`
+  only when a limit is configured; the duplicated startup status block is gone.
+
 ## [0.1.0]
 
 ### Added
