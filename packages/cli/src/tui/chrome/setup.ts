@@ -21,7 +21,10 @@ import {
   resumeSession,
   startNewSession,
 } from "../commands/session.ts";
-import { configurePermissions } from "../commands/permission-actions.ts";
+import {
+  configurePermissions,
+  showSettingsMenu,
+} from "../commands/permission-actions.ts";
 import { configureTrust } from "../commands/trust-actions.ts";
 import { promptForMissingModel } from "../format/model.ts";
 import { sessionSummary } from "../format/status-summary.ts";
@@ -236,16 +239,11 @@ async function handleConfigSlashCommand(
   }
   if (
     isSlashCommand(trimmed, "/settings") ||
+    isSlashCommand(trimmed, "/setting") ||
     isSlashCommand(trimmed, "/config")
   ) {
-    context.ui.notify(
-      [
-        "codepunk settings are file-backed.",
-        `config: ${runtime.paths.home}/config.toml`,
-        "Use /permissions for approval, autonomy, and sandbox; /model for the model.",
-      ].join("\n"),
-      "info",
-    );
+    const argument = trimmed.replace(/^\/(?:settings?|config)/u, "").trim();
+    await showSettingsMenu(state, context, argument);
     return true;
   }
   if (isSlashCommand(trimmed, "/scoped-models")) {

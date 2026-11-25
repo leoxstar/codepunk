@@ -391,12 +391,16 @@ export async function configurePermissions(
     return;
   }
   if (argument.length === 0) {
+    await showPermissionsMenu(state, context);
+    return;
+  }
+  const trimmed = argument.trim();
+  if (trimmed === "status") {
     if (!(await showPermissionPanel(runtime, context))) {
       context.ui.notify(permissionSummary(runtime), "info");
     }
     return;
   }
-  const trimmed = argument.trim();
   if (trimmed === "rules") {
     if (!(await showScopedRulesTable(runtime, context))) {
       context.ui.notify(await scopedRulesSummary(runtime), "info");
@@ -459,5 +463,137 @@ export async function configurePermissions(
   }
   if (state.context !== null) {
     setupChrome(state, state.context);
+  }
+}
+
+const PERMISSION_GROUPS = [
+  "approval",
+  "autonomy",
+  "profile",
+  "sandbox",
+  "filesystem",
+] as const;
+
+function permissionMenuRows(runtime: CodepunkRuntime): {
+  readonly labels: string[];
+  readonly groups: readonly string[];
+} {
+  const labels = PERMISSION_GROUPS.map((group) => {
+    const picker = permissionPicker(runtime, group);
+    return `${group.padEnd(12)} ${picker?.current ?? ""}`.trimEnd();
+  });
+  return {
+    labels: [...labels, "Scoped rules", "Close"],
+    groups: [...PERMISSION_GROUPS],
+  };
+}
+
+async function pickPermissionGroup(
+  state: TuiState,
+  context: ExtensionContext,
+  group: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return;
+  }
+  if (group === "rules") {
+    if (!(await showScopedRulesTable(runtime, context))) {
+      context.ui.notify(await scopedRulesSummary(runtime), "info");
+    }
+    return;
+  }
+  const picker = permissionPicker(runtime, group);
+  if (picker === null) {
+    return;
+  }
+  const labels = picker.values.map(
+    (candidate) =>
+      `${candidate === picker.current ? "\u2713" : " "} ${candidate}`,
+  );
+  const selected = await context.ui.select(`Permission ${group}`, labels);
+  if (selected === undefined) {
+    return;
+  }
+  const chosen = picker.values[labels.indexOf(selected)];
+  if (chosen !== undefined) {
+    await configurePermissions(state, context, `${group} ${chosen}`);
+  }
+}
+
+/**
+ * The bare `/permissions` entry. It is a real selector rather than a status
+ * dump so a TUI user can change a mode without remembering the subcommand
+ * grammar.
+ */
+export async function showPermissionsMenu(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  for (;;) {
+    const { labels, groups } = permissionMenuRows(runtime);
+    const selected = await context.ui.select("codepunk permissions", labels);
+    if (selected === undefined || selected === "Close") {
+      return;
+    }
+    if (selected === "Scoped rules") {
+      await pickPermissionGroup(state, context, "rules");
+      continue;
+    }
+    const index = labels.indexOf(selected);
+    const group = groups[index];
+    if (group === undefined) {
+      return;
+    }
+    await pickPermissionGroup(state, context, group);
+  }
+}
+
+/**
+ * `/settings` opens the same selector surface; config paths and the status
+ * panel stay available as explicit entries instead of being the only answer.
+ */
+export async function showSettingsMenu(
+  state: TuiState,
+  context: ExtensionContext,
+  argument: string,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    context.ui.notify("codepunk runtime is not ready", "error");
+    return;
+  }
+  const trimmed = argument.trim();
+  if (trimmed === "permissions" || trimmed === "permission") {
+    await showPermissionsMenu(state, context);
+    return;
+  }
+  for (;;) {
+    const selected = await context.ui.select("codepunk settings", [
+      "Permissions",
+      "Config paths",
+      "Close",
+    ]);
+    if (selected === undefined || selected === "Close") {
+      return;
+    }
+    if (selected === "Permissions") {
+      await showPermissionsMenu(state, context);
+      continue;
+    }
+    context.ui.notify(
+      [
+        "codepunk settings are file-backed.",
+        `config: ${runtime.paths.home}/config.toml`,
+        "Use /permissions to change approval, autonomy, sandbox, and filesystem modes.",
+        "Use /model for the model and /thinking for the reasoning level.",
+      ].join("\n"),
+      "info",
+    );
   }
 }

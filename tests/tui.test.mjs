@@ -1010,7 +1010,12 @@ test("untrusted TUI approval selector", async () => {
   assert.equal(deniedScope.answer, "allow");
   assert.equal(deniedScope.scope, "once");
   assert.equal(title.includes("workspace is untrusted"), true);
-  assert.deepEqual(options, ["Allow once", "Deny", "Deny with guidance"]);
+  assert.deepEqual(options, [
+    "Allow once",
+    "Allow for session",
+    "Deny",
+    "Deny with guidance",
+  ]);
 
   channel.setWorkspaceTrusted(true);
   await channel.ask(request);
@@ -1181,7 +1186,7 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
-  assert.match(help, /\/config, \/settings\s+show file-backed/u);
+  assert.match(help, /\/settings, \/setting\s+open interactive settings/u);
   assert.match(help, /\/diff\s+show staged and unstaged/u);
   assert.match(help, /\/commit \[message\]\s+review and create/u);
   assert.match(help, /\/mcp \[list\|add \[name\]\|remove/u);
@@ -3849,7 +3854,7 @@ test("a real pty reloads config in place and preserves state on invalid input", 
       );
 
       const permissionsMark = session.output().length;
-      await runCommandAfter(session, "/permissions", "approvals: deny");
+      await runCommandAfter(session, "/permissions status", "approvals: deny");
       const permissions = session.output().slice(permissionsMark);
       assert.match(permissions, /codepunk permissions/u);
       assert.match(permissions, /Profile/u);
@@ -3869,7 +3874,7 @@ test("a real pty reloads config in place and preserves state on invalid input", 
       );
 
       const preservedMark = session.output().length;
-      await runCommandAfter(session, "/permissions", "approvals: deny");
+      await runCommandAfter(session, "/permissions status", "approvals: deny");
       assert.match(
         session.output().slice(preservedMark),
         /autonomy: read-only/u,
@@ -5880,7 +5885,7 @@ test("a real pty shows and persists permission modes", async () => {
     try {
       await waitForOutput(session, "codepunk · auto/auto", "startup");
       const summaryMark = session.output().length;
-      await runCommandAfter(session, "/permissions", "profile: custom");
+      await runCommandAfter(session, "/permissions status", "profile: custom");
       assert.match(
         session.output().slice(summaryMark),
         /codepunk permissions/u,
@@ -5893,6 +5898,12 @@ test("a real pty shows and persists permission modes", async () => {
         session.output().slice(summaryMark),
         /current shell: explicit-unsandboxed/u,
       );
+      await closeOverlay(session);
+      const menuMark = session.output().length;
+      await runCommandAfter(session, "/permissions", "codepunk permissions");
+      assert.match(session.output().slice(menuMark), /approval\s+ask/u);
+      assert.match(session.output().slice(menuMark), /Scoped rules/u);
+      assert.match(session.output().slice(menuMark), /Close/u);
       await closeOverlay(session);
       const emptyRulesMark = session.output().length;
       await runCommandAfter(
@@ -6005,7 +6016,11 @@ test("a real pty shows and persists permission modes", async () => {
       assert.match(profiled, /profile = "read-only"/u);
       assert.match(profiled, /mode = "required"/u);
       const finalPermissionsMark = session.output().length;
-      await runCommandAfter(session, "/permissions", "profile: read-only");
+      await runCommandAfter(
+        session,
+        "/permissions status",
+        "profile: read-only",
+      );
       assert.match(
         session.output().slice(finalPermissionsMark),
         /autonomy: read-only/u,
@@ -6171,7 +6186,9 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/memory search user preference",
         "No memory records matched.",
       );
-      await runCommandAfter(session, "/permissions", "approvals: ask");
+      await runCommandAfter(session, "/permissions", "codepunk permissions");
+      await closeOverlay(session);
+      await runCommandAfter(session, "/permissions status", "approvals: ask");
       await closeOverlay(session);
       await runCommandAfter(session, "/model", "No authenticated models.");
       assert.match(session.output(), /Add a provider first:/u);
@@ -6181,11 +6198,14 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/model test/fake",
         "No authenticated models.",
       );
+      await runCommandAfter(session, "/settings", "codepunk settings");
+      await closeOverlay(session);
       await runCommandAfter(
         session,
-        "/settings",
-        "codepunk settings are file-backed",
+        "/setting permissions",
+        "codepunk permissions",
       );
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/scoped-models",

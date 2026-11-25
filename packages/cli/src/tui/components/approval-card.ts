@@ -15,7 +15,6 @@ export interface ApprovalChoice {
   readonly decision: "allow" | "deny";
   readonly scope: "once" | "session" | "persistent";
   readonly guidance?: boolean;
-  readonly requiresTrust?: boolean;
 }
 
 export interface ApprovalCardOptions {
@@ -54,14 +53,14 @@ export class ApprovalCard implements Component {
     this.theme = theme;
     this.keybindings = keybindings;
     this.done = done;
-    const canReuseExact =
+    const canPersistExact =
       options.request.argv !== undefined &&
       options.request.argv.length > 0 &&
       options.request.cwd !== undefined;
     this.choices = options.choices.filter((choice) =>
-      canReuseExact
-        ? choice.requiresTrust !== true || options.workspaceTrusted
-        : choice.scope === "once" && choice.guidance !== true,
+      choice.scope === "persistent"
+        ? canPersistExact && options.workspaceTrusted
+        : true,
     );
     this.selectedIndex = 0;
   }
@@ -167,7 +166,7 @@ export class ApprovalCard implements Component {
     body.push("");
     if (!this.options.workspaceTrusted) {
       body.push(
-        'workspace is untrusted; only "Allow once" is available for this call.',
+        "workspace is untrusted; session approval stays in memory, persistent rules need /trust grant.",
       );
     }
     for (const [index, view] of this.choiceViews().entries()) {

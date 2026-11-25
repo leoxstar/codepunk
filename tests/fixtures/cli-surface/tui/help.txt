@@ -14,7 +14,9 @@ Models and providers
   /roles [status]            show role models and subagent model pools
 
 Permissions and work
-  /permissions               show status; /permissions <group> opens a picker
+  /permissions               open the interactive permission menu
+  /permissions status        show the read-only permission summary
+  /permissions <group>       jump straight to one picker
   /permissions reviewer [off|model [provider/model]|timeout <ms>]  configure auto-mode review
   /permissions sandbox network [allow|deny <domain>...|clear]  set the sandbox egress lists
   /permissions rules         list persisted exact-command rules
@@ -48,7 +50,7 @@ Permissions and work
 
 Project
   /init [--update]           create or update AGENTS.md from repository evidence
-  /config, /settings        show file-backed configuration paths
+  /settings, /setting       open interactive settings; permissions and config paths
   /diff                      show staged and unstaged working tree changes
   /commit [message]          review and create a Git commit as a human action
   /undo [count]              restore recent Codepunk write/edit changes

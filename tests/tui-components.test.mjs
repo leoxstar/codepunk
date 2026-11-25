@@ -391,14 +391,12 @@ const APPROVAL_CHOICES = [
     label: "Allow for session",
     decision: "allow",
     scope: "session",
-    requiresTrust: true,
   },
   {
     key: "p",
     label: "Always allow exact",
     decision: "allow",
     scope: "persistent",
-    requiresTrust: true,
   },
   { key: "d", label: "Deny", decision: "deny", scope: "once" },
   {
@@ -504,18 +502,20 @@ test("ApprovalCard single keys and persistent confirmation", () => {
   assert.equal(result.scope, "persistent");
 });
 
-test("ApprovalCard hides session and persistent choices when untrusted", () => {
+test("ApprovalCard keeps session but hides persistent when untrusted", () => {
   let result = "unset";
   const card = createCard({
     trusted: false,
     onDone: (choice) => (result = choice),
   });
   const text = stripTerminalSequences(card.render(80).join("\n"));
-  assert.doesNotMatch(text, /Allow for session/u);
+  assert.match(text, /Allow for session/u);
   assert.doesNotMatch(text, /Always allow exact/u);
   assert.match(text, /workspace is untrusted/u);
   card.handleInput("s");
-  assert.equal(result, "unset");
+  assert.equal(result.key, "s");
+  assert.equal(result.scope, "session");
+  result = "unset";
   card.handleInput("p");
   assert.equal(result, "unset");
   card.handleInput("a");
@@ -549,7 +549,7 @@ test("ApprovalCard arrows move the selection and escape cancels", () => {
   assert.equal(result, null);
 });
 
-test("ApprovalCard offers only Allow once and Deny without reusable argv", () => {
+test("ApprovalCard offers session but not persistent without reusable argv", () => {
   let result = null;
   const card = createCard({
     request: approvalRequest({ argv: undefined, cwd: undefined }),
@@ -558,9 +558,9 @@ test("ApprovalCard offers only Allow once and Deny without reusable argv", () =>
   const text = stripTerminalSequences(card.render(80).join("\n"));
   assert.match(text, /a  Allow once/u);
   assert.match(text, /d  Deny/u);
-  assert.doesNotMatch(text, /Allow for session/u);
+  assert.match(text, /Allow for session/u);
   assert.doesNotMatch(text, /Always allow exact/u);
-  assert.doesNotMatch(text, /Deny with guidance/u);
+  assert.match(text, /Deny with guidance/u);
   assert.match(text, /> a  Allow once/u);
   card.handleInput("\r");
   assert.equal(result.key, "a");

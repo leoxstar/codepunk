@@ -15,14 +15,12 @@ const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
     label: "Allow for session",
     decision: "allow",
     scope: "session",
-    requiresTrust: true,
   },
   {
     key: "p",
     label: "Always allow exact",
     decision: "allow",
     scope: "persistent",
-    requiresTrust: true,
   },
   { key: "d", label: "Deny", decision: "deny", scope: "once" },
   {
@@ -77,14 +75,14 @@ export class TuiApprovalChannel implements ApprovalChannel {
     if (!this.isTTY || this.context === null) {
       return null;
     }
-    const canReuseExact =
+    const canPersistExact =
       request.argv !== undefined &&
       request.argv.length > 0 &&
       request.cwd !== undefined;
     const choices = APPROVAL_CHOICES.filter((choice) =>
-      canReuseExact
-        ? choice.requiresTrust !== true || this.workspaceTrusted
-        : choice.scope === "once" && choice.guidance !== true,
+      choice.scope === "persistent"
+        ? canPersistExact && this.workspaceTrusted
+        : true,
     );
     const inline = await this.askInline(request, choices);
     if (inline.used) {
@@ -175,7 +173,7 @@ export class TuiApprovalChannel implements ApprovalChannel {
     const options = choices.map((choice) => choice.label);
     const prompt = this.workspaceTrusted
       ? formatApproval(request)
-      : `${formatApproval(request)}\n\nworkspace is untrusted; only "Allow once" is available for this call.`;
+      : `${formatApproval(request)}\n\nworkspace is untrusted; session approval stays in memory, persistent rules need /trust grant.`;
     while (true) {
       const selected = await ui.select(prompt, options);
       const choice = choices.find((candidate) => candidate.label === selected);
