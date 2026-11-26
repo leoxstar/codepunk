@@ -13,8 +13,13 @@
     "network_denied_domain": "pass",
     "network_redirect_denied": "pass",
     "network_request_budget": "pass",
-    "schema_compatibility": "pass"
+    "schema_compatibility": "pass",
+    "coding_edit_multi_hunk": "pass",
+    "coding_edit_indent_fallback": "pass",
+    "coding_edit_anchor_hints": "pass",
+    "coding_read_large_outline": "pass",
+    "coding_post_write_diagnostics": "pass"
   },
-  "min_passed": 12,
+  "min_passed": 17,
   "max_failed": 0
 }

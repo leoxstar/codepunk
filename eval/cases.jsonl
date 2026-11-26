@@ -10,3 +10,8 @@
 {"id":"network_redirect_denied","kind":"network","mode":"redirect_denied","expected":"pass"}
 {"id":"network_request_budget","kind":"network","mode":"request_budget","expected":"pass"}
 {"id":"schema_compatibility","kind":"schema_compatibility","expected":"pass"}
+{"id":"coding_edit_multi_hunk","kind":"coding_edit_multi_hunk","expected":"pass"}
+{"id":"coding_edit_indent_fallback","kind":"coding_edit_indent_fallback","expected":"pass"}
+{"id":"coding_edit_anchor_hints","kind":"coding_edit_anchor_hints","expected":"pass"}
+{"id":"coding_read_large_outline","kind":"coding_read_large_outline","expected":"pass"}
+{"id":"coding_post_write_diagnostics","kind":"coding_post_write_diagnostics","expected":"pass"}

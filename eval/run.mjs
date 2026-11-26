@@ -689,6 +689,177 @@ async function runSchemaCompatibility(paths) {
   );
 }
 
+async function runCodingEditMultiHunk(paths, ledger) {
+  const target = path.join(paths.workspace, "multi.ts");
+  const original = [
+    "export function alpha(): number {",
+    "  return 1;",
+    "}",
+    "",
+    "export function beta(): number {",
+    "  return 2;",
+    "}",
+    "",
+  ].join("\n");
+  await fs.writeFile(target, original, "utf8");
+  const checkpoints = new core.CheckpointStore({
+    sessionDir: path.join(paths.home, "session"),
+    workspaceRoot: paths.workspace,
+  });
+  const edit = await wrappedTool(paths, ledger, "edit", { checkpoints });
+  const result = await execute(edit, "eval-edit-multi-1", {
+    path: "multi.ts",
+    edits: [
+      { oldText: "return 1;", newText: "return 10;" },
+      { oldText: "return 2;", newText: "return 20;" },
+    ],
+  });
+  assert.notEqual(result.isError, true);
+  const updated = await fs.readFile(target, "utf8");
+  assert.match(updated, /return 10;/u);
+  assert.match(updated, /return 20;/u);
+  const entries = await checkpoints.list();
+  assert.equal(entries.length, 1);
+  await checkpoints.undo(1);
+  assert.equal(await fs.readFile(target, "utf8"), original);
+}
+
+async function runCodingEditIndentFallback(paths, ledger) {
+  const target = path.join(paths.workspace, "indent.ts");
+  const original = [
+    "export function calc(x: number): number {",
+    "    const doubled = x * 2;",
+    "    if (doubled > 10) {",
+    "        return doubled;",
+    "    }",
+    "    return x;",
+    "}",
+    "",
+  ].join("\n");
+  await fs.writeFile(target, original, "utf8");
+  const edit = await wrappedTool(paths, ledger, "edit");
+  const result = await execute(edit, "eval-edit-indent-1", {
+    path: "indent.ts",
+    edits: [
+      {
+        oldText:
+          "  const doubled = x * 2;\n  if (doubled > 10) {\n      return doubled;\n  }",
+        newText:
+          "  const doubled = x * 3;\n  if (doubled > 10) {\n      return doubled + 1;\n  }",
+      },
+    ],
+  });
+  assert.notEqual(result.isError, true);
+  const updated = await fs.readFile(target, "utf8");
+  assert.match(updated, /^    const doubled = x \* 3;$/mu);
+  assert.match(updated, /^        return doubled \+ 1;$/mu);
+  const text = result.content.map((b) => b.text ?? "").join("\n");
+  assert.match(text, /indentation-normalized/u);
+
+  const dupTarget = path.join(paths.workspace, "dup.ts");
+  await fs.writeFile(dupTarget, "    const v = 1;\n    const v = 1;\n", "utf8");
+  const dupResult = await execute(edit, "eval-edit-indent-dup", {
+    path: "dup.ts",
+    edits: [{ oldText: "  const v = 1;", newText: "  const v = 2;" }],
+  });
+  assert.equal(dupResult.isError, true);
+  assert.equal(
+    await fs.readFile(dupTarget, "utf8"),
+    "    const v = 1;\n    const v = 1;\n",
+  );
+}
+
+async function runCodingEditAnchorHints(paths, ledger) {
+  const target = path.join(paths.workspace, "anchor.ts");
+  await fs.writeFile(
+    target,
+    [
+      "export function greet(name: string): string {",
+      "  const greeting = `hello ${name}`;",
+      "  return greeting.toUpperCase();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const edit = await wrappedTool(paths, ledger, "edit");
+  const result = await execute(edit, "eval-edit-anchor-1", {
+    path: "anchor.ts",
+    edits: [
+      {
+        oldText: "const greeting = `hi ${name}`;",
+        newText: "const greeting = `hey ${name}`;",
+      },
+    ],
+  });
+  assert.equal(result.isError, true);
+  const text = result.content.map((b) => b.text ?? "").join("\n");
+  assert.match(text, /\[edit anchor hint/u);
+  assert.match(text, /L2:[0-9a-f]{4} \|/u);
+}
+
+async function runCodingReadLargeOutline(paths, ledger) {
+  const target = path.join(paths.workspace, "large.ts");
+  const lines = [];
+  for (let i = 0; i < 15; i += 1) {
+    lines.push(`export function handler${i}(value: number): number {`);
+    for (let j = 0; j < 28; j += 1) {
+      lines.push(`  const step_${i}_${j} = value + ${j};`);
+    }
+    lines.push(`  return value + ${i};`);
+    lines.push("}");
+    lines.push("");
+  }
+  await fs.writeFile(target, lines.join("\n"), "utf8");
+  const read = await wrappedTool(paths, ledger, "read");
+  const full = await execute(read, "eval-read-outline-1", { path: "large.ts" });
+  assert.notEqual(full.isError, true);
+  const fullText = full.content.map((b) => b.text ?? "").join("\n");
+  assert.match(
+    fullText,
+    /\[file outline — \d+ lines, jump with offset\/limit\]/u,
+  );
+  assert.match(fullText, /L1: function handler0/u);
+  assert.match(fullText, /function handler14/u);
+
+  const ranged = await execute(read, "eval-read-outline-2", {
+    path: "large.ts",
+    offset: 1,
+    limit: 5,
+  });
+  assert.notEqual(ranged.isError, true);
+  const rangedText = ranged.content.map((b) => b.text ?? "").join("\n");
+  assert.doesNotMatch(rangedText, /\[file outline/u);
+}
+
+async function runCodingPostWriteDiagnostics(paths, ledger) {
+  const write = await wrappedTool(paths, ledger, "write");
+  const brokenTs = await execute(write, "eval-diag-ts-1", {
+    path: "broken.ts",
+    content: "export function oops(): number {\n  return (1 + 2;\n}\n",
+  });
+  assert.notEqual(brokenTs.isError, true);
+  const tsText = brokenTs.content.map((b) => b.text ?? "").join("\n");
+  assert.match(tsText, /\[post-write diagnostics\]/u);
+  assert.match(tsText, /broken\.ts:\d+:\d+/u);
+
+  const brokenToml = await execute(write, "eval-diag-toml-1", {
+    path: "broken.toml",
+    content: "[section\nkey = 'value'\n",
+  });
+  assert.notEqual(brokenToml.isError, true);
+  const tomlText = brokenToml.content.map((b) => b.text ?? "").join("\n");
+  assert.match(tomlText, /\[post-write diagnostics\]/u);
+
+  const cleanTs = await execute(write, "eval-diag-ts-clean", {
+    path: "clean.ts",
+    content: "export function ok(): number {\n  return 42;\n}\n",
+  });
+  assert.notEqual(cleanTs.isError, true);
+  const cleanText = cleanTs.content.map((b) => b.text ?? "").join("\n");
+  assert.doesNotMatch(cleanText, /\[post-write diagnostics\]/u);
+}
+
 async function runCase(testCase) {
   const paths = await fixture();
   paths.caseId = testCase.id;
@@ -714,6 +885,21 @@ async function runCase(testCase) {
         return;
       case "schema_compatibility":
         await runSchemaCompatibility(paths);
+        return;
+      case "coding_edit_multi_hunk":
+        await runCodingEditMultiHunk(paths, paths.ledger);
+        return;
+      case "coding_edit_indent_fallback":
+        await runCodingEditIndentFallback(paths, paths.ledger);
+        return;
+      case "coding_edit_anchor_hints":
+        await runCodingEditAnchorHints(paths, paths.ledger);
+        return;
+      case "coding_read_large_outline":
+        await runCodingReadLargeOutline(paths, paths.ledger);
+        return;
+      case "coding_post_write_diagnostics":
+        await runCodingPostWriteDiagnostics(paths, paths.ledger);
         return;
       default:
         fail(`unknown case kind ${testCase.kind}`);

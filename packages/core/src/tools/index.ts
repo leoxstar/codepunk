@@ -1,15 +1,24 @@
 import {
   createBashToolDefinition,
-  createEditToolDefinition,
-  createReadToolDefinition,
   createWriteToolDefinition,
   type AgentToolResult,
   type BashOperations,
   type BashToolDetails,
-  type EditToolDetails,
-  type ReadToolDetails,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createEnhancedEditToolDefinition,
+  extractEditReplacements,
+  resolveIndentationFallbackEdits,
+  type EditReplacement,
+  type IndentationFallbackResolution,
+} from "./enhanced-edit.ts";
+import {
+  createEnhancedReadToolDefinition,
+  extractCodeOutline,
+  formatCodeOutline,
+  type OutlineEntry,
+} from "./enhanced-read.ts";
 import { createMemorySearchTool, type MemoryManager } from "../memory/index.ts";
 import { createSearchTool } from "../search/index.ts";
 import { createWebFetchTool } from "../webfetch/index.ts";
@@ -147,6 +156,22 @@ export function toolExecutionPolicy(name: string): ToolExecutionPolicy {
   );
 }
 
+export {
+  createEnhancedEditToolDefinition,
+  extractEditReplacements,
+  resolveIndentationFallbackEdits,
+  type EditReplacement,
+  type IndentationFallbackResolution,
+};
+export {
+  createEnhancedReadToolDefinition,
+  extractCodeOutline,
+  formatCodeOutline,
+  type OutlineEntry,
+};
+export { createAskUserTool, type AskUserChannel } from "./ask-user.ts";
+export { createSubagentTool, type SubagentToolExecutor } from "./subagent.ts";
+
 export interface BashObservation {
   command: string;
   cwd: string;
@@ -217,17 +242,9 @@ export function createCodepunkToolDefinitions(
   }
   const enabled = new Set(options.enabledTools ?? defaultEnabled);
   const all: ToolDefinition<any, any, any>[] = [
-    createReadToolDefinition(cwd) as ToolDefinition<
-      any,
-      ReadToolDetails | undefined,
-      any
-    >,
+    createEnhancedReadToolDefinition(cwd),
     createWriteToolDefinition(cwd) as ToolDefinition<any, any, any>,
-    createEditToolDefinition(cwd) as ToolDefinition<
-      any,
-      EditToolDetails | undefined,
-      any
-    >,
+    createEnhancedEditToolDefinition(cwd),
     createSearchTool({
       cwd,
       ...(options.workspaceRoot !== undefined

@@ -199,11 +199,20 @@ export {
   CODEPUNK_TOOL_NAMES,
   HEADLESS_EXEC_TOOL_NAME,
   createCodepunkToolDefinitions,
+  createEnhancedEditToolDefinition,
+  createEnhancedReadToolDefinition,
   createHeadlessExecToolDefinition,
   createSandboxBashOperations,
+  extractCodeOutline,
+  extractEditReplacements,
+  formatCodeOutline,
+  resolveIndentationFallbackEdits,
   toolExecutionPolicy,
   type BashObservation,
   type CodepunkToolName,
+  type EditReplacement,
+  type IndentationFallbackResolution,
+  type OutlineEntry,
   type WorkToolOptions,
 } from "./tools/index.ts";
 export {
@@ -580,7 +589,9 @@ export {
 export {
   CLI_PACKAGE_NAME,
   PackageActionError,
+  checkPackageUpdate,
   installPackage,
+  isNewerSemver,
   uninstallPackage,
   upgradePackage,
   type NpmInvocation,
@@ -588,6 +599,8 @@ export {
   type NpmRunner,
   type PackageActionOptions,
   type PackageActionResult,
+  type PackageUpdateCheckOptions,
+  type PackageUpdateCheckResult,
 } from "./ops/package.ts";
 export {
   RECOMMENDED_SETUP_PROVIDERS,

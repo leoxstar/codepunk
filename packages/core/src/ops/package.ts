@@ -275,6 +275,123 @@ export async function upgradePackage(
   );
 }
 
+export interface PackageUpdateCheckOptions {
+  currentVersion: string;
+  environment?: NodeJS.ProcessEnv;
+  registryUrl?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+export interface PackageUpdateCheckResult {
+  status: "ok" | "offline" | "error";
+  packageName: string;
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  message: string;
+}
+
+function parseSemverCore(version: string): [number, number, number] | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/u.exec(version.trim());
+  if (match === null) {
+    return null;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function isNewerSemver(current: string, latest: string): boolean {
+  const a = parseSemverCore(current);
+  const b = parseSemverCore(latest);
+  if (a === null || b === null) {
+    return false;
+  }
+  for (let i = 0; i < 3; i += 1) {
+    if (b[i]! !== a[i]!) {
+      return b[i]! > a[i]!;
+    }
+  }
+  // If core tuple is identical, treat a non-prerelease latest as newer than prerelease current.
+  return current.includes("-") && !latest.includes("-");
+}
+
+export async function checkPackageUpdate(
+  options: PackageUpdateCheckOptions,
+): Promise<PackageUpdateCheckResult> {
+  const env = options.environment ?? process.env;
+  if (env["PI_OFFLINE"] === "1" || env["CODEPUNK_OFFLINE"] === "1") {
+    return {
+      status: "offline",
+      packageName: CLI_PACKAGE_NAME,
+      currentVersion: options.currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      message: "offline mode is active; skipped registry update check",
+    };
+  }
+  const baseUrl = (options.registryUrl ?? "https://registry.npmjs.org").replace(
+    /\/+$/u,
+    "",
+  );
+  const url = `${baseUrl}/${CLI_PACKAGE_NAME}/latest`;
+  const fetchFn = options.fetchImpl ?? fetch;
+  try {
+    const response = await fetchFn(url, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(options.timeoutMs ?? 5_000),
+    });
+    if (!response.ok) {
+      return {
+        status: "error",
+        packageName: CLI_PACKAGE_NAME,
+        currentVersion: options.currentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        message: `registry check failed with HTTP ${response.status}`,
+      };
+    }
+    const payload = (await response.json()) as { version?: unknown };
+    const latestVersion =
+      typeof payload?.version === "string" ? payload.version.trim() : "";
+    if (latestVersion.length === 0) {
+      return {
+        status: "error",
+        packageName: CLI_PACKAGE_NAME,
+        currentVersion: options.currentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        message: "registry response did not include a package version",
+      };
+    }
+    const updateAvailable = isNewerSemver(
+      options.currentVersion,
+      latestVersion,
+    );
+    return {
+      status: "ok",
+      packageName: CLI_PACKAGE_NAME,
+      currentVersion: options.currentVersion,
+      latestVersion,
+      updateAvailable,
+      message: updateAvailable
+        ? `update available: ${options.currentVersion} -> ${latestVersion} (run \`codepunk upgrade\`)`
+        : `${CLI_PACKAGE_NAME}@${options.currentVersion} is up to date (latest ${latestVersion})`,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      packageName: CLI_PACKAGE_NAME,
+      currentVersion: options.currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      message: `registry check failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
 export async function uninstallPackage(
   options: PackageActionOptions = {},
 ): Promise<PackageActionResult> {
