@@ -266,10 +266,13 @@ the provisioning step, or an independent acceptance reviewer is missing, record
 the Windows result as `unverified` and do not claim Windows support in the
 release notes.
 
-The three local tarballs must be installed by one `npm install` command so npm
-does not resolve `codepunk-*` from the registry. Keep the `--loglevel=http`
-output with the release evidence and confirm it contains no registry request
-for a `codepunk-` package.
+Install the three local tarballs with one `npm install` command so the
+top-level `codepunk-*` specs come from the local files. npm still fetches
+metadata for the internal `codepunk-protocol` and `codepunk-core` dependency
+versions while it resolves the graph; those requests are resolution traffic,
+not an install from the registry. Keep the `--loglevel=http` output with the
+release evidence and verify the installed entry resolves under the local
+prefix (`codepunk --version` and `npm ls --global --prefix <prefix> --json`).
 
 ```powershell
 $ErrorActionPreference = "Stop"

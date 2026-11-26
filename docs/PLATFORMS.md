@@ -93,6 +93,11 @@ Until those checks pass, Windows behavior is fail-closed:
   one-time elevated install needed to provision `srt-sandbox`;
 - shell execution stays disabled until that install exists; initialization
   failures never fall back to an unsandboxed shell;
+- npm's PowerShell shim forwards arguments through PowerShell's script binder,
+  which drops a bare `--` before the arguments reach Node. When the payload
+  after `--` starts with `-`, use `codepunk.cmd` or pass one quoted command
+  string, such as `codepunk permissions why "pwsh -NoProfile"`; the `.cmd` and
+  Node entry points receive the documented separator unchanged;
 - the local daemon does not start because it requires a Unix socket;
 - the product reports that Windows support is not implemented.
 
