@@ -259,13 +259,32 @@ export async function atomicWriteFile(
   await atomicWriteBytes(filePath, Buffer.from(content, "utf8"), mode);
 }
 
+export interface AtomicWriteOptions {
+  /**
+   * Set false only when restoring a file owned by the user's workspace.
+   * On Windows the private ACL is skipped because a sandbox can attach
+   * capability SIDs to the checkout that this process cannot remove; the
+   * restored file inherits its directory's ACL like any other file write.
+   * POSIX mode handling is unchanged so private state writes keep the same
+   * permissions on every platform.
+   */
+  privateAcl?: boolean;
+}
+
 export async function atomicWriteBytes(
   filePath: string,
   content: Uint8Array,
   mode = 0o600,
+  options: AtomicWriteOptions = {},
 ): Promise<void> {
   const directory = path.dirname(filePath);
-  await ensurePrivateDir(directory);
+  const enforcePrivateAcl =
+    options.privateAcl !== false || process.platform !== "win32";
+  if (enforcePrivateAcl) {
+    await ensurePrivateDir(directory);
+  } else {
+    await fs.mkdir(directory, { recursive: true });
+  }
   const tempPath = path.join(
     directory,
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
@@ -280,7 +299,7 @@ export async function atomicWriteBytes(
         await handle.sync();
         await handle.close();
         handle = undefined;
-        const privateFile = (mode & 0o077) === 0;
+        const privateFile = enforcePrivateAcl && (mode & 0o077) === 0;
         if (privateFile) {
           await ensurePrivateFile(tempPath, mode);
         }

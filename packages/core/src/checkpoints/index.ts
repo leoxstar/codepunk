@@ -546,7 +546,9 @@ export class CheckpointStore {
     if (bytes === undefined) {
       throw new CheckpointError(`checkpoint has no bytes for ${target}`);
     }
-    await atomicWriteBytes(target, bytes, snapshot.mode ?? 0o600);
+    await atomicWriteBytes(target, bytes, snapshot.mode ?? 0o600, {
+      privateAcl: false,
+    });
   }
 
   async restore(

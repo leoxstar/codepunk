@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { importCore } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { privateFileStatus, withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
+const execFileAsync = promisify(execFile);
 
 async function snapshot(filePath) {
   try {
@@ -195,6 +198,48 @@ test("checkpoints can undo and redo multiple changes in order", async () => {
     assert.equal(await fs.readFile(file, "utf8"), "two\n");
   });
 });
+
+test(
+  "checkpoint restore leaves the workspace directory ACL unchanged",
+  { skip: process.platform !== "win32" ? "Windows-only ACLs" : false },
+  async () => {
+    await withTempDirectory("codepunk-checkpoints-acl-", async (root) => {
+      const project = path.join(root, "project");
+      const file = path.join(project, "file.txt");
+      await fs.mkdir(project, { recursive: true });
+      await execFileAsync("icacls.exe", [
+        project,
+        "/grant",
+        "*S-1-1-0:(OI)(CI)R",
+      ]);
+      await fs.writeFile(file, "before\n");
+      const store = makeStore(root);
+      const before = await snapshot(file);
+      await fs.writeFile(file, "after\n");
+      const after = await snapshot(file);
+      assert.ok(
+        await store.record({
+          tool: "write",
+          toolCallId: "call-acl",
+          target: file,
+          before,
+          after,
+        }),
+      );
+
+      await store.undo();
+      await store.redo();
+
+      const status = await privateFileStatus(project);
+      assert.equal(
+        status.ok,
+        false,
+        `checkpoint restore stamped the workspace private (${status.detail})`,
+      );
+      assert.equal(await fs.readFile(file, "utf8"), "after\n");
+    });
+  },
+);
 
 test("checkpoints refuse to overwrite an externally changed file", async () => {
   await withTempDirectory("codepunk-checkpoints-conflict-", async (root) => {
