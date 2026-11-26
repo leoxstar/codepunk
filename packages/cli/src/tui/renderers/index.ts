@@ -9,9 +9,12 @@ import { searchRenderers } from "./search.ts";
 import { subagentRenderers } from "./subagent.ts";
 import { todoRenderers } from "./todo.ts";
 import { webFetchRenderers, webSearchRenderers } from "./web.ts";
+import { bashRenderers, editRenderers, writeRenderers } from "./workspace.ts";
 
 export {
   askUserRenderers,
+  bashRenderers,
+  editRenderers,
   memorySearchRenderers,
   planRenderers,
   searchRenderers,
@@ -19,6 +22,7 @@ export {
   todoRenderers,
   webFetchRenderers,
   webSearchRenderers,
+  writeRenderers,
 };
 
 const CODEPUNK_RENDERERS: Readonly<Record<string, ToolRenderers>> = {
@@ -30,6 +34,9 @@ const CODEPUNK_RENDERERS: Readonly<Record<string, ToolRenderers>> = {
   ask_user: askUserRenderers,
   subagent: subagentRenderers,
   memory_search: memorySearchRenderers,
+  edit: editRenderers,
+  write: writeRenderers,
+  bash: bashRenderers,
 };
 
 export function codepunkToolRendererResolver(): ToolRendererResolver {

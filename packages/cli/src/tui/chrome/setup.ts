@@ -9,7 +9,7 @@ import {
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
-import { codepunkHelp } from "./help.ts";
+import { openInteractiveHelp } from "./help-action.ts";
 import { selectedModel } from "./model.ts";
 import { refreshStatus, renderHeader } from "./statusline.ts";
 import { sandboxStatusLines } from "./status.ts";
@@ -29,6 +29,7 @@ import { sendWorkspaceImage } from "../commands/images.ts";
 import { showInteractiveSettingsMenu } from "../commands/settings.ts";
 import { configureTrust } from "../commands/trust-actions.ts";
 import { extractDroppedImageInput } from "../format/clipboard-image.ts";
+import { refreshWelcomeWidget } from "./welcome.ts";
 import { refreshWorkWidget } from "./work-widget.ts";
 import { promptForMissingModel } from "../format/model.ts";
 import { sessionSummary } from "../format/status-summary.ts";
@@ -244,20 +245,7 @@ async function handleConfigSlashCommand(
   }
   if (isSlashCommand(trimmed, "/help")) {
     const query = trimmed.slice("/help".length).trim();
-    if (query.length === 0) {
-      context.ui.notify(codepunkHelp(), "info");
-      return true;
-    }
-    const lower = query.toLowerCase();
-    const matched = codepunkHelp()
-      .split("\n")
-      .filter((line) => line.toLowerCase().includes(lower));
-    context.ui.notify(
-      matched.length === 0
-        ? `No commands matching "${query}". Press F1 to browse all commands.`
-        : [`Commands matching "${query}":`, ...matched].join("\n"),
-      "info",
-    );
+    await openInteractiveHelp(state, context, query);
     return true;
   }
   if (
@@ -374,12 +362,22 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
   const tui = runtime.config.tui;
   const title = ["codepunk", `session ${runtime.session.sessionId}`];
   context.ui.setTitle(title.join(" · "));
-  context.ui.setHeader(() =>
-    component(
-      () => renderHeader(state),
-      () => tui.header,
-    ),
-  );
+  context.ui.setHeader((_tui, theme) => ({
+    render: (width: number) =>
+      tui.header
+        ? renderHeader(state, {
+            theme:
+              process.env["NO_COLOR"] !== undefined &&
+              process.env["NO_COLOR"].length > 0
+                ? undefined
+                : theme,
+            width,
+          })
+            .split("\n")
+            .map((line) => truncateToWidth(line, Math.max(1, width), "…"))
+        : [],
+    invalidate: () => {},
+  }));
   if (tui.footer) {
     context.ui.setFooter(undefined);
   } else {
@@ -405,6 +403,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
   }
   refreshStatus(state, context);
   refreshWorkWidget(state, context);
+  refreshWelcomeWidget(state, context);
   if (!tui.widgets) {
     context.ui.setWidget("codepunk", undefined);
   }

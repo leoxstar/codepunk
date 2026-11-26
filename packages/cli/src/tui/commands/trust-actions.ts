@@ -17,6 +17,56 @@ import {
 } from "codepunk-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TuiState } from "../state.ts";
+async function openTrustPanelInteractive(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+  summaryLines: readonly string[],
+): Promise<void> {
+  const initialGrants = await readSavedWorkspaceTrustGrants(
+    runtime.paths.home,
+    runtime.workspaceTrust.root,
+  ).catch(() => allWorkspaceTrustGrants(runtime.workspaceTrust.trusted));
+  const [{ createTrustPanel }, { defaultViewportHeight }] = await Promise.all([
+    import("../components/trust-panel.ts"),
+    import("../components/frame.ts"),
+  ]);
+  const updated = await context.ui.custom<Record<
+    WorkspaceTrustResourceKind,
+    boolean
+  > | null>((_tui, theme, keybindings, done) =>
+    createTrustPanel(
+      {
+        summaryLines: summaryLines.join("\n").split("\n"),
+        initialGrants,
+        viewportHeight: defaultViewportHeight(),
+      },
+      theme,
+      keybindings,
+      done,
+    ),
+  );
+  if (updated !== null && updated !== undefined) {
+    const savedEntry = await saveWorkspaceTrustGrants(
+      runtime.paths.home,
+      runtime.workspaceTrust.root,
+      updated,
+      "cli",
+    );
+    const anyAllowed = WORKSPACE_TRUST_RESOURCE_KINDS.some(
+      (kind) => updated[kind],
+    );
+    context.ui.notify(
+      [
+        `workspace trust saved as ${anyAllowed ? "trusted" : "untrusted"}`,
+        `resources: ${WORKSPACE_TRUST_RESOURCE_KINDS.map((kind) => `${kind}=${updated[kind] ? "allowed" : "skipped"}`).join(", ")}`,
+        `resource store: ${savedEntry.resourceStorePath}`,
+        "the current session is unchanged; restart codepunk to load or skip project resources",
+      ].join("\n"),
+      anyAllowed ? "info" : "warning",
+    );
+  }
+}
+
 export async function configureTrust(
   state: TuiState,
   context: ExtensionContext,
@@ -134,33 +184,35 @@ export async function configureTrust(
     saved = `unreadable: ${error instanceof Error ? error.message : String(error)}`;
     savedResources = saved;
   }
-  context.ui.notify(
-    [
-      formatWorkspaceTrust(
-        runtime.workspaceTrust,
-        await previewWorkspaceTrustResources(
-          runtime.workspaceTrust.root,
-          runtime.workspaceTrust.cwd,
-          {
-            includeSkills: !runtime.isolation.skills,
-            includeInstructions: !runtime.isolation.context,
-          },
-        ),
+  const summaryLines = [
+    formatWorkspaceTrust(
+      runtime.workspaceTrust,
+      await previewWorkspaceTrustResources(
+        runtime.workspaceTrust.root,
+        runtime.workspaceTrust.cwd,
         {
-          excluded: [
-            runtime.isolation.context ? "instruction files (--bare)" : null,
-            runtime.isolation.skills
-              ? "project skills (--no-skills or --bare)"
-              : null,
-          ].filter((entry): entry is string => entry !== null),
+          includeSkills: !runtime.isolation.skills,
+          includeInstructions: !runtime.isolation.context,
         },
       ),
-      `saved decision: ${saved}`,
-      `saved resources: ${savedResources}`,
-      "Use /trust grant|revoke [kinds] to change future sessions.",
-    ].join("\n"),
-    "info",
-  );
+      {
+        excluded: [
+          runtime.isolation.context ? "instruction files (--bare)" : null,
+          runtime.isolation.skills
+            ? "project skills (--no-skills or --bare)"
+            : null,
+        ].filter((entry): entry is string => entry !== null),
+      },
+    ),
+    `saved decision: ${saved}`,
+    `saved resources: ${savedResources}`,
+    "Use /trust grant|revoke [kinds] to change future sessions.",
+  ];
+  if (tokens.length === 0 && typeof context.ui.custom === "function") {
+    await openTrustPanelInteractive(runtime, context, summaryLines);
+    return;
+  }
+  context.ui.notify(summaryLines.join("\n"), "info");
 }
 
 export async function setAutonomyProfile(

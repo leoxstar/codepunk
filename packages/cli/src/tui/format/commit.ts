@@ -178,10 +178,9 @@ export function formatCommitPreview(preview: WorkspaceCommitPreview): string {
   return lines.join("\n");
 }
 
-export async function chooseCommitStage(
-  context: ExtensionContext,
+export function buildCommitScopeChoices(
   preview: WorkspaceCommitPreview,
-): Promise<GitCommitStage | null> {
+): Array<{ label: string; value: GitCommitStage }> {
   const hasStaged = preview.staged.length > 0;
   const hasUnstaged = preview.unstaged.length > 0;
   const hasUntracked = preview.untracked.length > 0;
@@ -214,6 +213,14 @@ export async function chooseCommitStage(
       value: "all",
     });
   }
+  return choices;
+}
+
+export async function chooseCommitStage(
+  context: ExtensionContext,
+  preview: WorkspaceCommitPreview,
+): Promise<GitCommitStage | null> {
+  const choices = buildCommitScopeChoices(preview);
   if (choices.length === 0) {
     context.ui.notify("Nothing to commit.", "warning");
     return null;
@@ -392,18 +399,51 @@ export async function configureCommit(
     context.ui.notify("Nothing to commit.", "warning");
     return;
   }
-  await notify(context, formatCommitPreview(preview));
-  const stage = await chooseCommitStage(context, preview);
-  if (stage === null) {
+  let stage: GitCommitStage | null = null;
+  const choices = buildCommitScopeChoices(preview);
+  if (choices.length === 0) {
+    context.ui.notify("Nothing to commit.", "warning");
     return;
   }
-  const confirmed = await context.ui.confirm(
-    "Create this commit?",
-    `${message.split(/\r?\n/u)[0]}\n\n${formatCommitPreview(preview)}`,
-  );
-  if (!confirmed) {
-    context.ui.notify("Commit cancelled.", "info");
-    return;
+  if (typeof context.ui.custom === "function") {
+    const [{ createCommitCard }, { defaultViewportHeight }] = await Promise.all(
+      [
+        import("../components/commit-card.ts"),
+        import("../components/frame.ts"),
+      ],
+    );
+    stage = await context.ui.custom<GitCommitStage | null>(
+      (_tui, theme, keybindings, done) =>
+        createCommitCard(
+          {
+            message,
+            preview,
+            choices,
+            viewportHeight: defaultViewportHeight(),
+          },
+          theme,
+          keybindings,
+          done,
+        ),
+    );
+    if (stage === null || stage === undefined) {
+      context.ui.notify("Commit cancelled.", "info");
+      return;
+    }
+  } else {
+    await notify(context, formatCommitPreview(preview));
+    stage = await chooseCommitStage(context, preview);
+    if (stage === null) {
+      return;
+    }
+    const confirmed = await context.ui.confirm(
+      "Create this commit?",
+      `${message.split(/\r?\n/u)[0]}\n\n${formatCommitPreview(preview)}`,
+    );
+    if (!confirmed) {
+      context.ui.notify("Commit cancelled.", "info");
+      return;
+    }
   }
 
   const started = Date.now();

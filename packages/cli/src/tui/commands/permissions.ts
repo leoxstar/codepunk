@@ -163,6 +163,100 @@ export function rememberCommand(state: TuiState): TuiCommand {
   });
 }
 
+async function openMemoryBrowserLoop(
+  runtime: NonNullable<TuiState["runtime"]>,
+  context: Parameters<TuiCommand["handler"]>[1],
+): Promise<void> {
+  const [{ createMemoryBrowser }, { defaultViewportHeight }] =
+    await Promise.all([
+      import("../components/memory-browser.ts"),
+      import("../components/frame.ts"),
+    ]);
+  for (;;) {
+    const allRecords = [
+      ...runtime.memory.storeFor("project").records,
+      ...runtime.memory.storeFor("user").records,
+    ]
+      .filter((record) => record.status !== "archived")
+      .map((record) => ({
+        id: record.id,
+        scope: record.scope,
+        content: record.content,
+      }));
+    const action = await context.ui.custom<
+      | { action: "archive" | "delete"; id: string; scope: "user" | "project" }
+      | { action: "add" }
+      | null
+    >((_tui, theme, keybindings, done) =>
+      createMemoryBrowser(
+        {
+          entries: allRecords,
+          viewportHeight: defaultViewportHeight(),
+        },
+        theme,
+        keybindings,
+        done,
+      ),
+    );
+    if (action === null || action === undefined) {
+      return;
+    }
+    if (action.action === "add") {
+      const text = (
+        await context.ui.input(
+          "Remember note (project scope)",
+          "Enter a concise fact to remember",
+        )
+      )?.trim();
+      if (text && text.length > 0) {
+        const added = await runtime.memory.add({
+          scope: "project",
+          content: text,
+          source: "user",
+          source_refs: [`session:${runtime.session.sessionId}`],
+        });
+        await runtime.recordMemoryWrite({
+          scope: "project",
+          action: added.ok ? "add" : "reject",
+          memoryId: added.record?.id ?? null,
+          contentSha256: added.record?.content_sha256 ?? null,
+          sourceRefs: [`session:${runtime.session.sessionId}`],
+          reason: added.ok ? null : added.reason,
+        });
+        context.ui.notify(
+          added.ok
+            ? `remembered ${added.record?.id}`
+            : `memory rejected: ${added.reason}`,
+          added.ok ? "info" : "warning",
+        );
+      }
+      continue;
+    }
+    const store = runtime.memory.storeFor(action.scope);
+    const target = store.records.find((r) => r.id === action.id);
+    if (target !== undefined) {
+      const changed =
+        action.action === "delete"
+          ? await store.delete(action.id)
+          : await store.archive(action.id);
+      await runtime.recordMemoryWrite({
+        scope: action.scope,
+        action: action.action,
+        memoryId: action.id,
+        contentSha256: target.content_sha256,
+        sourceRefs: [`session:${runtime.session.sessionId}`],
+        reason: changed ? null : "not_found",
+      });
+      context.ui.notify(
+        changed
+          ? `${action.action === "delete" ? "deleted" : "archived"} ${action.id}`
+          : `memory record was not found: ${action.id}`,
+        changed ? "info" : "warning",
+      );
+    }
+  }
+}
+
 export function memoryCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "memory",
@@ -229,6 +323,10 @@ export function memoryCommand(state: TuiState): TuiCommand {
           "usage: /memory [list|search <query>|delete <memory-id>|archive <memory-id>]",
           "warning",
         );
+        return;
+      }
+      if (subcommand === undefined && typeof context.ui.custom === "function") {
+        await openMemoryBrowserLoop(runtime, context);
         return;
       }
       const query = subcommand === "search" ? argument : "";

@@ -7,6 +7,7 @@ import {
   parseScrollInput,
   scrollFooter,
   sliceViewport,
+  viewportScrollbar,
   type PanelKeybindings,
   type PanelTheme,
 } from "./frame.ts";
@@ -22,15 +23,27 @@ export interface DiffViewSource {
   readonly truncated: boolean;
 }
 
+export type DiffViewMode = "all" | "staged" | "unstaged" | "stat";
+
+export type DiffViewAction = "commit" | "undo" | "review";
+
 export interface DiffViewOptions {
   readonly title: string;
   readonly source: DiffViewSource;
   readonly maxLines?: number;
   readonly viewportHeight?: number;
+  readonly initialMode?: DiffViewMode;
+  readonly onAction?: (action: DiffViewAction) => void;
 }
 
 const DEFAULT_MAX_LINES = 240;
 const MAX_UNTRACKED_PATHS = 30;
+const DIFF_MODES: readonly DiffViewMode[] = [
+  "all",
+  "staged",
+  "unstaged",
+  "stat",
+];
 
 function styleDiffLine(line: string, theme: PanelTheme): string {
   if (
@@ -89,14 +102,51 @@ function filterStatusLines(status: string): {
 }
 
 /**
- * Project a WorkspaceDiff into display lines. The component deliberately does
- * not import codepunk-core types; the command side owns that projection.
+ * Project a WorkspaceDiff into display lines for the requested view mode.
+ * The component deliberately does not import codepunk-core types; the command
+ * side owns that projection.
  */
-export function diffViewLines(options: DiffViewOptions): string[] {
+export function diffViewLines(
+  options: DiffViewOptions,
+  mode: DiffViewMode = options.initialMode ?? "all",
+): string[] {
   const source = options.source;
   if (source.status.trim().length === 0) {
     return ["No changes."];
   }
+  if (mode === "staged") {
+    const staged = source.staged.trimEnd();
+    if (staged.length === 0) {
+      return ["No staged changes."];
+    }
+    const patchLines = staged.split("\n").map((line) => cleanLine(line));
+    const limit = Math.max(
+      1,
+      Math.floor(options.maxLines ?? DEFAULT_MAX_LINES),
+    );
+    const lines = patchLines.slice(0, limit);
+    if (patchLines.length > limit) {
+      lines.push("", `… diff truncated (${patchLines.length - limit} lines)`);
+    }
+    return lines;
+  }
+  if (mode === "unstaged") {
+    const unstaged = source.unstaged.trimEnd();
+    if (unstaged.length === 0) {
+      return ["No unstaged tracked changes."];
+    }
+    const patchLines = unstaged.split("\n").map((line) => cleanLine(line));
+    const limit = Math.max(
+      1,
+      Math.floor(options.maxLines ?? DEFAULT_MAX_LINES),
+    );
+    const lines = patchLines.slice(0, limit);
+    if (patchLines.length > limit) {
+      lines.push("", `… diff truncated (${patchLines.length - limit} lines)`);
+    }
+    return lines;
+  }
+
   const statusInfo = filterStatusLines(source.status);
   const lines = [...statusInfo.visible];
   const stat = textLines(source.stat);
@@ -131,6 +181,19 @@ export function diffViewLines(options: DiffViewOptions): string[] {
     statusInfo.internalCount,
     internalUntrackedCount,
   );
+  if (mode === "stat") {
+    if (lines.length === 0 && hiddenInternal > 0) {
+      return [
+        "No workspace changes.",
+        `(${hiddenInternal} internal .codepunk/ file(s) omitted)`,
+      ];
+    }
+    if (hiddenInternal > 0) {
+      lines.push("", `(${hiddenInternal} internal .codepunk/ file(s) omitted)`);
+    }
+    return lines;
+  }
+
   const patch = [source.staged.trimEnd(), source.unstaged.trimEnd()]
     .filter((entry) => entry.length > 0)
     .join("\n\n");
@@ -168,9 +231,12 @@ export class DiffView implements Component {
   private readonly theme: PanelTheme;
   private readonly keybindings: PanelKeybindings;
   private readonly onClose: () => void;
-  private readonly block: TextBlock;
+  private mode: DiffViewMode;
+  private block: TextBlock;
+  private rawLines: string[];
   private scrollOffset = 0;
   private lastTotalLines = 0;
+  private lastRenderedBody: readonly string[] = [];
   private cachedKey = "";
   private cachedLines: readonly string[] = [];
 
@@ -184,15 +250,71 @@ export class DiffView implements Component {
     this.theme = theme;
     this.keybindings = keybindings;
     this.onClose = onClose;
+    this.mode = options.initialMode ?? "all";
+    this.rawLines = diffViewLines(options, this.mode);
     this.block = new TextBlock({
-      lines: diffViewLines(options),
+      lines: this.rawLines,
       style: (line) => styleDiffLine(line, this.theme),
     });
   }
 
+  private setMode(nextMode: DiffViewMode): void {
+    if (this.mode === nextMode) {
+      return;
+    }
+    this.mode = nextMode;
+    this.scrollOffset = 0;
+    this.rawLines = diffViewLines(this.options, this.mode);
+    this.block = new TextBlock({
+      lines: this.rawLines,
+      style: (line) => styleDiffLine(line, this.theme),
+    });
+    this.invalidate();
+  }
+
+  private renderTabBar(): string {
+    const labels: Record<DiffViewMode, string> = {
+      all: "All",
+      staged: "Staged",
+      unstaged: "Unstaged",
+      stat: "Stat",
+    };
+    return DIFF_MODES.map((mode) =>
+      mode === this.mode
+        ? this.theme.bold(this.theme.fg("accent", `[${labels[mode]}]`))
+        : this.theme.fg("muted", ` ${labels[mode]} `),
+    ).join(" ");
+  }
+
+  private jumpSection(direction: 1 | -1): void {
+    const targets: number[] = [];
+    for (let i = 0; i < this.lastRenderedBody.length; i += 1) {
+      const plain = this.lastRenderedBody[i]!.replace(/\u001b\[[0-9;]*m/gu, "");
+      if (plain.startsWith("diff --git ") || plain.startsWith("@@")) {
+        targets.push(i);
+      }
+    }
+    if (targets.length === 0) {
+      return;
+    }
+    if (direction > 0) {
+      const next = targets.find((idx) => idx > this.scrollOffset);
+      if (next !== undefined) {
+        this.scrollOffset = next;
+      }
+    } else {
+      for (let i = targets.length - 1; i >= 0; i -= 1) {
+        if (targets[i]! < this.scrollOffset) {
+          this.scrollOffset = targets[i]!;
+          break;
+        }
+      }
+    }
+  }
+
   render(width: number): readonly string[] {
     const safeWidth = Math.max(1, Math.floor(width));
-    const cacheKey = `${safeWidth}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
+    const cacheKey = `${safeWidth}:${this.mode}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
     if (this.cachedKey === cacheKey) {
       return this.cachedLines;
     }
@@ -201,6 +323,7 @@ export class DiffView implements Component {
       safeWidth - (safeWidth < BORDERED_MIN_WIDTH ? 2 : 4),
     );
     const allBody = this.block.render(inner);
+    this.lastRenderedBody = allBody;
     this.lastTotalLines = allBody.length;
     const viewport = sliceViewport(
       allBody,
@@ -208,17 +331,23 @@ export class DiffView implements Component {
       this.options.viewportHeight,
     );
     this.scrollOffset = viewport.offset;
-    const footer = scrollFooter("esc close", viewport) ?? "esc close";
+    const actionHints =
+      this.options.onAction === undefined
+        ? "tab view · [/] hunk · esc close"
+        : "tab view · [/] hunk · c commit · r review · u undo · esc close";
+    const footer = scrollFooter(actionHints, viewport) ?? actionHints;
+    const scrollbar = viewportScrollbar(viewport);
     const rendered = frameLines(
       {
         title: this.options.title,
-        body: viewport.visible,
+        body: [this.renderTabBar(), ...viewport.visible],
         footer,
+        ...(scrollbar === undefined ? {} : { scrollbar }),
       },
       safeWidth,
       this.theme,
     );
-    this.cachedKey = `${safeWidth}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
+    this.cachedKey = `${safeWidth}:${this.mode}:${this.scrollOffset}:${this.options.viewportHeight ?? "all"}`;
     this.cachedLines = rendered;
     return rendered;
   }
@@ -227,6 +356,35 @@ export class DiffView implements Component {
     if (isCloseInput(data, this.keybindings)) {
       this.onClose();
       return;
+    }
+    if (data === "\t") {
+      const next =
+        DIFF_MODES[(DIFF_MODES.indexOf(this.mode) + 1) % DIFF_MODES.length] ??
+        "all";
+      this.setMode(next);
+      return;
+    }
+    if (data === "]" || data === "n") {
+      this.jumpSection(1);
+      return;
+    }
+    if (data === "[" || data === "p") {
+      this.jumpSection(-1);
+      return;
+    }
+    if (this.options.onAction !== undefined) {
+      if (data === "c") {
+        this.options.onAction("commit");
+        return;
+      }
+      if (data === "r") {
+        this.options.onAction("review");
+        return;
+      }
+      if (data === "u") {
+        this.options.onAction("undo");
+        return;
+      }
     }
     if (this.options.viewportHeight === undefined) {
       return;

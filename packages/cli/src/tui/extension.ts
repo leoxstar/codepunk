@@ -46,6 +46,7 @@ import {
   goalCommand,
   hooksCommand,
   todosCommand,
+  contextCommand,
   evidenceCommand,
   budgetCommand,
   doctorCommand,
@@ -81,6 +82,7 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   rolesCommand,
   reviewCommand,
   todosCommand,
+  contextCommand,
   evidenceCommand,
   modelsCommand,
   favoriteCommand,
@@ -198,30 +200,18 @@ function registerShortcuts(
       await openRewindPicker(state, context as never);
     },
   });
+  pi.registerShortcut("alt+k" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Open the interactive command palette",
+    handler: async (context) => {
+      const { openCommandPalette } = await import("./commands/palette.ts");
+      await openCommandPalette(state, context);
+    },
+  });
   pi.registerShortcut("f1" as Parameters<typeof pi.registerShortcut>[0], {
     description: "Open searchable command help",
     handler: async (context) => {
-      const [
-        { createHelpBrowser },
-        { codepunkHelp },
-        { defaultViewportHeight },
-      ] = await Promise.all([
-        import("./components/help-browser.ts"),
-        import("./chrome/help.ts"),
-        import("./components/frame.ts"),
-      ]);
-      await context.ui.custom<void>((_tui, theme, keybindings, done) =>
-        createHelpBrowser(
-          {
-            title: "Codepunk help",
-            text: codepunkHelp(),
-            viewportHeight: defaultViewportHeight(),
-          },
-          theme,
-          keybindings,
-          done,
-        ),
-      );
+      const { openInteractiveHelp } = await import("./chrome/help-action.ts");
+      await openInteractiveHelp(state, context);
     },
   });
 }
