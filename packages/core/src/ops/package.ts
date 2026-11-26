@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -57,14 +58,78 @@ export class PackageActionError extends Error {
   }
 }
 
+function npmCliJs(env: NodeJS.ProcessEnv): string | null {
+  const candidates: string[] = [];
+  const execPath = env["npm_execpath"];
+  if (
+    execPath !== undefined &&
+    path.basename(execPath).toLowerCase() === "npm-cli.js"
+  ) {
+    candidates.push(execPath);
+  }
+  candidates.push(
+    path.join(
+      path.dirname(process.execPath),
+      "node_modules",
+      "npm",
+      "bin",
+      "npm-cli.js",
+    ),
+    path.join(
+      path.dirname(process.execPath),
+      "..",
+      "lib",
+      "node_modules",
+      "npm",
+      "bin",
+      "npm-cli.js",
+    ),
+  );
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+/**
+ * Run npm without a command shell. Windows cannot execFile a `.cmd` shim,
+ * and `shell: true` would interpolate the prefix path into a command line
+ * (and trigger DEP0190). Node always ships npm as a JavaScript entry point,
+ * so launch that file with the current Node binary instead.
+ */
+export function nativeNpmInvocation(
+  invocation: NpmInvocation,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NpmInvocation {
+  if (platform !== "win32" || invocation.command !== "npm") {
+    return invocation;
+  }
+  const cli = npmCliJs(env);
+  if (cli === null) {
+    return invocation;
+  }
+  return {
+    command: process.execPath,
+    args: [cli, ...invocation.args],
+  };
+}
+
 const defaultRunner: NpmRunner = async (invocation, options) => {
+  const env = options.env ?? process.env;
+  const native = nativeNpmInvocation(invocation, env);
+  if (process.platform === "win32" && native.command === "npm") {
+    return {
+      code: 1,
+      stdout: "",
+      stderr:
+        "cannot find npm-cli.js next to the running Node.js; reinstall Node.js or pass npmCommand",
+    };
+  }
   try {
-    const result = await execFileAsync(invocation.command, invocation.args, {
+    const result = await execFileAsync(native.command, native.args, {
       cwd: options.cwd,
-      env: options.env ?? process.env,
+      env,
       timeout: options.timeoutMs ?? 300_000,
       maxBuffer: 16 * 1024 * 1024,
-      shell: process.platform === "win32",
+      shell: false,
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
@@ -81,6 +146,8 @@ const defaultRunner: NpmRunner = async (invocation, options) => {
     };
   }
 };
+
+export const runNpmInvocation: NpmRunner = defaultRunner;
 
 function normalizePrefix(prefix: string | null | undefined): string | null {
   if (prefix === null || prefix === undefined) {

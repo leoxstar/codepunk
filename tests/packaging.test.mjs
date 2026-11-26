@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { importCore } from "./support/core.mjs";
+import { importCore, importSource } from "./support/core.mjs";
 import {
   describeInstallFailure,
   ensureBuilt,
@@ -90,6 +90,46 @@ test("upgrade rolls back to the previous version when npm fails", async () => {
   assert.equal(calls[1].args.at(-1), "codepunk-cli@latest");
   assert.equal(calls[2].args.at(-1), "codepunk-cli@0.0.0");
 });
+
+test(
+  "Windows npm execution uses the Node entry point without a shell",
+  { skip: process.platform !== "win32" ? "Windows-only npm shim" : false },
+  async () => {
+    const packageModule = await importSource(
+      "packages/core/src/ops/package.ts",
+    );
+    const native = packageModule.nativeNpmInvocation(
+      { command: "npm", args: ["--version"] },
+      process.env,
+      "win32",
+    );
+    assert.equal(native.command, process.execPath);
+    assert.match(native.args[0], /npm-cli\.js$/u);
+    assert.deepEqual(native.args.slice(1), ["--version"]);
+
+    await withTempDirectory("codepunk-npm-runner-", async (root) => {
+      const prefix = path.join(root, "prefix with spaces");
+      const result = await packageModule.runNpmInvocation(
+        {
+          command: "npm",
+          args: [
+            "list",
+            "--global",
+            "--prefix",
+            prefix,
+            "--json",
+            "--depth=0",
+            "codepunk-cli",
+          ],
+        },
+        { cwd: root, env: process.env },
+      );
+      const output = `${result.stdout}${result.stderr}`;
+      assert.doesNotMatch(output, /EINVAL|DEP0190/u);
+      assert.doesNotMatch(output, /\.cmd/u);
+    });
+  },
+);
 
 test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", async () => {
   await ensureBuilt();
