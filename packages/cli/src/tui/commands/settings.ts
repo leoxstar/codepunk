@@ -5,6 +5,8 @@ import {
 } from "codepunk-core";
 import { setupChrome } from "../chrome/setup.ts";
 import { refreshStatus } from "../chrome/statusline.ts";
+import { applyTuiTheme, availableThemeChoices } from "../chrome/theme.ts";
+import { refreshWelcomeWidget } from "../chrome/welcome.ts";
 import { refreshWorkWidget } from "../chrome/work-widget.ts";
 import { cycleWorkMode } from "../format/mode-cycle.ts";
 import type { TuiState } from "../state.ts";
@@ -19,6 +21,39 @@ const THINKING_LEVELS = [
   "xhigh",
   "max",
 ] as const;
+
+async function chooseThemeSetting(
+  state: TuiState,
+  context: ExtensionContext,
+): Promise<void> {
+  const runtime = state.runtime;
+  if (runtime === null) {
+    return;
+  }
+  const choices = availableThemeChoices(context);
+  const labels = choices.map(
+    (choice) =>
+      `${choice.id === runtime.config.tui.theme ? "\u2713" : " "} ${choice.label}`,
+  );
+  const picked = await context.ui.select("TUI theme", labels);
+  if (picked === undefined) {
+    return;
+  }
+  const chosen = choices[labels.indexOf(picked)];
+  if (chosen === undefined) {
+    return;
+  }
+  const applied = await applyTuiTheme(runtime, context, chosen.id);
+  if (applied.ok) {
+    setupChrome(state, context);
+    context.ui.notify(`Theme saved as ${chosen.id}.`, "info");
+  } else {
+    context.ui.notify(
+      `Theme switch failed: ${applied.error ?? chosen.id}`,
+      "warning",
+    );
+  }
+}
 
 export async function showInteractiveSettingsMenu(
   state: TuiState,
@@ -40,6 +75,7 @@ export async function showInteractiveSettingsMenu(
     const rows = [
       "Permissions",
       "Cycle work mode  (Alt+M)",
+      `Theme            ${tui.theme}`,
       `Thinking level   ${runtime.config.model.thinking}`,
       `Hide thinking    ${tui.hide_thinking ? "on" : "off"}`,
       `Header           ${tui.header ? "on" : "off"}`,
@@ -59,6 +95,10 @@ export async function showInteractiveSettingsMenu(
     }
     if (selected.startsWith("Cycle work mode")) {
       await cycleWorkMode(state, context);
+      continue;
+    }
+    if (selected.startsWith("Theme")) {
+      await chooseThemeSetting(state, context);
       continue;
     }
     if (selected.startsWith("Thinking level")) {
@@ -116,6 +156,7 @@ export async function showInteractiveSettingsMenu(
         widgets: tui.widgets,
       }).catch(() => undefined);
       refreshWorkWidget(state, context);
+      refreshWelcomeWidget(state, context);
       setupChrome(state, context);
       continue;
     }

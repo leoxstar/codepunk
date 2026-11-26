@@ -2,7 +2,12 @@ import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { AskUserAnswer, AskUserRequest } from "codepunk-core";
 import {
   BORDERED_MIN_WIDTH,
+  defaultViewportHeight,
   frameLines,
+  nextScrollOffset,
+  parseScrollInput,
+  sliceViewport,
+  viewportScrollbar,
   type PanelKeybindings,
   type PanelTheme,
 } from "./frame.ts";
@@ -16,7 +21,10 @@ export class QuestionCard implements Component {
   private readonly theme: PanelTheme;
   private readonly keybindings: PanelKeybindings;
   private readonly done: (answer: AskUserAnswer) => void;
+  private readonly viewportHeight: number;
   private selectedIndex = 0;
+  private scrollOffset = 0;
+  private lastTotalLines = 0;
   private editingFreeform = false;
   private freeformText = "";
   private cachedKey = "";
@@ -27,11 +35,13 @@ export class QuestionCard implements Component {
     theme: PanelTheme,
     keybindings: PanelKeybindings,
     done: (answer: AskUserAnswer) => void,
+    viewportHeight = defaultViewportHeight(),
   ) {
     this.request = request;
     this.theme = theme;
     this.keybindings = keybindings;
     this.done = done;
+    this.viewportHeight = Math.max(6, viewportHeight);
   }
 
   private totalChoices(): number {
@@ -44,7 +54,7 @@ export class QuestionCard implements Component {
 
   render(width: number): readonly string[] {
     const safeWidth = Math.max(1, Math.floor(width));
-    const key = `${safeWidth}:${this.selectedIndex}:${this.editingFreeform}:${this.freeformText}`;
+    const key = `${safeWidth}:${this.selectedIndex}:${this.scrollOffset}:${this.editingFreeform}:${this.freeformText}`;
     if (this.cachedKey === key) {
       return this.cachedLines;
     }
@@ -107,16 +117,30 @@ export class QuestionCard implements Component {
         );
       }
     }
+    this.lastTotalLines = body.length;
+    const viewport = sliceViewport(
+      body,
+      this.scrollOffset,
+      this.viewportHeight,
+    );
+    this.scrollOffset = viewport.offset;
+    const baseFooter = this.editingFreeform ? FOOTER_FREEFORM : FOOTER_OPTIONS;
+    const footer = viewport.scrollable
+      ? `PgUp/PgDn scroll · ${baseFooter}`
+      : baseFooter;
+    const scrollbar = viewportScrollbar(viewport);
     const rendered = frameLines(
       {
         title: "codepunk question",
-        body,
-        footer: this.editingFreeform ? FOOTER_FREEFORM : FOOTER_OPTIONS,
+        body: viewport.visible,
+        footer,
+        tone: "accent",
+        ...(scrollbar === undefined ? {} : { scrollbar }),
       },
       safeWidth,
       this.theme,
     );
-    this.cachedKey = key;
+    this.cachedKey = `${safeWidth}:${this.selectedIndex}:${this.scrollOffset}:${this.editingFreeform}:${this.freeformText}`;
     this.cachedLines = rendered;
     return rendered;
   }
@@ -137,6 +161,21 @@ export class QuestionCard implements Component {
         freeformText: null,
       });
       return;
+    }
+    if (
+      this.lastTotalLines > this.viewportHeight &&
+      (data === "\u001b[5~" || data === "\u001b[6~")
+    ) {
+      const direction = parseScrollInput(data);
+      if (direction !== null) {
+        this.scrollOffset = nextScrollOffset(
+          this.scrollOffset,
+          direction,
+          this.lastTotalLines,
+          this.viewportHeight,
+        );
+        return;
+      }
     }
     const total = this.totalChoices();
     if (total === 0) {

@@ -103,8 +103,11 @@ export class TuiApprovalChannel implements ApprovalChannel {
       return { used: false, choice: null };
     }
     try {
-      const { createApprovalCard } =
-        await import("../components/approval-card.ts");
+      const [{ createApprovalCard }, { defaultViewportHeight }] =
+        await Promise.all([
+          import("../components/approval-card.ts"),
+          import("../components/frame.ts"),
+        ]);
       const choice = await ui.custom<ApprovalChoice | null>(
         (_tui, theme, keybindings, done) =>
           createApprovalCard(
@@ -112,6 +115,7 @@ export class TuiApprovalChannel implements ApprovalChannel {
               request,
               choices,
               workspaceTrusted: this.workspaceTrusted,
+              viewportHeight: defaultViewportHeight(),
             },
             theme,
             keybindings,

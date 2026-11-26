@@ -25,6 +25,7 @@ export interface TuiState {
   sandboxNoticeShown: boolean;
   modelSelected: boolean;
   modelOnboardingShown?: boolean;
+  welcomeDismissed?: boolean;
   pendingInitialPrompt?: string | undefined;
   ready: boolean;
   childHostArgv: readonly string[];

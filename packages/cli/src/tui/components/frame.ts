@@ -2,6 +2,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export type PanelTone = "default" | "muted" | "warning" | "error";
 
+export type FrameTone = "default" | "accent" | "warning" | "error";
+
 export type PanelColor =
   "text" | "muted" | "warning" | "error" | "accent" | "border" | "success";
 
@@ -14,10 +16,18 @@ export interface PanelKeybindings {
   matches(data: string, keybinding: "tui.select.cancel"): boolean;
 }
 
+export interface FrameScrollbar {
+  readonly offset: number;
+  readonly visibleCount: number;
+  readonly total: number;
+}
+
 export interface FrameOptions {
   readonly title: string;
   readonly body: readonly string[];
   readonly footer?: string;
+  readonly tone?: FrameTone;
+  readonly scrollbar?: FrameScrollbar;
 }
 
 export const BORDERED_MIN_WIDTH = 12;
@@ -80,9 +90,9 @@ export function nextScrollOffset(
 
 export function defaultViewportHeight(rows = process.stdout.rows): number {
   if (typeof rows !== "number" || !Number.isFinite(rows) || rows <= 0) {
-    return 20;
+    return 18;
   }
-  return Math.max(8, Math.floor(rows) - 9);
+  return Math.max(8, Math.floor(rows) - 12);
 }
 
 export function sliceViewport(
@@ -120,6 +130,22 @@ export function sliceViewport(
   };
 }
 
+export function viewportScrollbar(viewport: {
+  readonly visible: readonly string[];
+  readonly offset: number;
+  readonly total: number;
+  readonly scrollable: boolean;
+}): FrameScrollbar | undefined {
+  if (!viewport.scrollable || viewport.visible.length === 0) {
+    return undefined;
+  }
+  return {
+    offset: viewport.offset,
+    visibleCount: viewport.visible.length,
+    total: viewport.total,
+  };
+}
+
 export function scrollFooter(
   baseFooter: string | undefined,
   viewport: {
@@ -138,6 +164,57 @@ export function scrollFooter(
   return baseFooter === undefined || baseFooter.length === 0
     ? indicator
     : `${indicator} · ${baseFooter}`;
+}
+
+function borderColorFor(tone: FrameTone | undefined): PanelColor {
+  switch (tone) {
+    case "accent":
+      return "accent";
+    case "warning":
+      return "warning";
+    case "error":
+      return "error";
+    default:
+      return "border";
+  }
+}
+
+function titleColorFor(tone: FrameTone | undefined): PanelColor {
+  switch (tone) {
+    case "warning":
+      return "warning";
+    case "error":
+      return "error";
+    default:
+      return "accent";
+  }
+}
+
+function scrollbarRange(
+  scrollbar: FrameScrollbar | undefined,
+  rowCount: number,
+): { readonly start: number; readonly end: number } | null {
+  if (
+    scrollbar === undefined ||
+    rowCount <= 0 ||
+    scrollbar.total <= scrollbar.visibleCount
+  ) {
+    return null;
+  }
+  const maxOffset = Math.max(1, scrollbar.total - scrollbar.visibleCount);
+  const thumbHeight = Math.max(
+    1,
+    Math.min(
+      rowCount,
+      Math.round((scrollbar.visibleCount / scrollbar.total) * rowCount),
+    ),
+  );
+  const maxStart = Math.max(0, rowCount - thumbHeight);
+  const start = Math.max(
+    0,
+    Math.min(maxStart, Math.round((scrollbar.offset / maxOffset) * maxStart)),
+  );
+  return { start, end: start + thumbHeight };
 }
 
 /**
@@ -160,8 +237,9 @@ function narrowLines(
   width: number,
   theme: PanelTheme,
 ): string[] {
+  const titleColor = titleColorFor(options.tone);
   const lines = [
-    truncateToWidth(theme.bold(theme.fg("accent", options.title)), width),
+    truncateToWidth(theme.bold(theme.fg(titleColor, options.title)), width),
   ];
   for (const line of options.body) {
     lines.push(truncateToWidth(`  ${line}`, width));
@@ -178,34 +256,76 @@ function borderedLines(
   width: number,
   theme: PanelTheme,
 ): string[] {
-  const lines = [topBorder(options.title, width, theme)];
-  for (const line of options.body) {
-    lines.push(frameLine(line, width, theme));
+  const borderColor = borderColorFor(options.tone);
+  const titleColor = titleColorFor(options.tone);
+  const thumb = scrollbarRange(options.scrollbar, options.body.length);
+  const lines = [
+    topBorder(options.title, width, theme, borderColor, titleColor),
+  ];
+  for (let index = 0; index < options.body.length; index += 1) {
+    const line = options.body[index]!;
+    const isThumb = thumb !== null && index >= thumb.start && index < thumb.end;
+    lines.push(
+      frameLine(line, width, theme, borderColor, isThumb ? titleColor : null),
+    );
   }
   if (options.footer !== undefined) {
-    lines.push(divider(width, theme));
-    lines.push(frameLine(theme.fg("muted", options.footer), width, theme));
+    lines.push(divider(width, theme, borderColor));
+    lines.push(
+      frameLine(theme.fg("muted", options.footer), width, theme, borderColor),
+    );
   }
-  lines.push(bottomBorder(width, theme));
+  lines.push(bottomBorder(width, theme, borderColor));
   return lines;
 }
 
-function topBorder(title: string, width: number, theme: PanelTheme): string {
-  const label = truncateToWidth(`─ ${title} `, Math.max(1, width - 2), "…");
-  const fill = Math.max(0, width - 2 - visibleWidth(label));
-  return theme.fg("border", `┌${label}${"─".repeat(fill)}┐`);
+function topBorder(
+  title: string,
+  width: number,
+  theme: PanelTheme,
+  borderColor: PanelColor,
+  titleColor: PanelColor,
+): string {
+  const maxInner = Math.max(1, width - 2);
+  if (maxInner <= 3) {
+    const label = truncateToWidth(title, maxInner, "…");
+    const fill = Math.max(0, maxInner - visibleWidth(label));
+    return `${theme.fg(borderColor, "╭")}${theme.bold(theme.fg(titleColor, label))}${theme.fg(borderColor, `${"─".repeat(fill)}╮`)}`;
+  }
+  const clippedTitle = truncateToWidth(title, Math.max(1, maxInner - 3), "…");
+  const titlePart = ` ${clippedTitle} `;
+  const fill = Math.max(0, maxInner - 1 - visibleWidth(titlePart));
+  return `${theme.fg(borderColor, "╭─")}${theme.bold(theme.fg(titleColor, titlePart))}${theme.fg(borderColor, `${"─".repeat(fill)}╮`)}`;
 }
 
-function divider(width: number, theme: PanelTheme): string {
-  return theme.fg("border", `├${"─".repeat(Math.max(0, width - 2))}┤`);
+function divider(
+  width: number,
+  theme: PanelTheme,
+  borderColor: PanelColor,
+): string {
+  return theme.fg(borderColor, `├${"─".repeat(Math.max(0, width - 2))}┤`);
 }
 
-function bottomBorder(width: number, theme: PanelTheme): string {
-  return theme.fg("border", `└${"─".repeat(Math.max(0, width - 2))}┘`);
+function bottomBorder(
+  width: number,
+  theme: PanelTheme,
+  borderColor: PanelColor,
+): string {
+  return theme.fg(borderColor, `╰${"─".repeat(Math.max(0, width - 2))}╯`);
 }
 
-function frameLine(content: string, width: number, theme: PanelTheme): string {
+function frameLine(
+  content: string,
+  width: number,
+  theme: PanelTheme,
+  borderColor: PanelColor,
+  thumbColor: PanelColor | null = null,
+): string {
   const inner = Math.max(1, width - 4);
   const body = truncateToWidth(content, inner, "…", true);
-  return `${theme.fg("border", "│")} ${body} ${theme.fg("border", "│")}`;
+  const rightEdge =
+    thumbColor === null
+      ? theme.fg(borderColor, "│")
+      : theme.fg(thumbColor, "┃");
+  return `${theme.fg(borderColor, "│")} ${body} ${rightEdge}`;
 }

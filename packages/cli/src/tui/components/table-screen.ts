@@ -7,6 +7,7 @@ import {
   parseScrollInput,
   scrollFooter,
   sliceViewport,
+  viewportScrollbar,
   type PanelKeybindings,
   type PanelTheme,
 } from "./frame.ts";
@@ -70,11 +71,13 @@ export class TableScreen implements Component {
     );
     this.scrollOffset = viewport.offset;
     const footer = scrollFooter(this.options.footer ?? "esc close", viewport);
+    const scrollbar = viewportScrollbar(viewport);
     const rendered = frameLines(
       {
         title: this.options.title,
         body: viewport.visible,
         ...(footer === undefined ? {} : { footer }),
+        ...(scrollbar === undefined ? {} : { scrollbar }),
       },
       safeWidth,
       this.theme,

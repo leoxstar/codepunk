@@ -7,13 +7,20 @@ import {
   parseScrollInput,
   scrollFooter,
   sliceViewport,
+  viewportScrollbar,
+  type FrameTone,
   type PanelKeybindings,
   type PanelTheme,
   type PanelTone,
 } from "./frame.ts";
 import { TextBlock } from "./text.ts";
 
-export type { PanelKeybindings, PanelTheme, PanelTone } from "./frame.ts";
+export type {
+  FrameTone,
+  PanelKeybindings,
+  PanelTheme,
+  PanelTone,
+} from "./frame.ts";
 
 export interface PanelSection {
   readonly label: string;
@@ -26,6 +33,7 @@ export interface PanelOptions {
   readonly sections: readonly PanelSection[];
   readonly footer?: string;
   readonly viewportHeight?: number;
+  readonly tone?: FrameTone;
 }
 
 const TONE_COLOR: Record<PanelTone, "text" | "muted" | "warning" | "error"> = {
@@ -80,11 +88,14 @@ export class Panel implements Component {
     );
     this.scrollOffset = viewport.offset;
     const footer = scrollFooter(this.options.footer, viewport);
+    const scrollbar = viewportScrollbar(viewport);
     const rendered = frameLines(
       {
         title: this.options.title,
         body: viewport.visible,
         ...(footer === undefined ? {} : { footer }),
+        ...(this.options.tone === undefined ? {} : { tone: this.options.tone }),
+        ...(scrollbar === undefined ? {} : { scrollbar }),
       },
       safeWidth,
       this.theme,

@@ -3,6 +3,7 @@ import {
   BORDERED_MIN_WIDTH,
   frameLines,
   sliceViewport,
+  viewportScrollbar,
   type PanelKeybindings,
   type PanelTheme,
 } from "./frame.ts";
@@ -128,11 +129,13 @@ export class McpPanel implements Component {
         : `${scrollHint}↑/↓ select · a add · r reload · s status${
             selected.transport === "http" ? " · l login · o logout" : ""
           } · d remove · esc close`;
+    const scrollbar = viewportScrollbar(viewport);
     const rendered = frameLines(
       {
         title: this.options.title,
         body: viewport.visible,
         footer,
+        ...(scrollbar === undefined ? {} : { scrollbar }),
       },
       safeWidth,
       this.theme,

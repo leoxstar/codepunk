@@ -14,6 +14,7 @@ import {
   ConfigError,
   PERMISSION_PROFILES,
   PERMISSION_PROFILE_NAMES,
+  THEME_NAME,
   type ApprovalClass,
   type ApprovalMode,
   type CodepunkConfig,
@@ -222,6 +223,15 @@ export async function writeUserTuiPreferences(
   update: TuiPreferencesUpdate,
 ): Promise<string> {
   const tuiValues = new Map<string, string>();
+  if (update.theme !== undefined) {
+    if (!THEME_NAME.test(update.theme)) {
+      throw new ConfigError(
+        "tui.theme must be a valid theme name",
+        "tui.theme",
+      );
+    }
+    tuiValues.set("theme", tomlString(update.theme));
+  }
   if (update.hideThinking !== undefined) {
     tuiValues.set("hide_thinking", update.hideThinking ? "true" : "false");
   }

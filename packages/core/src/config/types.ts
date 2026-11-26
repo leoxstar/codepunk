@@ -198,6 +198,7 @@ export interface LoadedConfig {
 }
 
 export interface TuiPreferencesUpdate {
+  theme?: string;
   hideThinking?: boolean;
   header?: boolean;
   status?: boolean;
