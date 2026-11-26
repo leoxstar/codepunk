@@ -203,6 +203,7 @@ export function createCodepunkToolDefinitions(
     questionChannel?: AskUserChannel | null;
     subagentExecutor?: SubagentToolExecutor | null;
     webSearchEndpoint?: string;
+    environment?: NodeJS.ProcessEnv;
   } = {},
 ): ToolDefinition<any, any, any>[] {
   const defaultEnabled: string[] = [
@@ -268,6 +269,9 @@ export function createCodepunkToolDefinitions(
       ...(options.webSearchEndpoint === undefined
         ? {}
         : { endpoint: options.webSearchEndpoint }),
+      ...(options.environment === undefined
+        ? {}
+        : { environment: options.environment }),
     }),
   );
   if (options.mode !== "worker" && options.mode !== "headless") {

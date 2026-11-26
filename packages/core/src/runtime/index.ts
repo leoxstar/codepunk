@@ -484,6 +484,7 @@ function effectiveTools(
       requested.delete("write");
       requested.delete("edit");
       requested.delete("exec");
+      requested.delete("web_search");
     } else {
       const allowed = new Set(
         headlessPolicy.tools.map((tool) => (tool === "shell" ? "exec" : tool)),

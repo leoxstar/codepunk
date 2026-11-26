@@ -149,6 +149,45 @@ async function defaultShellProbe(
   }
 }
 
+function sandboxFixHint(
+  platform: NodeJS.Platform,
+  sandboxIssue: string,
+): string {
+  if (/Windows sandbox|srt-win|not provisioned/u.test(sandboxIssue)) {
+    return "provision the Windows sandbox once with `npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install`; add `--skip-profile-grant` when the user profile must stay unreadable; shell tools stay disabled until then";
+  }
+  if (platform === "linux") {
+    if (/apparmor|userns|namespace|bwrap/iu.test(sandboxIssue)) {
+      return [
+        "install sandbox packages: sudo apt-get install -y bubblewrap socat ripgrep",
+        "on Ubuntu 24.04+, allow unprivileged user namespaces: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+        "shell tools stay disabled until the sandbox initializes",
+      ].join("\n");
+    }
+    return "install sandbox packages (e.g. `sudo apt-get install -y bubblewrap socat ripgrep`); shell tools stay disabled without srt";
+  }
+  return "install the pinned srt dependency; shell tools stay disabled without it";
+}
+
+function searchBinaryHint(
+  platform: NodeJS.Platform,
+  binaryName: "rg" | "fd",
+): string {
+  const install =
+    platform === "darwin"
+      ? binaryName === "rg"
+        ? "brew install ripgrep"
+        : "brew install fd"
+      : platform === "linux"
+        ? binaryName === "rg"
+          ? "sudo apt-get install -y ripgrep"
+          : "sudo apt-get install -y fd-find"
+        : binaryName === "rg"
+          ? "winget install BurntSushi.ripgrep.MSVC"
+          : "winget install sharkdp.fd";
+  return `install ${binaryName} (e.g. \`${install}\`); codepunk never downloads it at tool-call time`;
+}
+
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
@@ -209,12 +248,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     id: "srt",
     status: sandboxIssue === null ? "ok" : "error",
     message: sandboxIssue ?? "srt sandbox is available",
-    hint:
-      sandboxIssue === null
-        ? null
-        : /Windows sandbox|srt-win|not provisioned/u.test(sandboxIssue)
-          ? "provision the Windows sandbox once with `npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install`; add `--skip-profile-grant` when the user profile must stay unreadable; shell tools stay disabled until then"
-          : "install the pinned srt dependency; shell tools stay disabled without it",
+    hint: sandboxIssue === null ? null : sandboxFixHint(platform, sandboxIssue),
   });
   const modelIssue =
     typeof options.modelProbe === "function"
@@ -232,7 +266,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         ? null
         : modelIssue.includes("\n")
           ? modelIssue
-          : "run `codepunk models list`; set a default with `codepunk models set <provider/model>`",
+          : "run `codepunk setup` or `codepunk models list` and `codepunk models set <provider/model>`",
   });
   for (const binaryName of ["rg", "fd"] as const) {
     const binary = await resolveSearchBinary(binaryName, environment);
@@ -241,10 +275,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       status: binary === null ? "warn" : "ok",
       message:
         binary === null ? `${binaryName} was not found on PATH` : binary.path,
-      hint:
-        binary === null
-          ? "install the local search binary; codepunk never downloads it at tool-call time"
-          : null,
+      hint: binary === null ? searchBinaryHint(platform, binaryName) : null,
     });
   }
   try {

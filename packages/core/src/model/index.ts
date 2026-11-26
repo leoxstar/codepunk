@@ -340,9 +340,63 @@ function modelsPath(paths: ProjectPaths): string {
   return path.join(paths.home, "models.json");
 }
 
+export const RECOMMENDED_SETUP_PROVIDERS = [
+  "anthropic",
+  "openai",
+  "google",
+  "deepseek",
+  "openrouter",
+  "moonshotai",
+  "xai",
+  "groq",
+  "mistral",
+] as const;
+
+export interface DetectedDefaultModel {
+  readonly model: ConfiguredModel;
+  readonly totalAvailable: number;
+}
+
+export async function detectAvailableDefaultModel(
+  paths: ProjectPaths,
+  config: CodepunkConfig,
+  runtime?: ModelRuntime,
+): Promise<DetectedDefaultModel | null> {
+  const resolvedRuntime = runtime ?? (await openModelRuntime(paths));
+  const available = (await resolvedRuntime.getAvailable()).filter(
+    (model) =>
+      !isFallbackModel(model) &&
+      modelMatchesEnabledScope(model, config.model.enabled),
+  );
+  if (available.length === 0) {
+    return null;
+  }
+  const rank = (provider: string): number => {
+    const idx = (RECOMMENDED_SETUP_PROVIDERS as readonly string[]).indexOf(
+      provider,
+    );
+    return idx === -1 ? RECOMMENDED_SETUP_PROVIDERS.length : idx;
+  };
+  const sorted = [...available].sort((left, right) => {
+    const providerDiff = rank(left.provider) - rank(right.provider);
+    if (providerDiff !== 0) {
+      return providerDiff;
+    }
+    if (left.reasoning !== right.reasoning) {
+      return left.reasoning ? -1 : 1;
+    }
+    return right.contextWindow - left.contextWindow;
+  });
+  return {
+    model: sorted[0]!,
+    totalAvailable: available.length,
+  };
+}
+
 export function modelSetupHint(): string {
   return [
     "no model configured",
+    "  setup:  codepunk setup",
     "  list:   codepunk models list",
     "  add:    codepunk models import <base-url> --provider <id> --api openai-responses",
     "  choose: codepunk models set <provider/model>",
@@ -1266,6 +1320,17 @@ export async function probeConfiguredModel(
   config: CodepunkConfig,
 ): Promise<string | null> {
   if (config.model.provider === null || config.model.id === null) {
+    const detected = await detectAvailableDefaultModel(paths, config).catch(
+      () => null,
+    );
+    if (detected !== null) {
+      const ref = `${detected.model.provider}/${detected.model.id}`;
+      return [
+        `no model configured (detected ${detected.totalAvailable} ready model(s), e.g. ${ref})`,
+        `  quick:  codepunk models set ${ref}`,
+        ...modelSetupHint().split("\n").slice(1),
+      ].join("\n");
+    }
     return modelSetupHint();
   }
   const provider = config.model.provider;

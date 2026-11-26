@@ -225,6 +225,7 @@ export {
   WEB_SEARCH_TOOL_NAME,
   createWebSearchTool,
   parseDuckDuckGoHtml,
+  parseSearchJson,
   type WebSearchResultItem,
   type WebSearchToolOptions,
 } from "./websearch/index.ts";
@@ -589,6 +590,8 @@ export {
   type PackageActionResult,
 } from "./ops/package.ts";
 export {
+  RECOMMENDED_SETUP_PROVIDERS,
+  detectAvailableDefaultModel,
   fetchProviderModels,
   formatModelCatalog,
   importProviderModels,
@@ -607,12 +610,14 @@ export {
   resolveModelSelection,
   resolveConfiguredModel,
   setConfiguredModel,
+  setProviderAuthCredential,
   summarizeModelUsage,
   summarizeModelUsageBySource,
   summarizeSessionModelUsage,
   testConfiguredModel,
   writeModelsProvider,
   type ConfiguredModel,
+  type DetectedDefaultModel,
   type ModelCatalog,
   type ModelCatalogEntry,
   type ModelErrorCode,
