@@ -409,10 +409,12 @@ async function selectCustomTrust(
 export function trustRuntimeOptions(trust: WorkspaceTrust): {
   projectTrust: WorkspaceTrustGrants;
   projectTrustSource: WorkspaceTrustSource;
+  projectTrustSavedPath: string | null;
 } {
   return {
     projectTrust: trust.grants,
     projectTrustSource: trust.source,
+    projectTrustSavedPath: trust.savedPath,
   };
 }
 

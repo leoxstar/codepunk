@@ -845,6 +845,7 @@ export async function resolveWorkspaceTrust(input: {
   home: string;
   override?: boolean | WorkspaceTrustGrants | null;
   source?: WorkspaceTrustSource;
+  savedPath?: string | null;
   includeSkills?: boolean;
   includeInstructions?: boolean;
 }): Promise<WorkspaceTrust> {
@@ -891,11 +892,11 @@ export async function resolveWorkspaceTrust(input: {
   if (input.override === true || input.override === false) {
     grants = allWorkspaceTrustGrants(input.override);
     source = input.source ?? "flag";
-    savedPath = null;
+    savedPath = input.savedPath ?? null;
   } else if (input.override !== undefined && input.override !== null) {
     grants = { ...input.override };
     source = input.source ?? "flag";
-    savedPath = null;
+    savedPath = input.savedPath ?? null;
   } else if (savedResources !== null) {
     grants = { ...savedResources.entry.grants };
     source = "saved";

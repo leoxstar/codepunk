@@ -4238,6 +4238,7 @@ test("a real pty remembers the default trust choice", async () => {
       await waitForOutput(first, "Project trust", "first trust prompt");
       first.child.stdin.write("\r");
       await waitForOutput(first, "codepunk · auto/auto", "first startup");
+      await waitForOutput(first, "trust trusted (saved)", "remembered status");
       const store = JSON.parse(
         await fs.readFile(path.join(home, "trust.json"), "utf8"),
       );

@@ -187,6 +187,7 @@ async function createRuntimeInner(
       : {
           override: options.projectTrust,
           source: options.projectTrustSource ?? ("flag" as const),
+          savedPath: options.projectTrustSavedPath ?? null,
         }),
   });
   const hooks = new HookRunner({

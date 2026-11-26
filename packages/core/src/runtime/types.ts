@@ -63,6 +63,12 @@ export interface RuntimeOptions {
    */
   projectTrust?: WorkspaceTrustGrants;
   projectTrustSource?: WorkspaceTrustSource;
+  /**
+   * Saved-store path when the trust decision was just persisted. The
+   * override still applies for this runtime, but status output must not
+   * describe a remembered decision as session-only.
+   */
+  projectTrustSavedPath?: string | null;
   allowMissingModel?: boolean;
   disableMcp?: boolean;
   deferMcp?: boolean;

@@ -1143,6 +1143,25 @@ test("a custom resource decision is exact-root and session overrides do not pers
     });
     assert.equal(sessionOnly.mode, "custom");
     assert.equal(sessionOnly.source, "prompt");
+    const remembered = await core.resolveWorkspaceTrust({
+      cwd: nested,
+      root: nested,
+      home,
+      override: {
+        config: false,
+        policy: false,
+        skills: false,
+        instructions: true,
+      },
+      source: "prompt",
+      savedPath: await fs.realpath(nested),
+    });
+    assert.equal(remembered.source, "prompt");
+    assert.equal(remembered.savedPath, await fs.realpath(nested));
+    assert.doesNotMatch(
+      core.formatWorkspaceTrust(remembered),
+      /scope: this session only/u,
+    );
     const stored = JSON.parse(
       await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
     );
