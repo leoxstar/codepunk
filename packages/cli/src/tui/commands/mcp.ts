@@ -236,7 +236,7 @@ async function openInteractiveMcpPanel(
   }
   if (decision.action === "reload") {
     const reloaded = await runtime.reloadMcp();
-    context.ui.notify(
+    (state.context ?? context).ui.notify(
       formatMcpReload(reloaded),
       reloaded.error === null ? "info" : "error",
     );

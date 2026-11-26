@@ -68,20 +68,20 @@ async function showStructuredOrNotify(
 }
 
 async function triggerReload(
+  state: TuiState,
   runtime: CodepunkRuntime,
-  context: ExtensionCommandContext,
 ): Promise<void> {
   try {
     await runtime.reloadConfig();
     await runtime.reloadPlugins();
     await runtime.reloadSkills();
     await runtime.reloadMcp();
-    context.ui.notify(
+    state.context?.ui.notify(
       "Reloaded config, plugins, skills, and MCP configuration.",
       "info",
     );
   } catch (error) {
-    context.ui.notify(
+    state.context?.ui.notify(
       `Reload failed: ${error instanceof Error ? error.message : String(error)}`,
       "error",
     );
@@ -326,7 +326,7 @@ export function skillsCommand(state: TuiState): TuiCommand {
             ),
         );
         if (action === "reload") {
-          await triggerReload(runtime, context);
+          await triggerReload(state, runtime);
         }
         return;
       }
@@ -382,7 +382,7 @@ export function pluginsCommand(state: TuiState): TuiCommand {
             ),
         );
         if (action === "reload") {
-          await triggerReload(runtime, context);
+          await triggerReload(state, runtime);
         } else if (action === "toggle-plugins") {
           const next = !runtime.plugins.enabled;
           if (next) {
@@ -395,7 +395,7 @@ export function pluginsCommand(state: TuiState): TuiCommand {
             }
           }
           await writeUserPluginsEnabled(runtime.paths, next);
-          await triggerReload(runtime, context);
+          await triggerReload(state, runtime);
         }
         return;
       }
