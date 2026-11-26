@@ -1,129 +1,90 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import {
-  type HookEvidence,
-  type SessionEvent,
-  type SignOffRequest,
-} from "codepunk-protocol";
-import type {
-  AgentSession,
-  AgentSessionServices,
-  InlineExtension,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+import { type HookEvidence, type SignOffRequest } from "codepunk-protocol";
 import { createPiHost, type PiHost } from "../adapters/pi/index.ts";
-import { CheckpointStore } from "../checkpoints/index.ts";
-import { loadContext } from "../context/index.ts";
+import { ApprovalBroker } from "../approval/index.ts";
 import {
   AutonomyController,
-  isShellLauncher,
-  resolveExecutable,
   type AutonomyRegistration,
   type ScopedRule,
 } from "../autonomy/index.ts";
+import { HookRunner } from "../capabilities/hooks.ts";
+import { CheckpointStore } from "../checkpoints/index.ts";
 import {
   ConfigError,
   loadConfig,
   piSettings,
   type CodepunkConfig,
-  type ConfigOverrides,
-  type FilesystemMode,
-  type LoadedConfig,
 } from "../config/index.ts";
 import {
   headlessLayer,
   loadHeadlessPolicy,
   loadPolicyFiles,
   type HeadlessPolicy,
-  type PolicyFiles,
 } from "../config/policy.ts";
 import { loadScopedRules } from "../config/scoped.ts";
-import { ApprovalBroker, type ApprovalChannel } from "../approval/index.ts";
+import { loadContext } from "../context/index.ts";
+import { readEvidenceFile } from "../evidence/index.ts";
 import {
-  type EvidenceAppendInput,
-  EvidenceLedger,
-  readEvidenceFile,
-  type EvidenceLedgerPort,
-} from "../evidence/index.ts";
-import {
-  filesystemFullStartupIssue,
-  readOnlyLiveSwitchIssue,
-  readOnlyLiveWidenIssue,
-  shellUnavailableReason,
-} from "../permissions/index.ts";
-import {
-  DeferredActionReviewer,
-  resolveActionReviewer,
-  type ActionReviewer,
-} from "../reviewer/index.ts";
-import {
-  MemoryManager,
-  type MemoryManager as MemoryManagerType,
-} from "../memory/index.ts";
-import {
-  ensureProjectConfigDir,
-  ensureProjectRegistration,
-  ensureCodepunkHome,
-  assertProjectConfigSafe,
-  findDeliveryRoot,
-  projectPaths,
-  resolveAdditionalWorkspaceRoots,
-  resolveCodepunkHome,
-  type ProjectContext,
-  type ProjectPaths,
-} from "../platform/paths.ts";
-import { createUlid, sha256Bytes, sha256Text } from "../platform/hash.ts";
-import { normalizeAbsolute, relativeDisplayPath } from "../platform/path.ts";
+  emptyMcpBundle,
+  findProjectMcpConfigs,
+  loadMcpTools,
+  type McpBundle,
+  type McpServerStart,
+} from "../mcp/index.ts";
+import { MemoryManager } from "../memory/index.ts";
+import { isFallbackModel } from "../model/fallback.ts";
 import {
   ModelError,
   openModelRuntime,
   resolveConfiguredModel,
   resolveFallbackContextWindow,
   summarizeSessionModelUsage,
-  type ConfiguredModel,
-  type ModelUsageSummary,
 } from "../model/index.ts";
-import { isFallbackModel } from "../model/fallback.ts";
 import {
-  loadUserPlugins,
-  type PluginLoadResult,
-  type PluginSummary,
-} from "../plugin/index.ts";
+  filesystemFullStartupIssue,
+  readOnlyLiveSwitchIssue,
+  readOnlyLiveWidenIssue,
+  shellUnavailableReason,
+} from "../permissions/index.ts";
+import { createUlid, sha256Text } from "../platform/hash.ts";
+import { relativeDisplayPath } from "../platform/path.ts";
 import {
-  emptyMcpBundle,
-  findProjectMcpConfigs,
-  loadMcpTools,
-  type McpBundle,
-  type McpServerFailure,
-  type McpServerStart,
-} from "../mcp/index.ts";
+  assertProjectConfigSafe,
+  ensureCodepunkHome,
+  ensureProjectConfigDir,
+  ensureProjectRegistration,
+  findDeliveryRoot,
+  projectPaths,
+  resolveAdditionalWorkspaceRoots,
+} from "../platform/paths.ts";
+import { loadUserPlugins, type PluginLoadResult } from "../plugin/index.ts";
 import {
-  loadSkills,
-  type SkillBundle,
-  type SkillSource,
-} from "../skills/index.ts";
-import { HookRunner } from "../capabilities/hooks.ts";
+  DeferredActionReviewer,
+  resolveActionReviewer,
+  type ActionReviewer,
+} from "../reviewer/index.ts";
 import {
   DeferredSandbox,
-  probeWindowsShell,
-  resolveWindowsShell,
   SandboxManager,
   SrtSandbox,
   UnsandboxedShell,
+  probeWindowsShell,
+  resolveWindowsShell,
   type ShellProvider,
 } from "../sandbox/index.ts";
-import {
-  SessionStore,
-  isBenignTailEventKind,
-  type SessionStore as SessionStoreType,
-} from "../session/index.ts";
+import { isBenignTailEventKind } from "../session/index.ts";
+import { loadSkills, type SkillBundle } from "../skills/index.ts";
 import {
   resolveWorkspaceTrust,
   skippedProjectResources,
-  type WorkspaceTrust,
-  type WorkspaceTrustGrants,
-  type WorkspaceTrustSource,
 } from "../trust/index.ts";
+import { prepareSignOff } from "../verdict/index.ts";
+import {
+  appendEvidenceIndex,
+  deriveAndWriteVerdict,
+  evidenceRunPath,
+} from "../verdict/store.ts";
 import {
   isPlanModeReadOnlyTool,
   planContentHash,
@@ -131,521 +92,48 @@ import {
   readWorkState,
   type PlanModeState,
 } from "../work/index.ts";
-import { listProjectSessions, resolveSession } from "../session/ops.ts";
 import {
-  appendEvidenceIndex,
-  deriveAndWriteVerdict,
-  evidenceRunPath,
-  signRun,
-} from "../verdict/store.ts";
-import { prepareSignOff } from "../verdict/index.ts";
+  CONFIG_SECTIONS,
+  closePendingSandboxForStartupFailure,
+  configValuesEqual,
+  effectiveTools,
+  latestSignOffId,
+  openSession,
+  pathsHome,
+  sessionSelectorIssue,
+  signStandalone,
+  verifyHeadlessExec,
+} from "./helpers.ts";
+import {
+  RunLedger,
+  type AgentSession,
+  type AgentSessionServices,
+  type CodepunkRuntime,
+  type ConfigReloadResult,
+  type McpReloadResult,
+  type McpReloadSkip,
+  type PluginReloadResult,
+  type RuntimeOptions,
+  type RuntimeSignResult,
+  type SessionManager,
+  type SkillReloadResult,
+} from "./types.ts";
 
-export interface RuntimeOptions {
-  cwd: string;
-  additionalDirs?: readonly string[];
-  environment?: NodeJS.ProcessEnv;
-  configOverrides?: ConfigOverrides;
-  model?: NonNullable<Parameters<typeof createPiHost>[0]["model"]>;
-  sessionId?: string;
-  sessionPath?: string;
-  newSessionId?: string;
-  parentSessionId?: string;
-  continueSession?: boolean;
-  newSession?: boolean;
-  allowPlugins?: boolean;
-  allowFullFilesystem?: boolean;
-  headless?: boolean;
-  headlessPolicyPath?: string;
-  allowUnsandboxedShell?: boolean;
-  /**
-   * Per-resource workspace decision captured before the host starts. It
-   * overrides saved decisions for this runtime only. Consumers must read the
-   * matching grant instead of a single boolean.
-   */
-  projectTrust?: WorkspaceTrustGrants;
-  projectTrustSource?: WorkspaceTrustSource;
-  allowMissingModel?: boolean;
-  disableMcp?: boolean;
-  deferMcp?: boolean;
-  disableSkills?: boolean;
-  disablePlugins?: boolean;
-  bare?: boolean;
-  approvalChannel?: ApprovalChannel | null;
-  questionChannel?: import("../tools/ask-user.ts").AskUserChannel | null;
-  subagentExecutor?: import("../tools/subagent.ts").SubagentToolExecutor | null;
-  bindMode?: "print" | "tui";
-  runId?: string;
-  additionalExtensionFactories?: readonly InlineExtension[];
-  now?: () => Date;
-  timeZone?: string;
-}
-
-export interface RuntimeSignResult {
-  verdict: import("codepunk-protocol").Verdict;
-  artifactPath: string;
-  issues: string[];
-}
-
-export class RunLedger implements EvidenceLedgerPort {
-  private current: EvidenceLedger | null = null;
-  private currentPath: string | null = null;
-  private readonly paths: ProjectPaths;
-  private readonly sessionId: string;
-  private runId: string;
-
-  constructor(paths: ProjectPaths, sessionId: string, runId: string) {
-    this.paths = paths;
-    this.sessionId = sessionId;
-    this.runId = runId;
-  }
-
-  async prepare(runId: string): Promise<void> {
-    this.runId = runId;
-    this.currentPath = evidenceRunPath(this.paths, this.sessionId, runId);
-    this.current = await EvidenceLedger.open(this.currentPath);
-  }
-
-  get filePath(): string {
-    if (this.currentPath === null) {
-      throw new Error("run ledger is not initialized");
-    }
-    return this.currentPath;
-  }
-
-  get all(): readonly import("codepunk-protocol").EvidenceRecord[] {
-    return this.current?.all ?? [];
-  }
-
-  get head(): string | null {
-    return this.current?.head ?? null;
-  }
-
-  get hasTruncatedTail(): boolean {
-    return this.current?.hasTruncatedTail ?? false;
-  }
-
-  async append(
-    input: EvidenceAppendInput,
-  ): Promise<import("codepunk-protocol").EvidenceRecord> {
-    if (this.current === null) {
-      throw new Error("run ledger is not initialized");
-    }
-    return this.current.append(input);
-  }
-
-  get activeRunId(): string {
-    return this.runId;
-  }
-}
-
-export interface CodepunkRuntime {
-  project: ProjectContext;
-  paths: ProjectPaths;
-  config: CodepunkConfig;
-  configOverrides: ConfigOverrides;
-  loadedConfig: LoadedConfig;
-  policy: PolicyFiles;
-  plugins: PluginSummary;
-  skills: readonly SkillSource[];
-  isolation: {
-    bare: boolean;
-    context: boolean;
-    skills: boolean;
-    plugins: boolean;
-    mcp: boolean;
-    memory: boolean;
-  };
-  mcpServers: readonly string[];
-  mcpStatus: "ready" | "connecting" | "skipped" | "failed";
-  mcpReady: Promise<void>;
-  mcpStartupWarnings: readonly string[];
-  workspaceTrust: WorkspaceTrust;
-  memory: MemoryManagerType;
-  session: SessionStoreType;
-  checkpoints: CheckpointStore;
-  ledger: RunLedger;
-  sandbox: ShellProvider | null;
-  sandboxReady: Promise<ShellProvider | null>;
-  shellPreflightIssue: string | null;
-  shellPreflightSettled(): Promise<void>;
-  autonomy: AutonomyController;
-  approval: ApprovalBroker;
-  host: PiHost;
-  primaryModel: ConfiguredModel | undefined;
-  fallbackModels: readonly string[];
-  runId: string;
-  evidencePath: string;
-  /**
-   * Execution settings bound when this host started. Approval and ordinary
-   * autonomy changes apply live; entering or leaving read-only with an active
-   * srt shell requires a restart, and sandbox/filesystem/network changes are
-   * next-session settings. Explanations must not read the mutated config
-   * snapshot for these values.
-   */
-  permissionSnapshot: {
-    filesystem: FilesystemMode;
-    readOnly: boolean;
-    networkAllow: readonly string[];
-    networkDeny: readonly string[];
-  };
-  usage(): ModelUsageSummary;
-  setApprovalMode(mode: "ask" | "deny" | "auto" | "allow"): void;
-  planMode: {
-    state(): PlanModeState | null;
-    enter(): Promise<PlanModeState>;
-    approve(): Promise<PlanModeState>;
-    exit(): Promise<PlanModeState>;
-  };
-  /**
-   * Re-read the layered Codepunk config without replacing the session.
-   * Approval mode, autonomy, and the plugin-enable switch can take effect
-   * live. Settings bound into the Pi host or OS sandbox are reported for the
-   * next session and are not applied to the active execution boundary.
-   */
-  reloadConfig(): Promise<ConfigReloadResult>;
-  signInProcess(
-    verdict: "complete" | "incomplete",
-    options?: { channel?: "tui" | "cli"; actor?: string; tty?: boolean },
-  ): Promise<RuntimeSignResult>;
-  recordMemoryWrite(input: {
-    scope: "user" | "project";
-    action: "add" | "edit" | "delete" | "archive" | "reject";
-    memoryId: string | null;
-    contentSha256: string | null;
-    sourceRefs: readonly string[];
-    reason: string | null;
-  }): Promise<void>;
-  /**
-   * Re-read `$CODEPUNK_HOME/mcp.toml`, replace the MCP tool surface, and let
-   * Pi rebuild its extension/tool registry. This is the `/reload` path; it
-   * does not recreate the Codepunk session or its evidence chain.
-   */
-  reloadMcp(): Promise<McpReloadResult>;
-  /**
-   * Re-discover user and trusted project skills, replace the injected skill
-   * block and the readable-skill policy exception, then rebuild Pi's prompt
-   * registry in place.
-   */
-  reloadSkills(): Promise<SkillReloadResult>;
-  /**
-   * Re-scan `$CODEPUNK_HOME/extensions`, replace Pi's extension path set, and
-   * rebuild the extension/tool registry without recreating the session.
-   * Disabled, read-only, and headless sessions keep plugins off.
-   */
-  reloadPlugins(): Promise<PluginReloadResult>;
-  dispose(): Promise<void>;
-}
-
-export type McpReloadSkip = "disabled" | "no-model" | "read-only";
-
-export interface McpReloadResult {
-  skipped: McpReloadSkip | null;
-  servers: readonly string[];
-  toolCounts: Readonly<Record<string, number>>;
-  resourceServers: readonly string[];
-  failures: readonly McpServerFailure[];
-  warnings: readonly string[];
-  error: string | null;
-}
-
-export interface SkillReloadResult {
-  skipped: "disabled" | null;
-  skills: readonly SkillSource[];
-  blockSha256: string;
-  warnings: readonly string[];
-  error: string | null;
-}
-
-export interface PluginReloadResult {
-  skipped: "disabled" | "read-only" | "headless" | null;
-  plugins: PluginSummary;
-  error: string | null;
-}
-
-export interface ConfigReloadResult {
-  changed: boolean;
-  changedSections: readonly string[];
-  applied: readonly string[];
-  nextSession: readonly string[];
-  blocked: readonly string[];
-  warnings: readonly string[];
-  pluginsChanged: boolean;
-}
-
-function executableHash(bytes: Buffer): string {
-  return sha256Bytes(bytes);
-}
-
-function commandMatches(
-  rule: HeadlessPolicy["commands"][number],
-  argv: readonly string[],
-  cwd: string,
-): boolean {
-  if (rule.argv.length !== argv.length) {
-    return false;
-  }
-  if (normalizeAbsolute(rule.cwd) !== normalizeAbsolute(cwd)) {
-    return false;
-  }
-  return rule.argv.every((value, index) => value === argv[index]);
-}
-
-async function verifyHeadlessExec(
-  policy: HeadlessPolicy,
-  argv: readonly string[],
-  cwd: string,
-): Promise<string | null> {
-  const rule = policy.commands.find((candidate) =>
-    commandMatches(candidate, argv, cwd),
-  );
-  if (rule === undefined) {
-    return "argv is not approved by the headless policy";
-  }
-  const resolved = await resolveExecutable(argv[0]!, rule.cwd);
-  if (resolved === null) {
-    return "approved executable cannot be resolved";
-  }
-  const executable = normalizeAbsolute(resolved);
-  let resolvedExecutable: string;
-  try {
-    resolvedExecutable = normalizeAbsolute(await fs.realpath(executable));
-  } catch {
-    return "approved executable cannot be resolved";
-  }
-  const launcher =
-    isShellLauncher([resolvedExecutable]) || isShellLauncher([executable]);
-  if (launcher) {
-    // An interpreter may run exactly one approved script: the policy pins the
-    // whole argv, the interpreter digest above, and the script digest below.
-    // Without a pinned script, or with a flag in the script position, a
-    // launcher would still interpret whatever it is handed.
-    if (rule.script_sha256 === null) {
-      return "shell and interpreter launchers are not allowed by headless exec";
-    }
-    const scriptArg = argv[1];
-    if (scriptArg === undefined || scriptArg.startsWith("-")) {
-      return "launcher script argument is missing or is a flag";
-    }
-  }
-  let bytes: Buffer;
-  try {
-    bytes = await fs.readFile(executable);
-  } catch {
-    return "approved executable cannot be read";
-  }
-  if (bytes.subarray(0, 2).toString("utf8") === "#!") {
-    return "headless exec accepts native executables only";
-  }
-  if (executableHash(bytes) !== rule.executable_sha256) {
-    return "approved executable digest changed";
-  }
-  if (rule.script_sha256 !== null) {
-    const scriptArg = argv[1];
-    if (scriptArg === undefined) {
-      return "approved script argument is missing";
-    }
-    const script = normalizeAbsolute(
-      path.isAbsolute(scriptArg)
-        ? scriptArg
-        : path.resolve(rule.cwd, scriptArg),
-    );
-    let scriptBytes: Buffer;
-    try {
-      scriptBytes = await fs.readFile(script);
-    } catch {
-      return "approved script cannot be read";
-    }
-    if (executableHash(scriptBytes) !== rule.script_sha256) {
-      return "approved script digest changed";
-    }
-  }
-  return null;
-}
-
-function effectiveTools(
-  config: CodepunkConfig,
-  sandbox: ShellProvider | null,
-  memory: MemoryManagerType,
-  headless: boolean,
-  headlessPolicy: HeadlessPolicy | null = null,
-): string[] {
-  let requested = new Set(config.tools.enabled);
-  if (headless) {
-    // A one-shot print run has no interactive work-state lifecycle. Keep the
-    // read-only surface small instead of exposing plan/todo writes that the
-    // caller cannot observe or continue.
-    requested.delete("plan");
-    requested.delete("todo");
-    requested.delete("ask_user");
-    requested.delete("subagent");
-    if (headlessPolicy === null) {
-      requested.delete("shell");
-      requested.delete("bash");
-      requested.delete("write");
-      requested.delete("edit");
-      requested.delete("exec");
-      requested.delete("web_search");
-    } else {
-      const allowed = new Set(
-        headlessPolicy.tools.map((tool) => (tool === "shell" ? "exec" : tool)),
-      );
-      requested = new Set(
-        [...requested].filter((tool) =>
-          allowed.has(tool === "shell" ? "exec" : tool),
-        ),
-      );
-      if (allowed.has("exec")) {
-        requested.add("exec");
-      }
-      requested.delete("shell");
-      requested.delete("bash");
-    }
-  }
-  if (!memory.enabled) {
-    requested.delete("memory_search");
-  }
-  if (sandbox === null) {
-    requested.delete("shell");
-    requested.delete("bash");
-    if (!headless) {
-      requested.delete("exec");
-    }
-  }
-  return [...requested].map((name) => (name === "shell" ? "bash" : name));
-}
-
-function sessionSelectorIssue(options: RuntimeOptions): string | null {
-  if (options.newSessionId === undefined) {
-    return null;
-  }
-  if (options.sessionId !== undefined || options.sessionPath !== undefined) {
-    return "newSessionId cannot be combined with an existing session selector";
-  }
-  if (options.continueSession === true) {
-    return "newSessionId cannot be combined with --continue";
-  }
-  return null;
-}
-
-async function openSession(
-  options: RuntimeOptions,
-  paths: ProjectPaths,
-  heartbeatMs: number,
-  leaseMs: number,
-): Promise<SessionStoreType> {
-  const selectorIssue = sessionSelectorIssue(options);
-  if (selectorIssue !== null) {
-    throw new Error(selectorIssue);
-  }
-  if (
-    options.parentSessionId !== undefined &&
-    options.newSession !== true &&
-    options.newSessionId === undefined
-  ) {
-    throw new Error(
-      "parentSessionId requires --new-session or --new-session-id",
-    );
-  }
-  if (
-    options.parentSessionId !== undefined &&
-    (options.sessionId !== undefined ||
-      options.sessionPath !== undefined ||
-      options.continueSession === true)
-  ) {
-    throw new Error(
-      "parentSessionId cannot be combined with an existing session selector",
-    );
-  }
-  if (options.newSession === true) {
-    return SessionStore.create({
-      rootDir: paths.home,
-      cwd: paths.cwd,
-      projectRoot: paths.deliveryRoot,
-      projectId: paths.projectId,
-      ...(options.newSessionId !== undefined
-        ? { sessionId: options.newSessionId }
-        : {}),
-      ...(options.parentSessionId !== undefined
-        ? { parentSessionId: options.parentSessionId }
-        : {}),
-      heartbeatMs,
-      leaseMs,
-      ...(options.now !== undefined ? { now: options.now } : {}),
-    });
-  }
-  if (options.sessionId === undefined && options.sessionPath === undefined) {
-    if (!options.continueSession) {
-      return SessionStore.create({
-        rootDir: paths.home,
-        cwd: paths.cwd,
-        projectRoot: paths.deliveryRoot,
-        projectId: paths.projectId,
-        ...(options.newSessionId !== undefined
-          ? { sessionId: options.newSessionId }
-          : {}),
-        ...(options.parentSessionId !== undefined
-          ? { parentSessionId: options.parentSessionId }
-          : {}),
-        heartbeatMs,
-        leaseMs,
-        ...(options.now !== undefined ? { now: options.now } : {}),
-      });
-    }
-    const sessions = await listProjectSessions(paths.home, paths.projectId);
-    if (sessions.length === 0) {
-      return SessionStore.create({
-        rootDir: paths.home,
-        cwd: paths.cwd,
-        projectRoot: paths.deliveryRoot,
-        projectId: paths.projectId,
-        ...(options.newSessionId !== undefined
-          ? { sessionId: options.newSessionId }
-          : {}),
-        ...(options.parentSessionId !== undefined
-          ? { parentSessionId: options.parentSessionId }
-          : {}),
-        heartbeatMs,
-        leaseMs,
-        ...(options.now !== undefined ? { now: options.now } : {}),
-      });
-    }
-  }
-  return resolveSession({
-    rootDir: paths.home,
-    cwd: paths.cwd,
-    projectRoot: paths.deliveryRoot,
-    projectId: paths.projectId,
-    ...(options.sessionId !== undefined
-      ? { sessionId: options.sessionId }
-      : {}),
-    ...(options.sessionPath !== undefined
-      ? { sessionPath: options.sessionPath }
-      : {}),
-    heartbeatMs,
-    leaseMs,
-  });
-}
-
-const CONFIG_SECTIONS = [
-  "tui",
-  "context",
-  "model",
-  "plugins",
-  "tools",
-  "approval",
-  "autonomy",
-  "sandbox",
-  "filesystem",
-  "session",
-  "evidence",
-  "budget",
-  "memory",
-  "telemetry",
-] as const satisfies readonly (keyof CodepunkConfig)[];
-
-function configValuesEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
+export {
+  RunLedger,
+  signStandalone,
+  type AgentSession,
+  type AgentSessionServices,
+  type CodepunkRuntime,
+  type ConfigReloadResult,
+  type McpReloadResult,
+  type McpReloadSkip,
+  type PluginReloadResult,
+  type RuntimeOptions,
+  type RuntimeSignResult,
+  type SessionManager,
+  type SkillReloadResult,
+};
 
 export async function createRuntime(
   options: RuntimeOptions,
@@ -663,14 +151,6 @@ export async function createRuntime(
     await closePendingSandboxForStartupFailure(startupCleanup);
     throw error;
   }
-}
-
-async function closePendingSandboxForStartupFailure(startupCleanup: {
-  current: (() => Promise<void>) | null;
-}): Promise<void> {
-  const cleanup = startupCleanup.current;
-  startupCleanup.current = null;
-  await cleanup?.();
 }
 
 async function createRuntimeInner(
@@ -2137,50 +1617,3 @@ async function createRuntimeInner(
   };
   return runtime;
 }
-
-function pathsHome(environment: NodeJS.ProcessEnv | undefined): string {
-  return normalizeAbsolute(resolveCodepunkHome(environment ?? process.env));
-}
-
-function latestSignOffId(
-  events: readonly SessionEvent[],
-  runId: string,
-): string | null {
-  const signOffs = events.filter(
-    (event): event is Extract<SessionEvent, { kind: "verdict/sign_off" }> =>
-      event.kind === "verdict/sign_off" && event.data.run_id === runId,
-  );
-  return signOffs.at(-1)?.data.sign_off_id ?? null;
-}
-
-export async function signStandalone(options: {
-  cwd: string;
-  environment?: NodeJS.ProcessEnv;
-  runId: string;
-  verdict: "complete" | "incomplete";
-  actor?: string;
-  tty?: boolean;
-  now?: () => Date;
-}): Promise<RuntimeSignResult> {
-  const project = await findDeliveryRoot(options.cwd);
-  const paths = projectPaths(project, pathsHome(options.environment));
-  return signRun({
-    paths,
-    cwd: paths.cwd,
-    projectRoot: paths.deliveryRoot,
-    runId: options.runId,
-    request: {
-      version: 1,
-      evidence_head: "",
-      signed_verdict: options.verdict,
-      channel: "cli",
-      actor: options.actor ?? "local-user",
-      is_tty: options.tty !== false,
-      source: "human",
-      previous_sign_off_id: null,
-    },
-    ...(options.now !== undefined ? { now: options.now } : {}),
-  });
-}
-
-export type { AgentSession, AgentSessionServices, SessionManager };

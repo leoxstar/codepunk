@@ -1,277 +1,82 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import type {
-  AuthOperationOptions,
-  Credential,
-  CredentialInfo,
-  CredentialStore,
-} from "@earendil-works/pi-ai";
 import {
   ModelRuntime,
   resolveCliModel,
   resolveModelScopeWithDiagnostics,
-  type MessageEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { SessionEvent } from "codepunk-protocol";
 import {
   writeUserModelSelection,
   type CodepunkConfig,
   type ThinkingLevel,
 } from "../config/index.ts";
+import type { ProjectPaths } from "../platform/paths.ts";
 import {
-  CLAIM_LOCK_STALE_MS,
-  CLAIM_LOCK_TIMEOUT_MS,
-  withClaimFileLock,
-} from "../platform/file-lock.ts";
+  ModelError,
+  openModelRuntime,
+  setProviderAuthCredential,
+  type ModelErrorCode,
+} from "./auth-store.ts";
 import {
   fallbackConfigurationErrors,
   isFallbackModel,
   resolveFallbackChain,
 } from "./fallback.ts";
-import { atomicWriteFile } from "../platform/fs.ts";
-import type { ProjectPaths } from "../platform/paths.ts";
+import {
+  fetchProviderModels,
+  importProviderModels,
+  modelMatchesEnabledScope,
+  modelsPath,
+  parseModelReference,
+  readModelsConfig,
+  removeModelsProvider,
+  writeModelsProvider,
+  type ModelsConfig,
+  type ModelsProviderConfig,
+  type ProviderImportOptions,
+  type ProviderImportResult,
+  type ProviderModelImport,
+} from "./import.ts";
+import {
+  modelUsageFromMessage,
+  summarizeModelUsage,
+  summarizeModelUsageBySource,
+  summarizeSessionModelUsage,
+  usageCount,
+  type ModelUsageRecord,
+  type ModelUsageSummary,
+  type SessionUsageStats,
+} from "./usage.ts";
 
 export type ConfiguredModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
-export type ModelErrorCode =
-  | "not_selected"
-  | "not_found"
-  | "not_enabled"
-  | "no_auth"
-  | "auth_failed"
-  | "config"
-  | "network";
-
-export class ModelError extends Error {
-  readonly code: ModelErrorCode;
-
-  constructor(code: ModelErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "ModelError";
-    this.code = code;
-  }
-}
-
-/**
- * Claim-lock-backed `auth.json` store. It implements Pi's credential-store
- * contract, including OAuth refresh, so every mutation is a serialized
- * cross-process read-modify-write and fails closed on lock timeout.
- */
-class LockedAuthStore implements CredentialStore {
-  readonly authPath: string;
-
-  constructor(authPath: string) {
-    this.authPath = authPath;
-  }
-
-  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-    return withClaimFileLock(
-      {
-        lockDir: `${this.authPath}.lock.d`,
-        timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
-        staleMs: CLAIM_LOCK_STALE_MS,
-        busyError: () =>
-          new ModelError(
-            "auth_failed",
-            "model auth store is locked by another process",
-          ),
-      },
-      operation,
-    );
-  }
-
-  private async readDocument(): Promise<Record<string, Credential>> {
-    let content: string | null;
-    try {
-      content = await fs.readFile(this.authPath, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return {};
-      }
-      throw error;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content.replace(/^\uFEFF/u, ""));
-    } catch (error) {
-      throw new ModelError(
-        "auth_failed",
-        `cannot parse ${this.authPath}: ${(error as Error).message}`,
-        { cause: error },
-      );
-    }
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      throw new ModelError(
-        "auth_failed",
-        `${this.authPath} must contain a JSON object keyed by provider`,
-      );
-    }
-    return parsed as Record<string, Credential>;
-  }
-
-  private async writeDocument(
-    credentials: Record<string, Credential>,
-  ): Promise<void> {
-    await atomicWriteFile(
-      this.authPath,
-      `${JSON.stringify(credentials, null, 2)}\n`,
-      0o600,
-    );
-  }
-
-  async read(
-    providerId: string,
-    _options?: AuthOperationOptions,
-  ): Promise<Credential | undefined> {
-    const credentials = await this.readDocument();
-    return structuredClone(credentials[providerId]);
-  }
-
-  async list(_options?: AuthOperationOptions): Promise<CredentialInfo[]> {
-    const credentials = await this.readDocument();
-    return Object.entries(credentials).map(([providerId, credential]) => ({
-      providerId,
-      type: credential.type,
-    }));
-  }
-
-  async modify(
-    providerId: string,
-    operation: (
-      current: Credential | undefined,
-    ) => Promise<Credential | undefined>,
-    options?: AuthOperationOptions,
-  ): Promise<Credential | undefined> {
-    options?.signal?.throwIfAborted();
-    return this.withLock(async () => {
-      const credentials = await this.readDocument();
-      const current = credentials[providerId];
-      const next = await operation(structuredClone(current));
-      options?.signal?.throwIfAborted();
-      if (next !== undefined) {
-        credentials[providerId] = next;
-        await this.writeDocument(credentials);
-      }
-      return structuredClone(next ?? current);
-    });
-  }
-
-  async delete(
-    providerId: string,
-    options?: AuthOperationOptions,
-  ): Promise<void> {
-    options?.signal?.throwIfAborted();
-    await this.withLock(async () => {
-      const credentials = await this.readDocument();
-      delete credentials[providerId];
-      await this.writeDocument(credentials);
-    });
-  }
-}
-
-export interface ModelUsageRecord {
-  provider: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
-  total_tokens: number;
-  cost_total: number;
-  stop_reason: string;
-}
-
-export interface ModelUsageSummary {
-  calls: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
-  total_tokens: number;
-  cost_total: number;
-}
-
-/**
- * Token counters reported by Pi for persisted session entries.
- *
- * Pi counts assistant messages and compaction entries. It cannot see calls
- * Codepunk makes directly through the model runtime, such as the durable
- * memory summary.
- */
-export interface SessionUsageStats {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  total: number;
-  cost: number;
-}
-
-export interface ModelsProviderConfig {
-  name?: string;
-  baseUrl?: string;
-  api?: string;
-  apiKey?: string;
-  authHeader?: boolean;
-  models?: Array<Record<string, unknown> & { id: string }>;
-  [key: string]: unknown;
-}
-
-export interface ModelsConfig {
-  $schema?: string;
-  providers?: Record<string, ModelsProviderConfig>;
-  [key: string]: unknown;
-}
-
-export interface ProviderModelImport {
-  id: string;
-  name: string;
-  reasoning: boolean;
-  thinkingLevelMap?: Record<string, string | null>;
-  input: Array<"text" | "image">;
-  contextWindow: number;
-  maxTokens: number;
-}
-
-export interface ProviderImportOptions {
-  baseUrl: string;
-  providerId: string;
-  api: string;
-  apiKey?: string;
-  authHeader?: boolean;
-  models?: readonly string[];
-  timeoutMs?: number;
-  headers?: Record<string, string>;
-}
-
-export interface ProviderImportResult {
-  providerId: string;
-  baseUrl: string;
-  api: string;
-  models: ProviderModelImport[];
-  path: string;
-  provider: ModelsProviderConfig;
-}
-
-async function withModelsConfigLock<T>(
-  filePath: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  return withClaimFileLock(
-    {
-      lockDir: `${filePath}.lock.d`,
-      timeoutMs: CLAIM_LOCK_TIMEOUT_MS,
-      staleMs: CLAIM_LOCK_STALE_MS,
-      busyError: () =>
-        new ModelError("config", "model config is locked by another process"),
-    },
-    operation,
-  );
-}
+export {
+  ModelError,
+  openModelRuntime,
+  setProviderAuthCredential,
+  type ModelErrorCode,
+};
+export {
+  fetchProviderModels,
+  importProviderModels,
+  modelMatchesEnabledScope,
+  parseModelReference,
+  readModelsConfig,
+  removeModelsProvider,
+  writeModelsProvider,
+  type ModelsConfig,
+  type ModelsProviderConfig,
+  type ProviderImportOptions,
+  type ProviderImportResult,
+  type ProviderModelImport,
+};
+export {
+  modelUsageFromMessage,
+  summarizeModelUsage,
+  summarizeModelUsageBySource,
+  summarizeSessionModelUsage,
+  type ModelUsageRecord,
+  type ModelUsageSummary,
+  type SessionUsageStats,
+};
 
 export interface ModelCatalogEntry {
   provider: string;
@@ -334,10 +139,6 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = [
 
 export function isThinkingLevel(value: string): value is ThinkingLevel {
   return (THINKING_LEVELS as readonly string[]).includes(value);
-}
-
-function modelsPath(paths: ProjectPaths): string {
-  return path.join(paths.home, "models.json");
 }
 
 export const RECOMMENDED_SETUP_PROVIDERS = [
@@ -545,64 +346,6 @@ export function modelReferenceParts(model: ConfiguredModel): {
   return { provider: model.provider, id: model.id };
 }
 
-export async function readModelsConfig(
-  paths: ProjectPaths,
-): Promise<ModelsConfig | null> {
-  const filePath = modelsPath(paths);
-  let content: string;
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-    throw new ModelError(
-      "config",
-      `cannot read ${filePath}: ${(error as Error).message}`,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stripJsonComments(content.replace(/^\uFEFF/u, "")));
-  } catch (error) {
-    throw new ModelError(
-      "config",
-      `cannot parse ${filePath}: ${(error as Error).message}`,
-    );
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new ModelError(
-      "config",
-      `${filePath} must contain a JSON object with a providers map`,
-    );
-  }
-  const config = parsed as ModelsConfig;
-  if (
-    config.providers !== undefined &&
-    (config.providers === null ||
-      typeof config.providers !== "object" ||
-      Array.isArray(config.providers))
-  ) {
-    throw new ModelError(
-      "config",
-      `${filePath} providers must be a JSON object`,
-    );
-  }
-  return config;
-}
-
-function stripJsonComments(input: string): string {
-  return input
-    .replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/gu, (match) =>
-      match.startsWith('"') ? match : "",
-    )
-    .replace(
-      /"(?:\\.|[^"\\])*"|,(\s*[}\]])/gu,
-      (match, tail: string | undefined) =>
-        tail ?? (match.startsWith('"') ? match : ""),
-    );
-}
-
 export async function listModelCatalog(
   paths: ProjectPaths,
   config: CodepunkConfig,
@@ -782,493 +525,6 @@ export async function setConfiguredModel(
     config.model.thinking = thinking;
   }
   return model;
-}
-
-function secretForDiscovery(value: string): string {
-  if (value.startsWith("!")) {
-    throw new ModelError(
-      "config",
-      "apiKey commands cannot be used for model discovery; pass a literal value or $ENV",
-    );
-  }
-  if (value.startsWith("${") && value.endsWith("}")) {
-    return process.env[value.slice(2, -1)] ?? "";
-  }
-  if (value.startsWith("$")) {
-    return process.env[value.slice(1)] ?? "";
-  }
-  return value;
-}
-
-function positiveNumber(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      return Math.trunc(value);
-    }
-  }
-  return undefined;
-}
-
-function reasoningLevels(record: Record<string, unknown>): string[] {
-  const direct = record["reasoning_levels"];
-  if (Array.isArray(direct)) {
-    return direct.filter((value): value is string => typeof value === "string");
-  }
-  const supported = record["supported_reasoning_levels"];
-  if (Array.isArray(supported)) {
-    return supported
-      .map((value) => {
-        if (typeof value === "string") {
-          return value;
-        }
-        if (value !== null && typeof value === "object") {
-          const effort = (value as Record<string, unknown>)["effort"];
-          return typeof effort === "string" ? effort : null;
-        }
-        return null;
-      })
-      .filter((value): value is string => value !== null);
-  }
-  const thinking = record["thinking_levels"];
-  if (Array.isArray(thinking)) {
-    return thinking.filter(
-      (value): value is string => typeof value === "string",
-    );
-  }
-  return [];
-}
-
-function thinkingLevelMap(
-  levels: readonly string[],
-): Record<string, string | null> | undefined {
-  if (levels.length === 0) {
-    return undefined;
-  }
-  const available = new Set(levels);
-  const pick = (...candidates: string[]): string | null =>
-    candidates.find((candidate) => available.has(candidate)) ?? null;
-  return {
-    off: pick("none", "off"),
-    minimal: pick("minimal"),
-    low: pick("low"),
-    medium: pick("medium", "high"),
-    high: pick("high", "medium"),
-    xhigh: pick("xhigh", "max", "ultra"),
-    max: pick("max", "xhigh", "ultra"),
-  };
-}
-
-function inputModalities(
-  record: Record<string, unknown>,
-): Array<"text" | "image"> {
-  const modalities =
-    record["modalities"] !== null && typeof record["modalities"] === "object"
-      ? (record["modalities"] as Record<string, unknown>)["input"]
-      : undefined;
-  const declared = Array.isArray(modalities)
-    ? modalities
-    : Array.isArray(record["input"])
-      ? record["input"]
-      : [];
-  return declared.includes("image") ? ["text", "image"] : ["text"];
-}
-
-function globMatches(pattern: string, value: string): boolean {
-  const expression = pattern
-    .replace(/[.+^${}()|[\]\\]/gu, "\\$&")
-    .replaceAll("\\*", ".*")
-    .replaceAll("\\?", ".");
-  return new RegExp(`^${expression}$`, "u").test(value);
-}
-
-function selectedByFilter(id: string, filters: readonly string[]): boolean {
-  if (filters.length === 0) {
-    return true;
-  }
-  return filters.some((filter) => filter === id || globMatches(filter, id));
-}
-
-function scopeSegmentMatches(pattern: string, value: string): boolean {
-  let expression = "^";
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index]!;
-    if (character === "*") {
-      expression += ".*";
-    } else if (character === "?") {
-      expression += ".";
-    } else if (character === "[") {
-      const end = pattern.indexOf("]", index + 1);
-      if (end === -1) {
-        expression += "\\[";
-        continue;
-      }
-      let body = pattern.slice(index + 1, end);
-      if (body.startsWith("!")) {
-        body = `^${body.slice(1)}`;
-      }
-      expression += `[${body.replaceAll("\\", "\\\\")}]`;
-      index = end;
-    } else {
-      expression += character.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    }
-  }
-  try {
-    return new RegExp(`${expression}$`, "iu").test(value);
-  } catch {
-    return false;
-  }
-}
-
-function scopeGlobMatches(pattern: string, value: string): boolean {
-  const patternParts = pattern.split("/");
-  const valueParts = value.split("/");
-  const visited = new Set<string>();
-  const visit = (patternIndex: number, valueIndex: number): boolean => {
-    const key = `${patternIndex}:${valueIndex}`;
-    if (visited.has(key)) {
-      return false;
-    }
-    visited.add(key);
-    if (patternIndex === patternParts.length) {
-      return valueIndex === valueParts.length;
-    }
-    const part = patternParts[patternIndex]!;
-    if (part === "**") {
-      for (let next = valueIndex; next <= valueParts.length; next += 1) {
-        if (visit(patternIndex + 1, next)) {
-          return true;
-        }
-      }
-      return false;
-    }
-    if (valueIndex >= valueParts.length) {
-      return false;
-    }
-    if (!scopeSegmentMatches(part, valueParts[valueIndex]!)) {
-      return false;
-    }
-    return visit(patternIndex + 1, valueIndex + 1);
-  };
-  return visit(0, 0);
-}
-
-function stripThinkingSuffix(reference: string): string {
-  return reference.replace(/:(off|minimal|low|medium|high|xhigh|max)$/iu, "");
-}
-
-/**
- * Match a concrete model reference against `model.enabled`.
- *
- * Pi's scope resolver only sees chat models, so image models need the same
- * pattern semantics applied directly. Globs match both `provider/id` and a
- * bare id, exact references match one of those forms, and `**` spans whole
- * path segments.
- */
-export function modelMatchesEnabledScope(
-  model: { provider: string; id: string },
-  enabled: readonly string[],
-): boolean {
-  if (enabled.length === 0) {
-    return true;
-  }
-  const modelId = stripThinkingSuffix(model.id);
-  const full = `${model.provider}/${modelId}`;
-  return enabled.some((pattern) => {
-    const base = stripThinkingSuffix(pattern.trim());
-    if (base.length === 0) {
-      return false;
-    }
-    const hasGlob = /[*?[]/u.test(base);
-    if (!hasGlob) {
-      return base.includes("/")
-        ? base.toLowerCase() === full.toLowerCase()
-        : base.toLowerCase() === modelId.toLowerCase();
-    }
-    return scopeGlobMatches(base, full) || scopeGlobMatches(base, modelId);
-  });
-}
-
-export function parseModelReference(reference: string): {
-  provider: string;
-  id: string;
-} | null {
-  const separator = reference.indexOf("/");
-  if (separator <= 0 || separator === reference.length - 1) {
-    return null;
-  }
-  return {
-    provider: reference.slice(0, separator),
-    id: reference.slice(separator + 1),
-  };
-}
-
-function providerEntry(
-  options: ProviderImportOptions,
-  models: readonly ProviderModelImport[],
-): ModelsProviderConfig {
-  return {
-    name: options.providerId,
-    baseUrl: options.baseUrl.replace(/\/+$/u, ""),
-    api: options.api,
-    apiKey: options.apiKey ?? options.providerId,
-    authHeader: options.authHeader === true,
-    models: models.map((model) => ({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      input: model.input,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      ...(model.thinkingLevelMap === undefined
-        ? {}
-        : { thinkingLevelMap: model.thinkingLevelMap }),
-    })),
-  };
-}
-
-export async function fetchProviderModels(
-  options: ProviderImportOptions,
-): Promise<ProviderModelImport[]> {
-  if (options.authHeader === true && options.apiKey === undefined) {
-    throw new ModelError(
-      "config",
-      "authHeader requires apiKey so requests can send a bearer token",
-    );
-  }
-  const endpoint = `${options.baseUrl.replace(/\/+$/u, "")}/models`;
-  const headers: Record<string, string> = {
-    accept: "application/json",
-    ...(options.headers ?? {}),
-  };
-  if (options.authHeader === true && options.apiKey !== undefined) {
-    const discoveredKey = secretForDiscovery(options.apiKey);
-    if (discoveredKey.length === 0) {
-      throw new ModelError(
-        "config",
-        `apiKey ${options.apiKey} resolved to an empty value`,
-      );
-    }
-    headers["authorization"] = `Bearer ${discoveredKey}`;
-  }
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      headers,
-      signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
-    });
-  } catch (error) {
-    throw new ModelError(
-      "network",
-      `cannot reach ${endpoint}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  if (!response.ok) {
-    throw new ModelError(
-      "network",
-      `${endpoint} returned HTTP ${response.status}`,
-    );
-  }
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    throw new ModelError(
-      "network",
-      `${endpoint} did not return JSON: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  const list: unknown[] | null = Array.isArray(payload)
-    ? payload
-    : payload !== null && typeof payload === "object"
-      ? Array.isArray((payload as Record<string, unknown>)["data"])
-        ? ((payload as Record<string, unknown>)["data"] as unknown[])
-        : Array.isArray((payload as Record<string, unknown>)["models"])
-          ? ((payload as Record<string, unknown>)["models"] as unknown[])
-          : null
-      : null;
-  if (list === null) {
-    throw new ModelError(
-      "network",
-      `${endpoint} did not return an OpenAI-style data or models array`,
-    );
-  }
-  const filters = (options.models ?? [])
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const models = new Map<string, ProviderModelImport>();
-  for (const raw of list) {
-    if (raw === null || typeof raw !== "object") {
-      continue;
-    }
-    const record = raw as Record<string, unknown>;
-    const id =
-      typeof record["id"] === "string"
-        ? record["id"]
-        : typeof record["name"] === "string"
-          ? record["name"]
-          : null;
-    if (id === null || id.length === 0 || !selectedByFilter(id, filters)) {
-      continue;
-    }
-    const levels = reasoningLevels(record);
-    const name =
-      typeof record["display_name"] === "string"
-        ? record["display_name"]
-        : typeof record["name"] === "string"
-          ? record["name"]
-          : id;
-    const levelMap = thinkingLevelMap(levels);
-    models.set(id, {
-      id,
-      name,
-      reasoning: record["reasoning"] === true || levels.length > 0,
-      ...(levelMap === undefined ? {} : { thinkingLevelMap: levelMap }),
-      input: inputModalities(record),
-      contextWindow:
-        positiveNumber(
-          record["context_window"],
-          record["context_length"],
-          record["max_input_tokens"],
-        ) ?? 128_000,
-      maxTokens:
-        positiveNumber(record["max_output_tokens"], record["max_tokens"]) ??
-        16_384,
-    });
-  }
-  if (models.size === 0) {
-    throw new ModelError(
-      "network",
-      `${endpoint} returned no usable chat models`,
-    );
-  }
-  return [...models.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
-}
-
-export async function writeModelsProvider(
-  paths: ProjectPaths,
-  providerId: string,
-  provider: ModelsProviderConfig,
-): Promise<string> {
-  if (!/^[A-Za-z0-9._:-]+$/u.test(providerId)) {
-    throw new ModelError(
-      "config",
-      "provider id must use letters, digits, dot, underscore, colon, or hyphen",
-    );
-  }
-  const filePath = modelsPath(paths);
-  return withModelsConfigLock(filePath, async () => {
-    const config =
-      (await readModelsConfig(paths)) ??
-      ({
-        $schema: "https://pi.dev/schemas/models.schema.json",
-        providers: {},
-      } satisfies ModelsConfig);
-    const providers = config.providers ?? {};
-    providers[providerId] = provider;
-    config.providers = providers;
-    await atomicWriteFile(
-      filePath,
-      `${JSON.stringify(config, null, 2)}\n`,
-      0o600,
-    );
-    return filePath;
-  });
-}
-
-export async function removeModelsProvider(
-  paths: ProjectPaths,
-  providerId: string,
-): Promise<{ path: string; providerId: string; remaining: string[] }> {
-  if (!/^[A-Za-z0-9._:-]+$/u.test(providerId)) {
-    throw new ModelError(
-      "config",
-      "provider id must use letters, digits, dot, underscore, colon, or hyphen",
-    );
-  }
-  const filePath = modelsPath(paths);
-  return withModelsConfigLock(filePath, async () => {
-    const config = await readModelsConfig(paths);
-    if (
-      config === null ||
-      config.providers === undefined ||
-      config.providers[providerId] === undefined
-    ) {
-      throw new ModelError(
-        "not_found",
-        `provider ${providerId} is not configured in ${filePath}`,
-      );
-    }
-    delete config.providers[providerId];
-    await atomicWriteFile(
-      filePath,
-      `${JSON.stringify(config, null, 2)}\n`,
-      0o600,
-    );
-    return {
-      path: filePath,
-      providerId,
-      remaining: Object.keys(config.providers).sort(),
-    };
-  });
-}
-
-export async function importProviderModels(
-  paths: ProjectPaths,
-  options: ProviderImportOptions,
-): Promise<ProviderImportResult> {
-  const models = await fetchProviderModels(options);
-  const provider = providerEntry(options, models);
-  const filePath = await writeModelsProvider(
-    paths,
-    options.providerId,
-    provider,
-  );
-  return {
-    providerId: options.providerId,
-    baseUrl: options.baseUrl,
-    api: options.api,
-    models,
-    path: filePath,
-    provider,
-  };
-}
-
-function count(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.trunc(value)
-    : 0;
-}
-
-function cost(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : 0;
-}
-
-export async function openModelRuntime(
-  paths: ProjectPaths,
-): Promise<ModelRuntime> {
-  const authPath = path.join(paths.home, "auth.json");
-  return ModelRuntime.create({
-    credentials: new LockedAuthStore(authPath),
-    modelsPath: path.join(paths.home, "models.json"),
-    allowModelNetwork: false,
-  });
-}
-
-export async function setProviderAuthCredential(
-  paths: ProjectPaths,
-  providerId: string,
-  credential: Credential,
-): Promise<void> {
-  const store = new LockedAuthStore(path.join(paths.home, "auth.json"));
-  await store.modify(providerId, async () => credential);
 }
 
 export async function resolveConfiguredModel(
@@ -1519,9 +775,9 @@ export async function testConfiguredModel(
         .join("")
         .trim(),
       error,
-      input_tokens: count(message.usage.input),
-      output_tokens: count(message.usage.output),
-      total_tokens: count(message.usage.totalTokens),
+      input_tokens: usageCount(message.usage.input),
+      output_tokens: usageCount(message.usage.output),
+      total_tokens: usageCount(message.usage.totalTokens),
     };
   } catch (error) {
     return {
@@ -1537,150 +793,4 @@ export async function testConfiguredModel(
       total_tokens: 0,
     };
   }
-}
-
-export function modelUsageFromMessage(
-  event: MessageEndEvent,
-): ModelUsageRecord | null {
-  const message = event.message;
-  if (message.role !== "assistant") {
-    return null;
-  }
-  const usage = message.usage;
-  if (usage === undefined || usage === null) {
-    return null;
-  }
-  return {
-    provider: message.provider,
-    model: message.model,
-    input_tokens: count(usage.input),
-    output_tokens: count(usage.output),
-    cache_read_tokens: count(usage.cacheRead),
-    cache_write_tokens: count(usage.cacheWrite),
-    total_tokens: count(usage.totalTokens),
-    cost_total: cost(usage.cost?.total),
-    stop_reason: message.stopReason,
-  };
-}
-
-export function summarizeModelUsage(
-  events: readonly SessionEvent[],
-): ModelUsageSummary {
-  const summary: ModelUsageSummary = {
-    calls: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    total_tokens: 0,
-    cost_total: 0,
-  };
-  for (const event of events) {
-    if (event.kind === "compaction/decision") {
-      const usage = event.data.checkpoint?.usage;
-      if (usage === undefined) {
-        continue;
-      }
-      summary.calls += 1;
-      summary.input_tokens += usage.input_tokens;
-      summary.output_tokens += usage.output_tokens;
-      summary.cache_read_tokens += usage.cache_read_tokens;
-      summary.cache_write_tokens += usage.cache_write_tokens;
-      summary.total_tokens += usage.total_tokens;
-      summary.cost_total += usage.cost_total;
-      continue;
-    }
-    if (event.kind !== "model/usage") {
-      continue;
-    }
-    summary.calls += 1;
-    summary.input_tokens += event.data.input_tokens;
-    summary.output_tokens += event.data.output_tokens;
-    summary.cache_read_tokens += event.data.cache_read_tokens;
-    summary.cache_write_tokens += event.data.cache_write_tokens;
-    summary.total_tokens += event.data.total_tokens;
-    summary.cost_total += event.data.cost_total;
-  }
-  summary.cost_total = Math.round(summary.cost_total * 1_000_000) / 1_000_000;
-  return summary;
-}
-
-export function summarizeModelUsageBySource(
-  events: readonly SessionEvent[],
-  source: "assistant" | "summary",
-): ModelUsageSummary {
-  const summary: ModelUsageSummary = {
-    calls: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    total_tokens: 0,
-    cost_total: 0,
-  };
-  for (const event of events) {
-    if (event.kind !== "model/usage" || event.data.source !== source) {
-      continue;
-    }
-    summary.calls += 1;
-    summary.input_tokens += event.data.input_tokens;
-    summary.output_tokens += event.data.output_tokens;
-    summary.cache_read_tokens += event.data.cache_read_tokens;
-    summary.cache_write_tokens += event.data.cache_write_tokens;
-    summary.total_tokens += event.data.total_tokens;
-    summary.cost_total += event.data.cost_total;
-  }
-  summary.cost_total = Math.round(summary.cost_total * 1_000_000) / 1_000_000;
-  return summary;
-}
-
-/**
- * Combine Pi session statistics with supplemental model calls.
- *
- * Session totals and recorded events describe overlapping sets, so take the
- * larger of the two, then add direct-call usage that Pi never persisted.
- * A plain `Math.max(recorded, sessionStats)` hides summary calls as soon as
- * either side grows past the sum that previously included them.
- */
-export function summarizeSessionModelUsage(
-  events: readonly SessionEvent[],
-  stats: SessionUsageStats,
-): ModelUsageSummary {
-  const recorded = summarizeModelUsage(events);
-  const direct = summarizeModelUsageBySource(events, "summary");
-  const sessionTotals = {
-    input_tokens: Math.max(0, recorded.input_tokens - direct.input_tokens),
-    output_tokens: Math.max(0, recorded.output_tokens - direct.output_tokens),
-    cache_read_tokens: Math.max(
-      0,
-      recorded.cache_read_tokens - direct.cache_read_tokens,
-    ),
-    cache_write_tokens: Math.max(
-      0,
-      recorded.cache_write_tokens - direct.cache_write_tokens,
-    ),
-    total_tokens: Math.max(0, recorded.total_tokens - direct.total_tokens),
-    cost_total: Math.max(0, recorded.cost_total - direct.cost_total),
-  };
-  return {
-    calls: recorded.calls,
-    input_tokens:
-      Math.max(sessionTotals.input_tokens, stats.input) + direct.input_tokens,
-    output_tokens:
-      Math.max(sessionTotals.output_tokens, stats.output) +
-      direct.output_tokens,
-    cache_read_tokens:
-      Math.max(sessionTotals.cache_read_tokens, stats.cacheRead) +
-      direct.cache_read_tokens,
-    cache_write_tokens:
-      Math.max(sessionTotals.cache_write_tokens, stats.cacheWrite) +
-      direct.cache_write_tokens,
-    total_tokens:
-      Math.max(sessionTotals.total_tokens, stats.total) + direct.total_tokens,
-    cost_total:
-      Math.round(
-        (Math.max(sessionTotals.cost_total, stats.cost) + direct.cost_total) *
-          1_000_000,
-      ) / 1_000_000,
-  };
 }
