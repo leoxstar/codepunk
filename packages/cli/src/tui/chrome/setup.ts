@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import {
+  isInsidePath,
   readSkillInvocation,
   resolveModelSelection,
   type CodepunkRuntime,
@@ -22,8 +25,10 @@ import {
   startNewSession,
 } from "../commands/session.ts";
 import { configurePermissions } from "../commands/permission-actions.ts";
+import { sendWorkspaceImage } from "../commands/images.ts";
 import { showInteractiveSettingsMenu } from "../commands/settings.ts";
 import { configureTrust } from "../commands/trust-actions.ts";
+import { extractDroppedImageInput } from "../format/clipboard-image.ts";
 import { refreshWorkWidget } from "./work-widget.ts";
 import { promptForMissingModel } from "../format/model.ts";
 import { sessionSummary } from "../format/status-summary.ts";
@@ -440,6 +445,33 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         );
         if (piResult !== null) {
           return piResult;
+        }
+        const droppedImage = extractDroppedImageInput(trimmed);
+        if (droppedImage !== null) {
+          const resolvedImage = path.resolve(
+            runtime.paths.cwd,
+            droppedImage.rawPath,
+          );
+          if (existsSync(resolvedImage)) {
+            if (!state.modelSelected) {
+              await promptForMissingModel(state, context);
+              return true;
+            }
+            if (!isInsidePath(runtime.paths.deliveryRoot, resolvedImage)) {
+              context.ui.notify(
+                "Dropped image is outside this workspace; copy it into the project or use `/image --clipboard`.",
+                "warning",
+              );
+              return true;
+            }
+            await sendWorkspaceImage(
+              runtime,
+              context,
+              resolvedImage,
+              droppedImage.prompt,
+            );
+            return true;
+          }
         }
         if (trimmed.startsWith("/")) {
           const commandName = trimmed.slice(1).split(/\s+/u)[0] ?? "";

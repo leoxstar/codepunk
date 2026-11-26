@@ -76,7 +76,17 @@ export function parsePermissionWhyCommand(argument: string): string | null {
 export function codepunkHelp(): string {
   return [
     "Codepunk commands",
-    "cp- marks a Codepunk command whose name would otherwise collide with a host command",
+    "Press F1 to search commands interactively, or run `/help <query>` to filter.",
+    "",
+    "Daily essentials",
+    "  Alt+M                      cycle work mode (plan/standard/auto/auto-approve)",
+    "  Alt+T / /tasks             open the unified interactive task & subagent center",
+    "  Alt+R / /rewind            rewind file checkpoints or switch session branches",
+    "  F1 / /help [query]         search and browse all commands",
+    "  F2 / /model                cycle recent models or search all models",
+    "  Shift+Tab                  cycle reasoning/thinking level",
+    "  /permissions, /settings    configure approvals, sandbox, and TUI preferences",
+    "  /diff, /commit, /resume    inspect changes, commit, or fuzzy-search sessions",
     "",
     "Models and providers",
     "  /model [query]             open the searchable model picker",
@@ -159,9 +169,10 @@ export function codepunkHelp(): string {
     "  /doctor, /policy           run diagnostics or print effective policy",
     "  /compact                   compact the current context",
     "  /reload                    reload config, plugins, skills, and user MCP servers",
-    "  /help                      show this command list",
+    "  /help                      show this command list (/help <query> filters; F1 browses)",
     "  /quit                      exit",
     "",
+    "Commands prefixed with cp- preserve Codepunk session and evidence semantics where a built-in name overlaps.",
     "Host commands that would bypass the Codepunk session, evidence, or redaction boundary are intercepted with guidance.",
   ].join("\n");
 }

@@ -18,6 +18,7 @@ import {
   type CodepunkRuntime,
   type GeneratedImage,
 } from "codepunk-core";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import type { TuiCommand } from "../define-command.ts";
 import { commandContext } from "../command-context.ts";
@@ -195,6 +196,100 @@ async function appendImageGenerationEvidence(
   });
 }
 
+export async function sendWorkspaceImage(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+  requested: string,
+  promptText: string,
+): Promise<void> {
+  let imagePath: string;
+  if (requested === "--clipboard" || requested === "paste") {
+    try {
+      imagePath = await captureClipboardImage(runtime.paths.deliveryRoot);
+    } catch (error) {
+      context.ui.notify(
+        `/image clipboard failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "warning",
+      );
+      return;
+    }
+  } else {
+    imagePath = path.resolve(runtime.paths.cwd, requested);
+  }
+  const started = Date.now();
+  let approval: TuiApprovalEvidence | null = null;
+  let image: ConfirmedImageInput | null = null;
+  try {
+    const activeModel = context.model;
+    if (activeModel === undefined || !activeModel.input.includes("image")) {
+      throw new ImageCapabilityError(
+        "image.model",
+        activeModel === undefined
+          ? "select a model before sending an image"
+          : `current model ${activeModel.provider}/${activeModel.id} does not accept image input`,
+      );
+    }
+    approval = await assertImageInputAllowed(runtime, imagePath);
+    image = await confirmImageInput({
+      path: imagePath,
+      allowedRoot: runtime.paths.deliveryRoot,
+      confirmed: true,
+      assertAllowed: async () => undefined,
+    });
+    context.ui.notify(
+      [
+        `image confirmed: ${image.display_path}`,
+        `type: ${image.mime} · bytes: ${image.bytes}`,
+        `sha256: ${image.sha256}`,
+        "The image is untrusted input; the prompt will be sent now.",
+      ].join("\n"),
+      "info",
+    );
+    await runtime.host.session.sendUserMessage(imageMessage(image, promptText));
+  } catch (error) {
+    let evidenceFailure: string | null = null;
+    try {
+      await appendImageInputEvidence(runtime, {
+        image,
+        path: imagePath,
+        approval,
+        started,
+        error,
+      });
+    } catch (recordError) {
+      evidenceFailure =
+        recordError instanceof Error
+          ? recordError.message
+          : String(recordError);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    context.ui.notify(
+      evidenceFailure === null
+        ? `/image failed: ${message}`
+        : `/image failed: ${message}\nFailure evidence could not be written: ${evidenceFailure}`,
+      error instanceof ImageCapabilityError ? "warning" : "error",
+    );
+    return;
+  }
+  try {
+    await appendImageInputEvidence(runtime, {
+      image: image!,
+      path: imagePath,
+      approval,
+      started,
+    });
+  } catch (error) {
+    context.ui.notify(
+      `image sent, but evidence could not be written: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "warning",
+    );
+  }
+}
+
 export function imageCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "image",
@@ -209,94 +304,12 @@ export function imageCommand(state: TuiState): TuiCommand {
         return;
       }
       const [requested, ...promptParts] = trimmed.split(/\s+/u);
-      let imagePath: string;
-      if (requested === "--clipboard" || requested === "paste") {
-        try {
-          imagePath = await captureClipboardImage(runtime.paths.deliveryRoot);
-        } catch (error) {
-          context.ui.notify(
-            `/image clipboard failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            "warning",
-          );
-          return;
-        }
-      } else {
-        imagePath = path.resolve(runtime.paths.cwd, requested!);
-      }
-      const started = Date.now();
-      let approval: TuiApprovalEvidence | null = null;
-      let image: ConfirmedImageInput | null = null;
-      try {
-        const activeModel = context.model;
-        if (activeModel === undefined || !activeModel.input.includes("image")) {
-          throw new ImageCapabilityError(
-            "image.model",
-            activeModel === undefined
-              ? "select a model before sending an image"
-              : `current model ${activeModel.provider}/${activeModel.id} does not accept image input`,
-          );
-        }
-        approval = await assertImageInputAllowed(runtime, imagePath);
-        image = await confirmImageInput({
-          path: imagePath,
-          allowedRoot: runtime.paths.deliveryRoot,
-          confirmed: true,
-          assertAllowed: async () => undefined,
-        });
-        context.ui.notify(
-          [
-            `image confirmed: ${image.display_path}`,
-            `type: ${image.mime} · bytes: ${image.bytes}`,
-            `sha256: ${image.sha256}`,
-            "The image is untrusted input; the prompt will be sent now.",
-          ].join("\n"),
-          "info",
-        );
-        await runtime.host.session.sendUserMessage(
-          imageMessage(image, promptParts.join(" ")),
-        );
-      } catch (error) {
-        let evidenceFailure: string | null = null;
-        try {
-          await appendImageInputEvidence(runtime, {
-            image,
-            path: imagePath,
-            approval,
-            started,
-            error,
-          });
-        } catch (recordError) {
-          evidenceFailure =
-            recordError instanceof Error
-              ? recordError.message
-              : String(recordError);
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        context.ui.notify(
-          evidenceFailure === null
-            ? `/image failed: ${message}`
-            : `/image failed: ${message}\nFailure evidence could not be written: ${evidenceFailure}`,
-          error instanceof ImageCapabilityError ? "warning" : "error",
-        );
-        return;
-      }
-      try {
-        await appendImageInputEvidence(runtime, {
-          image: image!,
-          path: imagePath,
-          approval,
-          started,
-        });
-      } catch (error) {
-        context.ui.notify(
-          `image sent, but evidence could not be written: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          "warning",
-        );
-      }
+      await sendWorkspaceImage(
+        runtime,
+        context,
+        requested!,
+        promptParts.join(" "),
+      );
     }),
   });
 }

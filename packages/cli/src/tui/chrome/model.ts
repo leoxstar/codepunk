@@ -48,7 +48,7 @@ export function modelOnboardingMessage(
       configured === null
         ? "No model configured."
         : `Configured model ${configured} is not active.`,
-      "Choose one with /model (type to search, Ctrl+S saves the default), or add a provider with /login.",
+      "Choose one with /model (type to search, Ctrl+S saves the default), /login, or run `codepunk setup`.",
       "For a custom OpenAI-compatible endpoint:",
       "  codepunk models import <base-url> --provider <id> --api openai-responses",
       "  codepunk models set <id>/<model>",
@@ -57,7 +57,7 @@ export function modelOnboardingMessage(
   if (configuredProvider === null || configuredId === null) {
     return [
       "No default model configured.",
-      `This session is using ${active.provider}/${active.id} (selected by the Pi host).`,
+      `This session is using ${active.provider}/${active.id} (auto-selected from active credentials).`,
       "Run /model and type to search; Ctrl+S saves the highlighted model as default.",
       "Select an exact model and save it with:",
       `  /model ${active.provider}/${active.id}`,
@@ -70,6 +70,7 @@ export function noAuthenticatedModelsMessage(): string {
   return [
     "No authenticated models.",
     "Add a provider first:",
+    "  codepunk setup                 guided API key & model setup",
     "  /login                         sign in to a built-in provider",
     "  codepunk models import <base-url> --provider <id> --api openai-responses",
     "  codepunk models set <id>/<model>",

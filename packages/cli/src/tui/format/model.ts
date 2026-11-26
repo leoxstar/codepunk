@@ -4,8 +4,10 @@ import {
   toggleFavoriteModel,
 } from "../../model-history.ts";
 import {
+  RECOMMENDED_SETUP_PROVIDERS,
   resolveModelSelection,
   setConfiguredModel,
+  setProviderAuthCredential,
   resolveConfiguredModel,
   type CodepunkRuntime,
 } from "codepunk-core";
@@ -93,6 +95,74 @@ export async function promptForMissingModel(
   return await showProviderSetup(state, context);
 }
 
+async function configureApiKeyInTui(
+  state: TuiState,
+  context: ExtensionContext,
+  runtime: CodepunkRuntime,
+): Promise<boolean> {
+  const modelRuntime = runtime.host.services.modelRuntime;
+  const knownProviders = new Set(
+    modelRuntime.getModels().map((model) => model.provider),
+  );
+  const providers = RECOMMENDED_SETUP_PROVIDERS.filter((id) =>
+    knownProviders.has(id),
+  );
+  const providerId = await context.ui.select(
+    "Choose provider for API key setup",
+    [...providers, "Cancel"],
+  );
+  if (providerId === undefined || providerId === "Cancel") {
+    return true;
+  }
+  const key = (
+    (await context.ui.input(
+      `API key for ${providerId} (saved locally in auth.json, mode 0600)`,
+    )) ?? ""
+  ).trim();
+  if (key.length === 0) {
+    context.ui.notify("API key setup cancelled.", "info");
+    return true;
+  }
+  await setProviderAuthCredential(runtime.paths, providerId, {
+    type: "api_key",
+    key,
+  });
+  const candidates = modelRuntime
+    .getModels()
+    .filter((model) => model.provider === providerId)
+    .sort(
+      (left, right) =>
+        Number(right.reasoning) - Number(left.reasoning) ||
+        right.contextWindow - left.contextWindow ||
+        left.id.localeCompare(right.id),
+    )
+    .slice(0, 20);
+  if (candidates.length === 0) {
+    context.ui.notify(
+      `Saved API key for ${providerId}. Run /model to choose a model.`,
+      "info",
+    );
+    return true;
+  }
+  const labels = candidates.map(modelLabel);
+  const picked = await context.ui.select(
+    `Choose default model for ${providerId}`,
+    [...labels, "Cancel"],
+  );
+  if (picked === undefined || picked === "Cancel") {
+    return true;
+  }
+  const chosen = candidates[labels.indexOf(picked)];
+  if (chosen !== undefined) {
+    await selectModelReference(
+      state,
+      context,
+      `${chosen.provider}/${chosen.id}`,
+    );
+  }
+  return true;
+}
+
 export async function showProviderSetup(
   state: TuiState,
   context: ExtensionContext,
@@ -102,7 +172,8 @@ export async function showProviderSetup(
     return false;
   }
   const selected = await context.ui.select("No model configured", [
-    "Sign in to a provider",
+    "Sign in to a provider (OAuth)",
+    "Enter an API key (Anthropic, OpenAI, Google, DeepSeek…)",
     "Add an OpenAI-compatible endpoint",
     "Show setup commands",
     "Cancel",
@@ -110,10 +181,13 @@ export async function showProviderSetup(
   if (selected === undefined || selected === "Cancel") {
     return true;
   }
-  if (selected === "Sign in to a provider") {
+  if (selected.startsWith("Enter an API key")) {
+    return await configureApiKeyInTui(state, context, runtime);
+  }
+  if (selected.startsWith("Sign in to a provider")) {
     context.ui.setEditorText("/login");
     context.ui.notify(
-      "Press Enter to open Pi's provider sign-in; Esc closes it.",
+      "Press Enter to open provider OAuth sign-in; Esc closes it.",
       "info",
     );
     return true;
@@ -280,7 +354,7 @@ export async function showModelHistoryPicker(
     selections.set(label, reference);
     options.push(label);
   }
-  const search = "\u2315 Search all models (Pi)";
+  const search = "\u2315 Search all models";
   const cancel = "Cancel";
   options.push(search, cancel);
   const selected = await context.ui.select("Select model", options);
@@ -315,7 +389,7 @@ export async function showFavoriteModels(
     );
   } else if (result === "delegate") {
     context.ui.setEditorText("/model");
-    context.ui.notify("Press Enter to open Pi's fuzzy model search.", "info");
+    context.ui.notify("Press Enter to open fuzzy model search.", "info");
   }
 }
 

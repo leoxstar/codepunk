@@ -67,6 +67,21 @@ export function renderHeader(state: TuiState): string {
   return `codepunk · ${modelStatus(runtime)} · session ${runtime.session.sessionId.slice(0, 12)} · Alt+M mode · Alt+T tasks · F1 help`;
 }
 
+function contextGaugeBadge(runtime: CodepunkRuntime): string | null {
+  const usage = runtime.host.session.getContextUsage?.();
+  if (
+    usage === undefined ||
+    usage.tokens === null ||
+    usage.tokens <= 0 ||
+    usage.percent === null ||
+    !Number.isFinite(usage.percent)
+  ) {
+    return null;
+  }
+  const percent = Math.max(1, Math.min(100, Math.round(usage.percent)));
+  return percent >= 75 ? `ctx ${percent}% (/compact)` : `ctx ${percent}%`;
+}
+
 export function renderStatus(state: TuiState): string {
   const runtime = state.runtime;
   if (runtime === null) {
@@ -79,6 +94,7 @@ export function renderStatus(state: TuiState): string {
       ? ""
       : formatBudgetStatus(budget);
   const agents = agentStatus(state);
+  const ctxBadge = contextGaugeBadge(runtime);
   const planMode = runtime.planMode.state();
   const planBadge =
     planMode?.mode === "planning"
@@ -93,6 +109,7 @@ export function renderStatus(state: TuiState): string {
     `trust ${trustDisplay(runtime.workspaceTrust)}`,
     `shell ${currentShellStatus(runtime)}`,
     `evidence ${evidenceCount(runtime)}`,
+    ...(ctxBadge === null ? [] : [ctxBadge]),
     ...(mcpBadge === null ? [] : [mcpBadge]),
     ...(agents === null ? [] : [agents]),
   ].join(" · ");

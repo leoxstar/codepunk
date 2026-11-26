@@ -11,6 +11,52 @@ const execFileAsync = promisify(execFile);
  * clipboard directory so it can go through the normal /image validation,
  * confirmation, and evidence pipeline.
  */
+const IMAGE_EXTENSION = /\.(?:png|jpe?g|gif|webp)$/iu;
+
+/**
+ * Parse terminal drag-and-drop image paths (quoted, backslash-escaped, or bare)
+ * optionally followed by a prompt message. Returns null for regular text.
+ */
+export function extractDroppedImageInput(
+  text: string,
+): { rawPath: string; prompt: string } | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("!")) {
+    return null;
+  }
+  let rawPath = "";
+  let rest = "";
+  const first = trimmed[0];
+  if (first === "'" || first === '"') {
+    const end = trimmed.indexOf(first, 1);
+    if (end <= 1) {
+      return null;
+    }
+    rawPath = trimmed.slice(1, end);
+    rest = trimmed.slice(end + 1).trim();
+  } else {
+    let idx = 0;
+    while (idx < trimmed.length) {
+      const ch = trimmed[idx]!;
+      if (ch === "\\" && idx + 1 < trimmed.length) {
+        rawPath += trimmed[idx + 1]!;
+        idx += 2;
+        continue;
+      }
+      if (/\s/u.test(ch)) {
+        break;
+      }
+      rawPath += ch;
+      idx += 1;
+    }
+    rest = trimmed.slice(idx).trim();
+  }
+  if (!IMAGE_EXTENSION.test(rawPath)) {
+    return null;
+  }
+  return { rawPath, prompt: rest };
+}
+
 export async function captureClipboardImage(
   workspaceRoot: string,
 ): Promise<string> {
