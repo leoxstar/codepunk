@@ -8,7 +8,22 @@ explicit policy boundary around file and shell actions.
 
 ## Features
 
-- Interactive TUI plus print and JSON modes.
+- Interactive TUI (with live context-window usage indicator, scrollable panels,
+  colored diffs, and non-blocking async MCP startup) plus print and JSON modes.
+- One-command and guided onboarding via `codepunk setup` (Anthropic, OpenAI,
+  Google, DeepSeek, OpenRouter, custom OpenAI-compatible endpoints, or ambient
+  API-key detection) plus in-TUI API-key entry and OAuth `/login`.
+- Fast keyboard workflow: `Alt+M` cycles work mode (`plan` → `standard` →
+  `auto` → `auto-approve`), `Alt+T` opens the unified `/tasks` center, `Alt+R`
+  opens the `/rewind` checkpoint/branch picker, `F1` opens the searchable
+  command help browser, `F2` cycles recent models, and `Shift+Tab` cycles
+  reasoning level.
+- Built-in agent loop tools with unified TUI renderers: `ask_user` structured
+  clarification cards, controlled depth-1 read-only `subagent` delegation,
+  `web_fetch` and `web_search` (supporting `TAVILY_API_KEY`, `BRAVE_API_KEY`,
+  `CODEPUNK_SEARCH_ENDPOINT`, or DuckDuckGo fallback), plus zero-execution
+  post-write syntax diagnostics (`.json`, `.toml`, `.ts`/`.tsx`, `.js`/`.mjs`/`.cjs`)
+  and `L<line>:<hash4>` edit-failure anchor hints.
 - Exact, short-lived approvals correlated by request nonce, session, worker, and
   tool call, with once, session, and persistent exact-action choices; a reused
   session or persistent grant names the request that created it.
@@ -137,18 +152,27 @@ Linux distributions are not CI targets. See
 
 ## Quick start
 
+Configure a provider and default model with the guided setup wizard (or a
+one-liner):
+
+```text
+codepunk setup
+# or:
+codepunk setup --provider anthropic --api-key "$ANTHROPIC_API_KEY"
+```
+
 Start Codepunk after installation:
 
 ```text
 codepunk
 ```
 
-On the first start, when no model is configured, Codepunk opens a model setup
-menu. Choose `/login` for a built-in provider or `/model` to select an
-authenticated model. You can also configure a default from the command line
-with `codepunk models import ...` followed by `codepunk models set
-<provider/model>`; see [`docs/MODELS.md`](docs/MODELS.md) for the provider
-options.
+If no model is configured yet, the TUI opens an interactive setup menu where
+you can enter an API key directly, run `/login` for OAuth sign-in, or select an
+authenticated model with `/model`. You can also import a custom
+OpenAI-compatible endpoint with `codepunk models import ...` followed by
+`codepunk models set <provider/model>`; see [`docs/MODELS.md`](docs/MODELS.md)
+for details.
 
 Run the installation diagnostic at any time:
 

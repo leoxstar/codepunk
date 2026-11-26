@@ -9,18 +9,53 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `codepunk setup` guided provider/API-key/model onboarding wizard (interactive
+  TTY picker with masked key entry, ambient credential detection, and
+  one-command `--provider` / `--base-url` non-interactive mode), plus direct
+  in-TUI API-key configuration when starting without a model.
+- Built-in `ask_user` structured question tool (`QuestionCard`), controlled
+  depth-1 read-only `subagent` tool, and hardened `web_search` tool (enforcing
+  `sandbox.network_deny`, private-host SSRF blocks, manual redirect checking,
+  bounded streaming reads, bot-challenge detection, and `TAVILY_API_KEY` /
+  `BRAVE_API_KEY` / `CODEPUNK_SEARCH_ENDPOINT` backends).
 - `web_fetch` tool: model-initiated HTTP GET through an approval-gated,
   in-process path that enforces the sandbox `network_deny` domain list and
   refuses private, loopback, and link-local hosts. Every call opens an
   approval card that names the exact URL; approving grants only that call.
+- Zero-execution post-write syntax diagnostics for `.json`, `.toml`,
+  `.ts`/`.tsx`/`.mts`/`.cts`, and `.js`/`.mjs`/`.cjs`, plus `L<line>:<hash4>`
+  anchor hints when `edit` matching fails.
+- Interactive TUI upgrades: scrollable `Panel`/`TableScreen`/`DiffView` with
+  colored diffs and `.codepunk/` internal untracked file folding, compact
+  4-group `/status`, live fuzzy `SessionPicker` (`/resume`), unified
+  `TaskCenter` (`/tasks`, `Alt+T`), interactive `RewindPicker` (`/rewind`,
+  `Alt+R`), searchable `HelpBrowser` (`F1` / `/help [query]`), work-mode cycle
+  (`Alt+M`), Plan/Todo progress widget, interactive `/settings` menu with
+  persistent `config.toml` preferences, `/image --clipboard|paste` and
+  drag-and-drop workspace image path attachment, live statusline context gauge
+  (`ctx XX%`), and custom tool renderers for `web_fetch`, `web_search`,
+  `ask_user`, `subagent`, and `memory_search`.
 - `/plan <request>` enters read-only plan mode and submits the request as a
   planning round; `/plan` without arguments still shows the recorded plan.
+- Terminal-safe crash guards that restore raw mode/cursor and run bounded
+  runtime cleanup on unexpected fatal errors, plus platform-specific `doctor`
+  remediation hints and `uninstall` local-state preservation notices.
 
 ### Changed
 
+- Non-blocking async MCP startup in TUI (`deferMcp`) so the first interactive
+  frame renders immediately while MCP connects in the background and hot-reloads
+  tools upon readiness.
 - The TUI now uses Pi's built-in cwd/model/context footer plus one compact
   Codepunk status line. `tui.statusline` defaults to `policy`, adding `budget`
   only when a limit is configured; the duplicated startup status block is gone.
+- Removed remaining user-visible host branding leaks across model setup and
+  command messages, and expanded `packages/cli/README.md` for npm users.
+
+### Fixed
+
+- Default read-only headless print mode excludes `web_search` unless granted via
+  `--headless-policy`, keeping the headless read-only tool surface minimal.
 
 ## [0.1.0]
 
