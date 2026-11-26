@@ -49,6 +49,7 @@ const SUBCOMMANDS = [
   "view",
   "completion",
   "memory",
+  "setup",
   "models",
   "permissions",
   "permission",

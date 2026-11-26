@@ -1,0 +1,5 @@
+usage:
+  codepunk setup
+      interactive provider, API key, and default model setup wizard
+  codepunk setup --provider <id> [--api-key <key>] [--model <id>] [--thinking <level>]
+  codepunk setup --base-url <url> --provider <id> [--api <flavor>] [--api-key <key>] [--model <id>]

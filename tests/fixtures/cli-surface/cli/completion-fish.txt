@@ -6,6 +6,7 @@ complete -c codepunk -n '__fish_use_subcommand' -a 'export' -d 'export a session
 complete -c codepunk -n '__fish_use_subcommand' -a 'pin' -d 'pin or unpin a session'
 complete -c codepunk -n '__fish_use_subcommand' -a 'sign' -d 'sign a run verdict'
 complete -c codepunk -n '__fish_use_subcommand' -a 'memory' -d 'manage user and project memory'
+complete -c codepunk -n '__fish_use_subcommand' -a 'setup' -d 'guided provider, API key, and default model setup'
 complete -c codepunk -n '__fish_use_subcommand' -a 'models' -d 'list, test, select, import, or remove models'
 complete -c codepunk -n '__fish_use_subcommand' -a 'config' -d 'inspect effective configuration and paths'
 complete -c codepunk -n '__fish_use_subcommand' -a 'doctor' -d 'check runtime dependencies'

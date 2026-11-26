@@ -47,6 +47,8 @@ Memory commands:
   codepunk memory export [--scope user|project] [--output path]
 
 Model commands:
+  codepunk setup [--provider <id>] [--api-key <key>] [--model <id>]
+      guided provider/API-key setup wizard (or one-command non-interactive setup)
   codepunk models [list]
   codepunk models test [provider/id]
   codepunk models set <provider/id> [--thinking <level>]

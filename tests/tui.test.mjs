@@ -4331,6 +4331,11 @@ test("a real pty applies a custom per-resource trust decision", async () => {
       assert.match(session.output(), /selected: instructions/u);
       session.child.stdin.write("\u001b[B\r");
       await waitForOutput(session, "codepunk · auto/auto", "custom startup");
+      await waitForOutput(
+        session,
+        "trust custom (instructions)",
+        "custom trust status",
+      );
       assert.match(session.output(), /trust custom \(instructions\)/u);
       const saved = JSON.parse(
         await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
@@ -4963,8 +4968,14 @@ test(
           "Persistent rule preview",
           "cancelled persistent approval confirmation",
         );
+        const backMark = first.output().length;
         first.child.stdin.write("\u001b");
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await waitForOutputAfter(
+          first,
+          backMark,
+          "esc cancel",
+          "approval card after leaving preview",
+        );
         first.child.stdin.write("\u001b");
         await waitFor(
           async () =>
@@ -5725,7 +5736,7 @@ test("a real pty selects recent and favorite models without replacing Pi search"
       await waitForOutputAfter(
         session,
         menuMark,
-        "Search all models (Pi)",
+        "Search all models",
         "Pi search escape hatch",
       );
       session.child.stdin.write("\r");

@@ -90,7 +90,7 @@ _codepunk_completion() {
   if [[ "$cur" == -* ]]; then
     COMPREPLY=( $(compgen -W "--print --mode --continue --session --fork --new-session --model --provider --thinking --tools --model-fallback --permission-mode --approval --approval-reviewer --reviewer-model --autonomy --sandbox --filesystem --add-dir --allow-unsandboxed-shell --dangerously-bypass-approvals-and-sandbox --trust --no-trust --trust-resources --bare --no-skills --no-plugins --no-mcp --memory --headless-policy --verdict --actor --json --limit --all-projects --socket --help --version" -- "$cur") )
   else
-    COMPREPLY=( $(compgen -W "resume sessions export pin sign memory models config doctor permissions trust capabilities mcp skills plugins daemon view completion install upgrade uninstall" -- "$cur") )
+    COMPREPLY=( $(compgen -W "resume sessions export pin sign memory setup models config doctor permissions trust capabilities mcp skills plugins daemon view completion install upgrade uninstall" -- "$cur") )
   fi
 }
 complete -F _codepunk_completion codepunk

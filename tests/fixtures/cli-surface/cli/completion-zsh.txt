@@ -8,6 +8,7 @@ _codepunk() {
     'pin:pin or unpin a session'
     'sign:sign a run verdict'
     'memory:manage user and project memory'
+    'setup:guided provider, API key, and default model setup'
     'models:list, test, select, import, or remove models'
     'config:inspect effective configuration and paths'
     'doctor:check runtime dependencies'

@@ -582,3 +582,261 @@ test("Dogfood fix: DiffView collapses internal .codepunk/ untracked noise", () =
   assert.doesNotMatch(mixed, /\?\? \.codepunk\/\.gitignore/u);
   assert.match(mixed, /1 internal \.codepunk\/ file\(s\) omitted/u);
 });
+
+test("External readiness: web_search blocks private hosts, unsafe redirects, bot challenges, and supports Tavily/Brave JSON", async () => {
+  const privateTool = core.createWebSearchTool({
+    endpoint: "http://127.0.0.1:8080/search",
+  });
+  const privateRes = await privateTool.execute("ws-priv", { query: "test" });
+  assert.equal(privateRes.isError, true);
+  assert.match(privateRes.content[0].text, /private, loopback/u);
+
+  const redirectToPrivate = core.createWebSearchTool({
+    endpoint: "https://search.example.org/html/",
+    fetchImpl: async () =>
+      new Response("", {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data" },
+      }),
+  });
+  const redirRes = await redirectToPrivate.execute("ws-redir", {
+    query: "test",
+  });
+  assert.equal(redirRes.isError, true);
+  assert.match(redirRes.content[0].text, /private, loopback/u);
+
+  const botChallengeTool = core.createWebSearchTool({
+    endpoint: "https://search.example.org/html/",
+    fetchImpl: async () =>
+      new Response("<html><body>anomaly-modal bots</body></html>", {
+        status: 202,
+        headers: { "content-type": "text/html" },
+      }),
+  });
+  const botRes = await botChallengeTool.execute("ws-bot", { query: "test" });
+  assert.equal(botRes.isError, true);
+  assert.match(botRes.content[0].text, /TAVILY_API_KEY/u);
+
+  const tavilyTool = core.createWebSearchTool({
+    deniedDomains: ["blocked.test"],
+    environment: { TAVILY_API_KEY: "tvly-test-key" },
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "https://api.tavily.com/search");
+      assert.equal(init?.method, "POST");
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: "Codepunk Guide",
+              url: "https://docs.example.org/guide",
+              content: "Supervised local coding agent.",
+            },
+            {
+              title: "Blocked Host",
+              url: "https://blocked.test/secret",
+              content: "Must be stripped.",
+            },
+            {
+              title: "Internal Host",
+              url: "http://localhost:3000/admin",
+              content: "Must be stripped.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+  const tavilyRes = await tavilyTool.execute("ws-tavily", {
+    query: "codepunk",
+  });
+  assert.equal(tavilyRes.structuredContent.backend, "tavily");
+  assert.equal(tavilyRes.structuredContent.count, 1);
+  assert.match(tavilyRes.content[0].text, /Codepunk Guide/u);
+  assert.doesNotMatch(tavilyRes.content[0].text, /Blocked Host|localhost/u);
+});
+
+test("External readiness: post-write diagnostics cover TOML, TS/TSX, ESM with zero false positives on repo TS", async () => {
+  assert.deepEqual(
+    core.diagnoseFileContent("config.toml", "[tui]\nheader = true\n"),
+    [],
+  );
+  const badToml = core.diagnoseFileContent(
+    "config.toml",
+    "[tui\nheader = true",
+  );
+  assert.equal(badToml.length, 1);
+  assert.equal(badToml[0].line, 1);
+
+  const badTs = core.diagnoseFileContent(
+    "broken.ts",
+    'export function run(x: number): string {\n  const s = "unterminated;\n  return String(x);\n}\n',
+  );
+  assert.equal(badTs.length, 1);
+  assert.match(badTs[0].message, /Unterminated string/u);
+
+  const badBrace = core.diagnoseFileContent(
+    "broken.mjs",
+    "import path from 'node:path';\nexport const fn = () => { return [1, 2; };\n",
+  );
+  assert.equal(badBrace.length, 1);
+  assert.match(badBrace[0].message, /Unexpected/u);
+
+  const validTsx = core.diagnoseFileContent(
+    "comp.tsx",
+    "export const Card = ({ title }: { title: string }) => <div>{title}</div>;\n",
+  );
+  assert.deepEqual(validTsx, []);
+
+  // Zero false positives across real TypeScript sources in packages/core/src.
+  const coreSrcRoot = path.resolve(process.cwd(), "packages/core/src");
+  const entries = await fs.readdir(coreSrcRoot, { recursive: true });
+  const tsFiles = entries.filter((entry) => entry.endsWith(".ts"));
+  assert.ok(tsFiles.length > 20);
+  for (const rel of tsFiles) {
+    const full = path.join(coreSrcRoot, rel);
+    const content = await fs.readFile(full, "utf8");
+    const diags = core.diagnoseFileContent(full, content);
+    assert.deepEqual(
+      diags,
+      [],
+      `false positive in ${rel}: ${JSON.stringify(diags)}`,
+    );
+  }
+});
+
+test("External readiness: extractDroppedImageInput parses quoted, escaped, and bare image paths", async () => {
+  const { extractDroppedImageInput } = await importSource(
+    "packages/cli/src/tui/format/clipboard-image.ts",
+  );
+  assert.deepEqual(
+    extractDroppedImageInput("'/tmp/my shot.png' explain this"),
+    { rawPath: "/tmp/my shot.png", prompt: "explain this" },
+  );
+  assert.deepEqual(
+    extractDroppedImageInput("/tmp/my\\ shot.webp check alignment"),
+    { rawPath: "/tmp/my shot.webp", prompt: "check alignment" },
+  );
+  assert.deepEqual(extractDroppedImageInput("./ui.jpg"), {
+    rawPath: "./ui.jpg",
+    prompt: "",
+  });
+  assert.equal(extractDroppedImageInput("/image ./ui.png"), null);
+  assert.equal(extractDroppedImageInput("hello world"), null);
+  assert.equal(extractDroppedImageInput("./README.md explain"), null);
+});
+
+test("External readiness: codepunk setup writes 0600 auth.json and default model in one command", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { ensureBuilt, withoutAmbientProviderEnv } =
+    await import("./support/helpers.mjs");
+  const execFileAsync = promisify(execFile);
+  const cli = await ensureBuilt();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cp-setup-"));
+  try {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        cli,
+        "setup",
+        "--provider",
+        "anthropic",
+        "--api-key",
+        "sk-ant-test-key",
+        "--json",
+      ],
+      {
+        cwd: project,
+        env: { ...withoutAmbientProviderEnv(), CODEPUNK_HOME: home },
+      },
+    );
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.provider, "anthropic");
+    assert.ok(parsed.model.length > 0);
+    const authStat = await fs.stat(path.join(home, "auth.json"));
+    if (process.platform !== "win32") {
+      assert.equal(authStat.mode & 0o777, 0o600);
+    }
+    const configRaw = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    assert.match(configRaw, /provider = "anthropic"/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("External readiness: user-visible TUI onboarding and model prompts have no Pi brand leaks", async () => {
+  for (const rel of [
+    "packages/cli/src/tui/chrome/model.ts",
+    "packages/cli/src/tui/format/model.ts",
+    "packages/cli/src/tui/chrome/setup.ts",
+    "packages/cli/src/tui/chrome/help.ts",
+  ]) {
+    const content = await fs.readFile(path.resolve(process.cwd(), rel), "utf8");
+    assert.doesNotMatch(
+      content,
+      /Search all models \(Pi\)|selected by the Pi host|Pi's provider sign-in|Pi's fuzzy model search/u,
+      `Pi brand leak remained in ${rel}`,
+    );
+  }
+});
+
+test("External readiness: doctor emits platform-specific remediation hints for Linux srt and rg/fd", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cp-doc-"));
+  try {
+    const loaded = await core.loadConfig(
+      core.projectPaths({
+        cwd: root,
+        deliveryRoot: root,
+        projectId: "doc-test",
+        isGitRepo: false,
+      }),
+      {},
+      {},
+      { projectTrusted: false },
+    );
+    const report = await core.runDoctor({
+      paths: core.projectPaths({
+        cwd: root,
+        deliveryRoot: root,
+        projectId: "doc-test",
+        isGitRepo: false,
+      }),
+      config: loaded.config,
+      platform: "linux",
+      arch: "x64",
+      environment: { PATH: "" },
+      sandboxProbe: async () => "bwrap blocked by apparmor userns",
+      modelProbe: async () => null,
+      packageVersion: "0.1.0",
+    });
+    const srt = report.checks.find((c) => c.id === "srt");
+    assert.match(srt?.hint ?? "", /apt-get install -y bubblewrap/u);
+    assert.match(srt?.hint ?? "", /apparmor_restrict_unprivileged_userns=0/u);
+    const rg = report.checks.find((c) => c.id === "search-rg");
+    assert.match(rg?.hint ?? "", /apt-get install -y ripgrep/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("External readiness: crash guard cleanup runs registered handlers within timeout", async () => {
+  const { registerFatalCleanup, runFatalCleanups } = await importSource(
+    "packages/cli/src/crash-guard.ts",
+  );
+  let ran = false;
+  const unregister = registerFatalCleanup(async () => {
+    ran = true;
+  });
+  try {
+    await runFatalCleanups(500);
+    assert.equal(ran, true);
+  } finally {
+    unregister();
+  }
+});
