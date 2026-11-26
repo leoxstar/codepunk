@@ -6114,6 +6114,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "Exported redacted transcript:",
       );
       await runCommandAfter(session, "/mcp", "MCP servers (user scope)");
+      await closeOverlay(session);
       await runCommandAfter(session, "/skills", "Skills (0)");
       await runCommandAfter(session, "/plugins", "Plugins (disabled, 0 files)");
       await runCommandAfter(
@@ -6257,7 +6258,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       );
       await runCommandAfter(
         session,
-        "/mcp",
+        "/mcp list",
         "run /reload after changing MCP configuration",
       );
       await runCommandAfter(session, "/fork", "forked ");

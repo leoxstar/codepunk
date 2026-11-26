@@ -840,3 +840,226 @@ test("External readiness: crash guard cleanup runs registered handlers within ti
     unregister();
   }
 });
+
+test("Track 1: piped stdin combines with positional print prompt via CLI", async () => {
+  const { spawn } = await import("node:child_process");
+  const { ensureBuilt } = await import("./support/helpers.mjs");
+  const { readPrompt } = await importSource("packages/cli/src/run/project.ts");
+  assert.equal(typeof readPrompt, "function");
+  const cli = await ensureBuilt();
+  // Verify codepunk upgrade --check --json respects CODEPUNK_OFFLINE=1 without network.
+  const child = spawn(process.execPath, [cli, "upgrade", "--check", "--json"], {
+    env: { ...process.env, CODEPUNK_OFFLINE: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(code, 0);
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.currentVersion, "0.1.0");
+  assert.equal(parsed.status, "offline");
+  assert.equal(parsed.updateAvailable, false);
+});
+
+test("Track 1: isNewerSemver and checkPackageUpdate handle semver, prereleases, and fetch responses", async () => {
+  assert.equal(core.isNewerSemver("0.1.0", "0.2.0"), true);
+  assert.equal(core.isNewerSemver("0.1.0", "0.1.1"), true);
+  assert.equal(core.isNewerSemver("0.1.0", "0.1.0"), false);
+  assert.equal(core.isNewerSemver("0.2.0", "0.1.9"), false);
+  assert.equal(core.isNewerSemver("0.1.0-beta.1", "0.1.0"), true);
+  assert.equal(core.isNewerSemver("0.1.0", "0.1.0-beta.1"), false);
+
+  const check = await core.checkPackageUpdate({
+    currentVersion: "0.1.0",
+    environment: {},
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ version: "0.1.2" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  });
+  assert.equal(check.status, "ok");
+  assert.equal(check.latestVersion, "0.1.2");
+  assert.equal(check.updateAvailable, true);
+});
+
+test("Track 1: safe read-only shell pipeline filters auto-allow while blocking mutation flags and outside paths", () => {
+  const base = {
+    tool: "bash",
+    cwd: "/workspace",
+    workspaceRoot: "/workspace",
+    deliveryRoot: "/workspace",
+    codepunkHome: "/home/.codepunk",
+    mode: "interactive",
+    approvalMode: "ask",
+  };
+  for (const command of [
+    "rg foo src | sort -u | head -n 20",
+    "cat package.json | cut -d ':' -f 1 | tr 'a-z' 'A-Z' | nl",
+    "fd -e ts packages/core | sort | uniq -c",
+    "basename src/index.ts && dirname src/index.ts",
+  ]) {
+    const decision = core.decidePolicy({ ...base, command });
+    assert.equal(
+      decision.decision,
+      "allow",
+      `expected read-only auto-allow for: ${command} (got ${decision.decision}: ${decision.reason})`,
+    );
+  }
+  for (const unsafe of [
+    "sort -o out.txt file.txt",
+    "sort --output=out.txt file.txt",
+    "uniq in.txt out.txt",
+    "fd -x rm {} src",
+    "fd --exec-batch cat src",
+    "cut -d ':' -f 1 /etc/passwd",
+    "fd . /etc",
+  ]) {
+    const decision = core.decidePolicy({ ...base, command: unsafe });
+    assert.notEqual(
+      decision.decision,
+      "allow",
+      `unsafe command must not auto-allow: ${unsafe}`,
+    );
+  }
+});
+
+test("Track 1: subagent tool runs up to 4 parallel read-only tasks and McpPanel is width-safe", async () => {
+  const seen = [];
+  const tool = core.createSubagentTool(async (request) => {
+    seen.push(request.task);
+    return {
+      sessionId: `01SUB_${seen.length}`,
+      status: "completed",
+      summary: `Result for ${request.task}`,
+      evidenceRef: null,
+      exitCode: 0,
+    };
+  });
+  const res = await tool.execute("call-batch", {
+    tasks: [
+      { task: "inspect policy", role: "research" },
+      { task: "inspect wrap", role: "review" },
+    ],
+  });
+  assert.notEqual(res.isError, true);
+  assert.equal(res.structuredContent.count, 2);
+  assert.equal(seen.length, 2);
+  assert.match(
+    res.content[0].text,
+    /### \[1\] research — 01SUB_1 \(completed\)/u,
+  );
+  assert.match(
+    res.content[0].text,
+    /### \[2\] review — 01SUB_2 \(completed\)/u,
+  );
+
+  const { McpPanel } = await importSource(
+    "packages/cli/src/tui/components/mcp-panel.ts",
+  );
+  let chosen = null;
+  const panel = new McpPanel(
+    {
+      title: "MCP servers (user scope)",
+      mcpStatus: "ready",
+      entries: [
+        {
+          name: "docs",
+          transport: "http",
+          target: "https://mcp.example.org",
+          authState: "OAuth signed out",
+          connected: false,
+          toolCount: 0,
+        },
+        {
+          name: "local-fs",
+          transport: "stdio",
+          target: "npx server-fs",
+          authState: "stdio (no OAuth)",
+          connected: true,
+          toolCount: 3,
+        },
+      ],
+      viewportHeight: 10,
+    },
+    THEME,
+    KEYBINDINGS,
+    (action) => {
+      chosen = action;
+    },
+  );
+  for (const width of WIDTHS) {
+    assertWidthSafe(panel.render(width), width);
+    panel.invalidate();
+  }
+  panel.handleInput("l");
+  assert.deepEqual(chosen, { action: "login", name: "docs" });
+  panel.handleInput("j");
+  panel.handleInput("d");
+  assert.deepEqual(chosen, { action: "remove", name: "local-fs" });
+});
+
+test("Track 2: enhanced edit handles multi-hunk + unique indentation fallback and enhanced read appends large-file outline", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cp-track2-"));
+  try {
+    const file = path.join(root, "sample.ts");
+    await fs.writeFile(
+      file,
+      [
+        "export class Service {",
+        "    run(x: number): number {",
+        "        const next = x + 1;",
+        "        return next;",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const editTool = core.createEnhancedEditToolDefinition(root);
+    const editRes = await editTool.execute("t2-edit", {
+      path: "sample.ts",
+      edits: [
+        {
+          oldText: "  const next = x + 1;\n  return next;",
+          newText: "  const next = x + 2;\n  return next * 2;",
+        },
+      ],
+    });
+    assert.match(editRes.content[0].text, /indentation-normalized/u);
+    const updated = await fs.readFile(file, "utf8");
+    assert.match(updated, /^        const next = x \+ 2;$/mu);
+    assert.match(updated, /^        return next \* 2;$/mu);
+
+    const bigFile = path.join(root, "big.py");
+    const pyLines = [];
+    for (let i = 0; i < 12; i += 1) {
+      pyLines.push(`def compute_${i}(value):`);
+      for (let j = 0; j < 35; j += 1) {
+        pyLines.push(`    step_${j} = value + ${j}`);
+      }
+      pyLines.push(`    return value + ${i}`);
+      pyLines.push("");
+    }
+    await fs.writeFile(bigFile, pyLines.join("\n"), "utf8");
+    const readTool = core.createEnhancedReadToolDefinition(root);
+    const fullRead = await readTool.execute("t2-read-full", { path: "big.py" });
+    assert.match(
+      fullRead.content[0].text,
+      /\[file outline — \d+ lines, jump with offset\/limit\]/u,
+    );
+    assert.match(fullRead.content[0].text, /L1: def compute_0/u);
+
+    const sliceRead = await readTool.execute("t2-read-slice", {
+      path: "big.py",
+      offset: 1,
+      limit: 10,
+    });
+    assert.doesNotMatch(sliceRead.content[0].text, /\[file outline/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

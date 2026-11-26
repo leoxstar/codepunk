@@ -40,8 +40,28 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Terminal-safe crash guards that restore raw mode/cursor and run bounded
   runtime cleanup on unexpected fatal errors, plus platform-specific `doctor`
   remediation hints and `uninstall` local-state preservation notices.
+- `codepunk "prompt"` interactive initial-prompt handoff, combined piped
+  stdin + positional print prompts (`git diff | codepunk -p "review"`), and
+  `codepunk upgrade --check [--json]` offline-safe version checking.
+- Interactive `/mcp` management overlay (`McpPanel`) with single-key add,
+  reload, status, login, logout, and remove actions (while `/mcp list` retains
+  plain-text output).
+- Parallel read-only `subagent` batch execution (up to 4 tasks in one tool
+  call) wired into TUI `state.subagents` and `/tasks` visibility.
+- Enhanced `edit` tool with unique indentation-preserving fallback and unified
+  diff preview/anchor hints across `edits[]`, enhanced `read` tool with
+  zero-dependency top-level symbol outlines (`[file outline]`) on large code
+  files read without `offset`/`limit`, and 5 deterministic coding-loop cases in
+  `eval/` (17/17 passing).
 
 ### Changed
+
+- Expanded read-only shell pipeline auto-allow filters (`sort`, `uniq`, `cut`,
+  `tr`, `nl`, `fd`, `basename`, `dirname`) with strict mutation-flag and
+  workspace read-target guards.
+- Split the 6 largest `packages/core/src/` monoliths (`model`, `policy`,
+  `config`, `wrap`, `adapters/pi`, `runtime`) into cohesive internal submodules
+  behind each module's `index.ts` barrel with zero public API changes.
 
 - Non-blocking async MCP startup in TUI (`deferMcp`) so the first interactive
   frame renders immediately while MCP connects in the background and hot-reloads
