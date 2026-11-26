@@ -1,4 +1,10 @@
+import { formatMcpReload } from "../format/status.ts";
 import { notify } from "../format/notify.ts";
+import {
+  createMcpPanel,
+  type McpPanelAction,
+  type McpPanelEntry,
+} from "../components/mcp-panel.ts";
 import {
   addMcpServerInteractive,
   removeMcpServerInteractive,
@@ -175,6 +181,99 @@ async function mcpLogin(
   }
 }
 
+async function openInteractiveMcpPanel(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+): Promise<void> {
+  const configs = await readMcpConfig(runtime.paths);
+  const store = new McpAuthStore(runtime.paths.home);
+  const entries: McpPanelEntry[] = [];
+  const connectedServers = new Set(runtime.mcpServers);
+  for (const cfg of configs) {
+    let authState = "stdio (no OAuth)";
+    if (cfg.transport === "http") {
+      if (mcpUsesAuthorizationHeader(cfg)) {
+        authState = "Authorization header";
+      } else {
+        const status = await store.status(cfg.name, cfg.url);
+        authState = status.signed_in ? "OAuth signed in" : "OAuth signed out";
+      }
+    }
+    entries.push({
+      name: cfg.name,
+      transport: cfg.transport,
+      target:
+        cfg.transport === "http"
+          ? cfg.url
+          : [cfg.command, ...cfg.args].join(" "),
+      authState,
+      connected: connectedServers.has(cfg.name),
+    });
+  }
+  const decision = await context.ui.custom<McpPanelAction | null>(
+    (_tui, theme, keybindings, done) =>
+      createMcpPanel(
+        {
+          title: "MCP servers (user scope)",
+          mcpStatus: runtime.mcpStatus,
+          entries,
+        },
+        theme,
+        keybindings,
+        done,
+      ),
+  );
+  if (decision === null || decision === undefined) {
+    return;
+  }
+  if (decision.action === "add") {
+    const result = await addMcpServerInteractive(runtime, context, undefined);
+    if (result !== null) {
+      (state.context ?? context).ui.notify(result.message, result.level);
+    }
+    return;
+  }
+  if (decision.action === "reload") {
+    const reloaded = await runtime.reloadMcp();
+    context.ui.notify(
+      formatMcpReload(reloaded),
+      reloaded.error === null ? "info" : "error",
+    );
+    return;
+  }
+  if (decision.action === "status") {
+    await mcpStatusOrLogout(
+      runtime,
+      context,
+      "status",
+      decision.name === undefined ? ["status"] : ["status", decision.name],
+    );
+    return;
+  }
+  if (decision.action === "login") {
+    await mcpLogin(runtime, context, ["login", decision.name]);
+    return;
+  }
+  if (decision.action === "logout") {
+    await mcpStatusOrLogout(runtime, context, "logout", [
+      "logout",
+      decision.name,
+    ]);
+    return;
+  }
+  if (decision.action === "remove") {
+    const result = await removeMcpServerInteractive(
+      runtime,
+      context,
+      decision.name,
+    );
+    if (result !== null) {
+      (state.context ?? context).ui.notify(result.message, result.level);
+    }
+  }
+}
+
 export function mcpCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "mcp",
@@ -184,6 +283,10 @@ export function mcpCommand(state: TuiState): TuiCommand {
         .trim()
         .split(/\s+/u)
         .filter((part) => part.length > 0);
+      if (parts.length === 0 && typeof context.ui.custom === "function") {
+        await openInteractiveMcpPanel(state, runtime, context);
+        return;
+      }
       const action = parts[0] ?? "list";
       if (action === "list") {
         const snapshot = await collectCapabilities(runtime.paths, {

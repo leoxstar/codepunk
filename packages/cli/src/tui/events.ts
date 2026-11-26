@@ -69,6 +69,15 @@ async function handleSessionStart(
     },
   }));
   setupChrome(state, context);
+  if (state.pendingInitialPrompt !== undefined) {
+    const pending = state.pendingInitialPrompt;
+    state.pendingInitialPrompt = undefined;
+    context.ui.setEditorText(pending);
+    context.ui.notify(
+      "Select or configure a model first, then press Enter to send your prompt.",
+      "info",
+    );
+  }
   if (state.runtime !== null && !state.warningsShown) {
     state.warningsShown = true;
     for (const warning of state.runtime.loadedConfig.warnings) {

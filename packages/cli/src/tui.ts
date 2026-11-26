@@ -37,3 +37,4 @@ export * from "./tui/commands/project.ts";
 export * from "./tui/commands/session.ts";
 export * from "./tui/commands/permission-actions.ts";
 export * from "./tui/commands/trust-actions.ts";
+export * from "./tui/components/mcp-panel.ts";

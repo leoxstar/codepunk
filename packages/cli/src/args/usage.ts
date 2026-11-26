@@ -388,7 +388,7 @@ function configurationSubcommandUsage(
       return [
         "usage:",
         "  codepunk install [--prefix <dir>] [--package-version <v>] [--dry-run]",
-        "  codepunk upgrade [--prefix <dir>] [--dry-run]",
+        "  codepunk upgrade [--check] [--prefix <dir>] [--dry-run] [--json]",
         "  codepunk uninstall [--prefix <dir>] [--dry-run]",
       ];
     default:

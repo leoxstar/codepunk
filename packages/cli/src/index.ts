@@ -107,7 +107,7 @@ async function main(argv: string[]): Promise<number> {
     }
     return runPrint(options, prompt);
   }
-  return runTui(options);
+  return runTui(options, prompt ?? undefined);
 }
 
 installCrashGuards();

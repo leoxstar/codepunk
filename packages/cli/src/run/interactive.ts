@@ -338,7 +338,10 @@ function startTitleAndBuildWatch(state: TuiState): () => void {
   };
 }
 
-export async function runTui(options: CliOptions): Promise<number> {
+export async function runTui(
+  options: CliOptions,
+  initialPrompt?: string,
+): Promise<number> {
   // The interactive stack is heavy; load it only when a TUI actually starts.
   const [{ ProcessTerminal }, tui, { BrandedInteractiveMode }] =
     await loadTuiModules();
@@ -453,10 +456,24 @@ export async function runTui(options: CliOptions): Promise<number> {
           ]
         : []),
     ];
+    const trimmedInitialPrompt = initialPrompt?.trim();
+    const hasConfiguredModel = state.modelSelected;
+    if (
+      trimmedInitialPrompt !== undefined &&
+      trimmedInitialPrompt.length > 0 &&
+      !hasConfiguredModel
+    ) {
+      state.pendingInitialPrompt = trimmedInitialPrompt;
+    }
     const interactive = new BrandedInteractiveMode(sessionRuntime, {
       terminal: new CodepunkTerminal(new ProcessTerminal()),
       startupDiagnostics,
       ...(modelFallbackMessage === undefined ? {} : { modelFallbackMessage }),
+      ...(trimmedInitialPrompt !== undefined &&
+      trimmedInitialPrompt.length > 0 &&
+      hasConfiguredModel
+        ? { initialMessage: trimmedInitialPrompt }
+        : {}),
     });
     await interactive.init();
     watchSandboxStatus(state, runtime, tui);

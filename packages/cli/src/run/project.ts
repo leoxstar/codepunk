@@ -1,3 +1,4 @@
+import { fstatSync } from "node:fs";
 import {
   ensureProjectConfigDir,
   ensureProjectRegistration,
@@ -108,21 +109,80 @@ export async function resolveDaemonProject(): Promise<
   return projectPaths(project);
 }
 
+async function readPipedStdin(
+  waitForFirstByteMs: number | null,
+): Promise<string> {
+  if (process.stdin.isTTY === true) {
+    return "";
+  }
+  let stat;
+  try {
+    stat = fstatSync(0);
+  } catch {
+    return "";
+  }
+  if (stat.isCharacterDevice()) {
+    return "";
+  }
+  const chunks: Buffer[] = [];
+  if (stat.isFile() || waitForFirstByteMs === null) {
+    for await (const chunk of process.stdin) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    }
+    return Buffer.concat(chunks).toString("utf8").trim();
+  }
+  return await new Promise<string>((resolve) => {
+    let sawData = false;
+    let settled = false;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onEnd);
+      if (!sawData) {
+        process.stdin.pause();
+        (process.stdin as NodeJS.ReadStream & { unref?: () => void }).unref?.();
+        resolve("");
+        return;
+      }
+      resolve(Buffer.concat(chunks).toString("utf8").trim());
+    };
+    const onData = (chunk: Buffer | string) => {
+      sawData = true;
+      clearTimeout(timer);
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    };
+    const onEnd = () => finish();
+    const timer = setTimeout(() => {
+      if (!sawData) {
+        finish();
+      }
+    }, waitForFirstByteMs);
+    timer.unref();
+    process.stdin.on("data", onData);
+    process.stdin.on("end", onEnd);
+    process.stdin.on("error", onEnd);
+    process.stdin.resume();
+  });
+}
+
 export async function readPrompt(
   positionals: string[],
 ): Promise<string | null> {
-  if (positionals.length > 0) {
-    return positionals.join(" ");
+  const positional = positionals.join(" ").trim();
+  if (positional.length > 0) {
+    const piped = await readPipedStdin(150);
+    if (piped.length > 0) {
+      return `${positional}\n\n${piped}`;
+    }
+    return positional;
   }
-  if (process.stdin.isTTY === true) {
-    return null;
-  }
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-  }
-  const value = Buffer.concat(chunks).toString("utf8").trim();
-  return value.length > 0 ? value : null;
+  const piped = await readPipedStdin(null);
+  return piped.length > 0 ? piped : null;
 }
 
 export function sessionSelector(value: string | undefined): {

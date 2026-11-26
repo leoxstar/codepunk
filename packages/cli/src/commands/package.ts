@@ -1,4 +1,5 @@
 import {
+  checkPackageUpdate,
   installPackage,
   resolveCodepunkHome,
   uninstallPackage,
@@ -11,7 +12,20 @@ export async function commandPackage(
   options: CliOptions,
   verb: "install" | "upgrade" | "uninstall",
 ): Promise<number> {
-  const targetVersion = options.packageVersion ?? (await readCliVersion());
+  const currentVersion = await readCliVersion();
+  if (verb === "upgrade" && options.check) {
+    const check = await checkPackageUpdate({
+      currentVersion,
+      environment: process.env,
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(check)}\n`);
+    } else {
+      process.stdout.write(`${check.message}\n`);
+    }
+    return check.status === "error" ? 1 : 0;
+  }
+  const targetVersion = options.packageVersion ?? currentVersion;
   if (verb === "install" && targetVersion === UNPUBLISHED_VERSION) {
     throw new Error(
       "0.0.0 is the unpublished placeholder version and codepunk-cli is not published at it; install from the repository checkout or pass --package-version <published-version>",
