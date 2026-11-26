@@ -2111,6 +2111,48 @@ test("a real pty shows the working tree diff", async () => {
   });
 });
 
+test("a real pty explains /diff outside a Git worktree", async () => {
+  await withTempDirectory("codepunk-tui-diff-nongit-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project);
+    await fs.mkdir(home);
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const cli = await ensureBuilt();
+    const session = startPty(process.execPath, [cli], {
+      cwd: project,
+      env: {
+        ...BASE_ENV,
+        CODEPUNK_HOME: home,
+        PI_OFFLINE: "1",
+        TERM: "xterm-256color",
+        NO_COLOR: "1",
+      },
+    });
+    try {
+      await waitForOutput(session, "codepunk · auto/auto", "startup");
+      await runCommandAfter(session, "/diff", "Not a Git worktree");
+      assert.match(
+        stripAnsi(session.output()),
+        /Not a Git worktree; \/diff needs a Git repository/u,
+      );
+      session.child.stdin.write("/quit\r");
+      const result = await Promise.race([
+        session.exited,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ code: "timeout", signal: null }), 20_000),
+        ),
+      ]);
+      assert.deepEqual(result, { code: 0, signal: null });
+    } finally {
+      await stopPty(session);
+    }
+  });
+});
+
 test("a real pty covers the plan mode command surface", async () => {
   await withTempDirectory("codepunk-tui-plan-mode-", async (root) => {
     const project = path.join(root, "project");

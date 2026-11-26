@@ -274,6 +274,17 @@ test("workspace diff reports a bounded patch", async () => {
   });
 });
 
+test("workspace diff names a directory outside a Git worktree", async () => {
+  await withTempDirectory("codepunk-diff-nongit-", async (root) => {
+    await assert.rejects(
+      core.readWorkspaceDiff({ root }),
+      (error) =>
+        error instanceof core.NotAGitWorktreeError &&
+        /not a Git worktree/u.test(error.message),
+    );
+  });
+});
+
 test("commit preview separates staged, unstaged, and untracked files", async () => {
   await withTempDirectory("codepunk-commit-preview-", async (root) => {
     await execFileAsync("git", ["init", "-q"], { cwd: root });

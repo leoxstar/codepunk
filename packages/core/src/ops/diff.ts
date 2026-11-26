@@ -25,6 +25,13 @@ export interface WorkspaceDiff {
   truncated: boolean;
 }
 
+export class NotAGitWorktreeError extends Error {
+  constructor(root: string, options?: { cause?: unknown }) {
+    super(`not a Git worktree: ${root}`, options);
+    this.name = "NotAGitWorktreeError";
+  }
+}
+
 export interface WorkspaceDiffUntrackedFile {
   path: string;
   kind: "file" | "symlink" | "directory" | "other" | "outside" | "missing";
@@ -186,7 +193,18 @@ export async function readWorkspaceDiff(
         maxBytes,
         { tolerateExit: 0 },
       ),
-    ]);
+    ]).catch(async (error: unknown) => {
+      const probe = await runGit(
+        options.root,
+        ["rev-parse", "--is-inside-work-tree"],
+        STATUS_MAX_BYTES,
+        { tolerateExit: 128 },
+      ).catch(() => null);
+      if (probe !== null && probe.text.trim() !== "true") {
+        throw new NotAGitWorktreeError(options.root, { cause: error });
+      }
+      throw error;
+    });
   return {
     root: options.root,
     status: status.text,

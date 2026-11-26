@@ -554,6 +554,7 @@ export {
   type DoctorStatus,
 } from "./ops/index.ts";
 export {
+  NotAGitWorktreeError,
   readWorkspaceDiff,
   readWorkspaceDiffSnapshot,
   workspaceDiffSnapshotSha256,

@@ -18,6 +18,7 @@ import { openInteractiveHelp } from "../chrome/help-action.ts";
 import {
   GoalController,
   GoalCorruptError,
+  NotAGitWorktreeError,
   formatPlan,
   formatTodos,
   listProjectSessions,
@@ -120,6 +121,13 @@ export function diffCommand(state: TuiState): TuiCommand {
           await runtime.host.session.prompt("/review");
         }
       } catch (error) {
+        if (error instanceof NotAGitWorktreeError) {
+          context.ui.notify(
+            `Not a Git worktree; /diff needs a Git repository (${runtime.paths.deliveryRoot})`,
+            "warning",
+          );
+          return;
+        }
         context.ui.notify(
           `/diff failed: ${
             error instanceof Error ? error.message : String(error)
