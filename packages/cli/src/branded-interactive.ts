@@ -12,10 +12,10 @@ export function assertUserVisibleTuiText(text: string): void {
 
 export class BrandedInteractiveMode extends InteractiveMode {
   override showNewVersionNotification(): void {
-    assertUserVisibleTuiText("Update Available");
+    // Suppress host update banners; `codepunk upgrade --check` owns product updates.
   }
 
-  override showPackageUpdateNotification(packages: readonly string[]): void {
-    assertUserVisibleTuiText(packages.join("\n"));
+  override showPackageUpdateNotification(_packages: readonly string[]): void {
+    // Suppress internal host package notifications without throwing on package names.
   }
 }

@@ -1045,3 +1045,84 @@ test("merge can verify child evidence outside the parent project store", async (
     );
   });
 });
+
+test("allowTargetAdvance merges non-conflicting parallel parent commits and aborts cleanly on conflict", async () => {
+  await withTempDirectory("codepunk-delivery-advance-", async (root) => {
+    const clean = await setupDelivery(root, ["src/"], "clean-advance");
+    await writeFile(path.join(clean.project, "README.md"), "parent advance\n");
+    await git(clean.project, ["add", "README.md"]);
+    await git(clean.project, ["commit", "-q", "-m", "parent docs update"]);
+
+    await assert.rejects(
+      () =>
+        core.mergeHandoff({
+          paths: clean.paths,
+          repoRoot: clean.project,
+          sourceWorktree: clean.worktree.path,
+          spec: clean.spec,
+          handoff: clean.handoff,
+          actor: "local-user",
+          human: true,
+          taskState: "review_passed",
+          now: () => NOW,
+        }),
+      /merge target moved away from the task base/u,
+    );
+
+    const merged = await core.mergeHandoff({
+      paths: clean.paths,
+      repoRoot: clean.project,
+      sourceWorktree: clean.worktree.path,
+      spec: clean.spec,
+      handoff: clean.handoff,
+      actor: "local-user",
+      human: true,
+      taskState: "review_passed",
+      allowTargetAdvance: true,
+      now: () => NOW,
+    });
+    assert.equal(merged.handoff_head, clean.handoff.head_commit);
+    assert.equal(
+      await fs.readFile(path.join(clean.project, "README.md"), "utf8"),
+      "parent advance\n",
+    );
+    assert.equal(
+      await fs.readFile(path.join(clean.project, "src", "app.txt"), "utf8"),
+      "changed\n",
+    );
+
+    const conflict = await setupDelivery(root, ["src/"], "conflict-advance");
+    await writeFile(
+      path.join(conflict.project, "src", "app.txt"),
+      "conflicting parent change\n",
+    );
+    await git(conflict.project, ["add", "src/app.txt"]);
+    await git(conflict.project, ["commit", "-q", "-m", "parent conflict"]);
+    const conflictHead = (
+      await git(conflict.project, ["rev-parse", "HEAD"])
+    ).trim();
+
+    await assert.rejects(() =>
+      core.mergeHandoff({
+        paths: conflict.paths,
+        repoRoot: conflict.project,
+        sourceWorktree: conflict.worktree.path,
+        spec: conflict.spec,
+        handoff: conflict.handoff,
+        actor: "local-user",
+        human: true,
+        taskState: "review_passed",
+        allowTargetAdvance: true,
+        now: () => NOW,
+      }),
+    );
+    assert.equal(
+      (await git(conflict.project, ["rev-parse", "HEAD"])).trim(),
+      conflictHead,
+    );
+    assert.equal(
+      (await git(conflict.project, ["status", "--porcelain"])).trim(),
+      "",
+    );
+  });
+});

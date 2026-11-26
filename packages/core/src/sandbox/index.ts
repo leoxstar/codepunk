@@ -159,6 +159,12 @@ export interface SrtProfileInput {
   deliveryRoot: string;
   additionalRoots?: readonly string[];
   codepunkHome: string;
+  /**
+   * Optional user home directory on POSIX hosts so default credential stores
+   * (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`) are added to
+   * `denyRead` when outside the active workspace roots.
+   */
+  userHome?: string;
   writeSet?: readonly string[];
   /**
    * Domains the sandboxed process may reach. Empty means no egress. This is
@@ -865,7 +871,6 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
   const protectedGitPaths = allRoots.flatMap((root) => {
     const rootGitDir = path.join(root, ".git");
     return [
-      rootGitDir,
       path.join(rootGitDir, "config"),
       path.join(rootGitDir, "config.worktree"),
       path.join(rootGitDir, "hooks"),
@@ -874,6 +879,19 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
       path.join(rootGitDir, "objects", "pack"),
     ];
   });
+  const sensitiveHomeDirs =
+    input.userHome === undefined || input.userHome.trim().length === 0
+      ? []
+      : [".ssh", ".aws", ".gnupg", ".kube", ".docker"]
+          .map((dir) => path.join(normalizeAbsolute(input.userHome!), dir))
+          .filter(
+            (candidate) =>
+              !allRoots.some(
+                (root) =>
+                  isInsidePath(candidate, root) ||
+                  isInsidePath(root, candidate),
+              ),
+          );
   const readOnly = input.readOnly === true;
   return {
     network: {
@@ -882,7 +900,13 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
       ...(filterRequest !== undefined ? { filterRequest } : {}),
     },
     filesystem: {
-      denyRead: [codepunkHome, ...protectedConfigDirs],
+      denyRead: [
+        ...new Set([
+          codepunkHome,
+          ...protectedConfigDirs,
+          ...sensitiveHomeDirs,
+        ]),
+      ],
       allowWrite: readOnly ? [] : writeRoots(input),
       denyWrite: [
         ...(readOnly ? allRoots : []),
@@ -1048,7 +1072,12 @@ export async function probeSrtSandbox(
   }
   try {
     const config = runtimeConfigFor(
-      srtProfile(input),
+      srtProfile({
+        ...input,
+        ...(platform !== "win32" && input.userHome === undefined
+          ? { userHome: options.userHome ?? os.homedir() }
+          : {}),
+      }),
       platform,
       options.windowsSrtWinPath,
     );
@@ -1136,6 +1165,9 @@ export class SrtSandbox implements ShellProvider {
         : null;
     const profileInput: SrtProfileInput = {
       ...input,
+      ...(platform !== "win32" && input.userHome === undefined
+        ? { userHome: options.userHome ?? os.homedir() }
+        : {}),
       ...(networkGuard !== null ? { networkGuard } : {}),
     };
     let config = srtProfile(profileInput);

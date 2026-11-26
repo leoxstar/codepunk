@@ -72,6 +72,7 @@ async function mergeSignedSubagentWorktree(
       actor: "local-user",
       human: true,
       taskState: "review_passed",
+      allowTargetAdvance: true,
     });
     const mergeRecordPath = path.join(
       runtime.paths.projectDir,
@@ -174,13 +175,14 @@ export async function mergeSubagent(
   const target = await readWorkspaceCommitPreview({
     root: runtime.paths.deliveryRoot,
   });
-  if (target.head !== result.base_commit) {
+  if (target.head === null) {
     context.ui.notify(
-      `cannot merge: parent HEAD ${target.head ?? "none"} is not the child base ${result.base_commit}`,
+      "cannot merge: parent repository has no HEAD commit",
       "error",
     );
     return;
   }
+  const targetAdvanced = target.head !== result.base_commit;
   const targetChanges = [
     ...target.staged,
     ...target.unstaged,
@@ -196,10 +198,13 @@ export async function mergeSubagent(
     return;
   }
   await reviewSubagent(context, record);
-  const confirmed = await context.ui.select(
-    `Merge subagent ${record.childSessionId}?`,
-    ["Merge the signed child commit", "Cancel"],
-  );
+  const mergePrompt = targetAdvanced
+    ? `Merge subagent ${record.childSessionId}? (parent HEAD ${target.head.slice(0, 7)} advanced from base ${result.base_commit.slice(0, 7)}; 3-way --no-ff merge)`
+    : `Merge subagent ${record.childSessionId}?`;
+  const confirmed = await context.ui.select(mergePrompt, [
+    "Merge the signed child commit",
+    "Cancel",
+  ]);
   if (confirmed !== "Merge the signed child commit") {
     return;
   }

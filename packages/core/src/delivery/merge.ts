@@ -41,6 +41,13 @@ export interface MergeOptions {
   actor: string;
   human: boolean;
   taskState: TaskState;
+  /**
+   * Allow merging when target HEAD has moved forward linearly from `base_commit`
+   * (for example, while a background subagent ran in parallel) provided `base_commit`
+   * remains an ancestor of target HEAD and the `--no-ff` merge completes cleanly.
+   * Defaults to `false` to preserve strict base-pinning unless opted in.
+   */
+  allowTargetAdvance?: boolean;
   claimStore?: ClaimStore;
   claim?: ClaimRecord;
   now?: () => Date;
@@ -286,7 +293,21 @@ export async function mergeHandoff(
   }
   const targetHead = await resolveCommit(repoRoot, "HEAD");
   if (targetHead !== base) {
-    throw new Error("merge target moved away from the task base");
+    if (options.allowTargetAdvance !== true) {
+      throw new Error("merge target moved away from the task base");
+    }
+    if (
+      !(await gitSucceeds(repoRoot, [
+        "merge-base",
+        "--is-ancestor",
+        base,
+        targetHead,
+      ]))
+    ) {
+      throw new Error(
+        "merge target is not descended from the task base; history diverged",
+      );
+    }
   }
   if (
     statusOutsideCodepunk(
@@ -369,7 +390,7 @@ export async function mergeHandoff(
   ) {
     throw new Error("merge commit does not contain the handoff head");
   }
-  const mergedPaths = await changedPaths(repoRoot, base, mergeCommit);
+  const mergedPaths = await changedPaths(repoRoot, targetHead, mergeCommit);
   for (const entry of mergedPaths) {
     if (!pathCoveredBySet(entry, options.spec.write_set)) {
       throw new Error(`merge changed a path outside the write set: ${entry}`);

@@ -1222,6 +1222,8 @@ test("user-visible TUI text blocks internal engine branding", async () => {
   });
   BrandedInteractiveMode.prototype.showPackageUpdateNotification.call(base, [
     "example@2.0.0",
+    "@earendil-works/pi-mcp@1.6.0",
+    "Pi-engine@1.6.0",
   ]);
   assert.deepEqual(brandedChildren, []);
   assert.deepEqual(brandedRenders, []);

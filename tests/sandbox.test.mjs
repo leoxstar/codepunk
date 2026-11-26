@@ -602,7 +602,16 @@ test("windows protects an out-of-root codepunk home instead of walking its paren
       assert.ok(
         denyWrite.includes(path.resolve(path.join(project, ".codepunk"))),
       );
-      assert.ok(denyWrite.includes(path.resolve(path.join(project, ".git"))));
+      assert.equal(
+        denyWrite.includes(path.resolve(path.join(project, ".git"))),
+        false,
+      );
+      assert.ok(
+        denyWrite.includes(path.resolve(path.join(project, ".git", "config"))),
+      );
+      assert.ok(
+        denyWrite.includes(path.resolve(path.join(project, ".git", "hooks"))),
+      );
     } finally {
       await sandbox.close();
     }
@@ -1261,12 +1270,30 @@ test(
 );
 
 test(
-  "srt protects git config and hook execution surfaces",
+  "srt protects git config, hooks, and home credentials while allowing normal git index/commit operations",
   {
     skip: POSIX_SRT_SKIP,
   },
   async () => {
     const paths = await setup();
+    const fakeUserHome = path.join(paths.root, "user-home");
+    await fs.mkdir(path.join(fakeUserHome, ".ssh"), { recursive: true });
+    await fs.mkdir(path.join(fakeUserHome, ".aws"), { recursive: true });
+    await fs.writeFile(
+      path.join(fakeUserHome, ".ssh", "id_ed25519"),
+      "PRIVATE_KEY_PROBE\n",
+    );
+    await fs.writeFile(
+      path.join(fakeUserHome, ".aws", "credentials"),
+      "AWS_SECRET_PROBE\n",
+    );
+    await execFileAsync("git", ["init", "-q"], { cwd: paths.project });
+    await execFileAsync("git", ["config", "user.email", "probe@example.com"], {
+      cwd: paths.project,
+    });
+    await execFileAsync("git", ["config", "user.name", "probe"], {
+      cwd: paths.project,
+    });
     await fs.mkdir(path.join(paths.project, ".git", "hooks"), {
       recursive: true,
     });
@@ -1274,24 +1301,24 @@ test(
       recursive: true,
     });
     await fs.writeFile(
-      path.join(paths.project, ".git", "config"),
-      "[core]\n\trepositoryformatversion = 0\n",
-    );
-    await fs.writeFile(
       path.join(paths.project, ".git", "hooks", "pre-commit"),
       "#!/bin/sh\nexit 0\n",
     );
     await fs.writeFile(path.join(paths.project, ".git", "info", "exclude"), "");
-    const sandbox = await core.SrtSandbox.create({
-      cwd: paths.project,
-      workspaceRoot: paths.project,
-      deliveryRoot: paths.project,
-      codepunkHome: paths.home,
-      writeSet: [paths.project],
-    });
+    const sandbox = await core.SrtSandbox.create(
+      {
+        cwd: paths.project,
+        workspaceRoot: paths.project,
+        deliveryRoot: paths.project,
+        codepunkHome: paths.home,
+        userHome: fakeUserHome,
+        writeSet: [paths.project],
+      },
+      { userHome: fakeUserHome },
+    );
     try {
       const normal = await sandbox.execCommand(
-        "printf normal > normal.txt",
+        "printf normal > normal.txt && git add normal.txt && git commit -qm 'sandbox commit'",
         paths.project,
       );
       assert.equal(normal.exitCode, 0, normal.output);
@@ -1305,6 +1332,17 @@ test(
           paths.project,
         );
         assert.notEqual(denied.exitCode, 0, target);
+      }
+      for (const secretPath of [
+        path.join(fakeUserHome, ".ssh", "id_ed25519"),
+        path.join(fakeUserHome, ".aws", "credentials"),
+      ]) {
+        const secretRead = await sandbox.execCommand(
+          `cat ${JSON.stringify(secretPath)}`,
+          paths.project,
+        );
+        assert.notEqual(secretRead.exitCode, 0, secretPath);
+        assert.doesNotMatch(secretRead.output, /PROBE/u);
       }
       assert.match(
         await fs.readFile(path.join(paths.project, ".git", "config"), "utf8"),
