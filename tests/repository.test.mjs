@@ -304,12 +304,15 @@ async function createNpmPackFixture(fixture, output, status = 0) {
     "",
   ].join("\n");
   await writeFile(path.join(directory, "npm"), script, { mode: 0o755 });
+  const npmCli = path.join(directory, "npm-cli.js");
+  await writeFile(npmCli, script);
   await writeFile(
     path.join(directory, "npm.cmd"),
     '@echo off\r\nnode "%~dp0npm" %*\r\n',
   );
   return {
     ...process.env,
+    npm_execpath: npmCli,
     PATH: `${directory}${path.delimiter}${process.env.PATH ?? ""}`,
   };
 }

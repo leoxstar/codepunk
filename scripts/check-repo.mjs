@@ -18,6 +18,42 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const execFileAsync = promisify(execFile);
 
+function npmExecutable(environment = process.env) {
+  if (process.platform !== "win32") {
+    return { command: "npm", prefixArgs: [] };
+  }
+  const candidates = [];
+  const execPath = environment["npm_execpath"];
+  if (
+    execPath !== undefined &&
+    path.basename(execPath).toLowerCase() === "npm-cli.js"
+  ) {
+    candidates.push(execPath);
+  }
+  candidates.push(
+    path.join(
+      path.dirname(process.execPath),
+      "node_modules",
+      "npm",
+      "bin",
+      "npm-cli.js",
+    ),
+    path.join(
+      path.dirname(process.execPath),
+      "..",
+      "lib",
+      "node_modules",
+      "npm",
+      "bin",
+      "npm-cli.js",
+    ),
+  );
+  const cli = candidates.find((candidate) => existsSync(candidate));
+  return cli === undefined
+    ? { command: "npm", prefixArgs: [] }
+    : { command: process.execPath, prefixArgs: [cli] };
+}
+
 const ROOT_ENTRIES = new Set([
   ".github",
   ".gitattributes",
@@ -249,7 +285,7 @@ const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "2981e34a98c5318f579c9b674088954c40b41017a3d88c6cb980d501891d87e7";
+  "ea34ea51f5bc6b8579b5a6164a6e7097e9579351c1b14858a0d09f63dfaa6896";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -2826,15 +2862,23 @@ async function checkPackagePackaging(
 
   let output;
   try {
+    const npm = npmExecutable();
     const result = await execFileAsync(
-      "npm",
-      ["pack", "--dry-run", "--json", "--ignore-scripts", "--offline"],
+      npm.command,
+      [
+        ...npm.prefixArgs,
+        "pack",
+        "--dry-run",
+        "--json",
+        "--ignore-scripts",
+        "--offline",
+      ],
       {
         cwd: path.join(root, spec.dir),
         encoding: "utf8",
         timeout: packTimeoutMs,
         maxBuffer: 1_048_576,
-        shell: process.platform === "win32",
+        shell: npm.command === "npm" && process.platform === "win32",
         env: { ...process.env, npm_config_update_notifier: "false" },
       },
     );
