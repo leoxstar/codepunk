@@ -97,10 +97,12 @@ async function startChild(instance, root, title = "long task") {
     args: ["-e", CHILD_SCRIPT, marker],
     cwd: root,
   });
-  await waitFor(
-    async () => (await instance.logs(snapshot.id)).stdout.includes("ready"),
-    "background child did not start",
-  );
+  await waitFor(async () => {
+    const logs = await instance.logs(snapshot.id);
+    return (
+      logs.stdout.includes("ready") && logs.stderr.includes("stderr-ready")
+    );
+  }, "background child did not start");
   return { snapshot, marker };
 }
 

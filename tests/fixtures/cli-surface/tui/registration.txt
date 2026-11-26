@@ -6,7 +6,7 @@ on agent_start
 on agent_settled
 on session_shutdown
 registerToolRenderer
-registerCommand help	Show the Codepunk command list
+registerCommand help	Search, browse, and run Codepunk commands
 registerCommand init	Create or update AGENTS.md from repository evidence
 registerCommand diff	Show staged and unstaged working tree changes
 registerCommand undo	Restore recent Codepunk write/edit changes
@@ -27,20 +27,22 @@ registerCommand image-gen	Generate an image through an available image model
 registerCommand roles	Show configured model roles and subagent pools
 registerCommand review	Review the current diff with structured findings
 registerCommand todos	Show the current todo list
-registerCommand evidence	Show current run evidence count
+registerCommand context	Visualize context window token usage and breakdown
+registerCommand evidence	Inspect current run evidence ledger
 registerCommand models	Select a recent or favorite model
 registerCommand favorite	Toggle the current model in favorites
 registerShortcut f2	Cycle through recent models
 registerShortcut alt+m	Cycle work mode (plan/standard/auto/auto-approve)
 registerShortcut alt+t	Open the unified task and subagent center
 registerShortcut alt+r	Open the interactive rewind picker
+registerShortcut alt+k	Open the interactive command palette
 registerShortcut f1	Open searchable command help
 registerCommand budget	Show model token and cost usage against the budget
-registerCommand doctor	Run codepunk doctor
+registerCommand doctor	Run codepunk doctor diagnostics
 registerCommand policy	Show effective codepunk policy
 registerCommand capabilities	List MCP servers, skills, and plugins
-registerCommand skills	List loaded skills and management commands
-registerCommand plugins	List plugin files and management commands
+registerCommand skills	Inspect loaded skills and reload
+registerCommand plugins	Inspect plugins, toggle enablement, or reload
 registerCommand mcp	List, sign in to, or inspect user MCP servers
 registerCommand permissions	Show or change approval, autonomy, and sandbox modes
 registerCommand permission	Show or change approval, autonomy, and sandbox modes

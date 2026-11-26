@@ -9,7 +9,7 @@ const requireFromCli = createRequire(
   pathToFileURL(path.join(REPO_ROOT, "packages", "cli", "package.json")),
 );
 const { stripTerminalSequences, visibleWidth } = await import(
-  requireFromCli.resolve("@earendil-works/pi-tui")
+  pathToFileURL(requireFromCli.resolve("@earendil-works/pi-tui")).href
 );
 
 const { TextBlock } = await importSource(
@@ -603,10 +603,10 @@ function plainRendererText(component, width = 120) {
   return stripTerminalSequences(component.render(width).join("\n"));
 }
 
-test("Codepunk tool renderer resolver matches only search, plan, and todo", () => {
+test("Codepunk tool renderer resolver matches registered tools and delegates others", () => {
   const resolver = codepunkToolRendererResolver();
   const fallback = { renderCall: () => null };
-  for (const name of ["search", "plan", "todo"]) {
+  for (const name of ["search", "plan", "todo", "edit", "write", "bash"]) {
     const renderers = resolver(name, () => {
       throw new Error(`${name} must not delegate to the next resolver`);
     });
@@ -615,7 +615,7 @@ test("Codepunk tool renderer resolver matches only search, plan, and todo", () =
   }
   let nextCalls = 0;
   assert.equal(
-    resolver("bash", () => {
+    resolver("read", () => {
       nextCalls += 1;
       return fallback;
     }),
@@ -873,8 +873,9 @@ test("the TUI extension registers the Codepunk tool renderer resolver", async ()
   assert.equal(resolvers.length, 1);
   const fallback = { renderCall: () => null };
   assert.equal(
-    resolvers[0]("bash", () => fallback),
+    resolvers[0]("read", () => fallback),
     fallback,
   );
   assert.ok(resolvers[0]("search", () => fallback) !== fallback);
+  assert.ok(resolvers[0]("bash", () => fallback) !== fallback);
 });

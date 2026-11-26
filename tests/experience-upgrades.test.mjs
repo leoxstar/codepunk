@@ -11,7 +11,7 @@ const requireFromCli = createRequire(
   pathToFileURL(path.join(REPO_ROOT, "packages", "cli", "package.json")),
 );
 const { stripTerminalSequences, visibleWidth } = await import(
-  requireFromCli.resolve("@earendil-works/pi-tui")
+  pathToFileURL(requireFromCli.resolve("@earendil-works/pi-tui")).href
 );
 
 const core = await importCore();

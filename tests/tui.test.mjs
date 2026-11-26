@@ -2005,9 +2005,10 @@ test(
         await waitForOutputAfter(
           session,
           mark,
-          "show this command list",
+          "Codepunk help",
           "interactive /help",
         );
+        await closeOverlay(session);
         await waitForOutput(session, "shell srt ·", "sandbox ready status");
 
         const markerStarted = Date.now();
@@ -3748,7 +3749,7 @@ test("a real pty reports status without a configured model", async () => {
       await waitForOutputAfter(
         session,
         mark,
-        "sessions: ",
+        "esc close",
         "/status completion",
       );
       const output = stripAnsi(session.output().slice(mark));
@@ -4638,6 +4639,7 @@ test("--no-skills keeps project skills out of the /trust view", async () => {
       // A resource that was never part of this session's decision must not be
       // presented as one the user is being asked to trust.
       assert.doesNotMatch(view, /\.codepunk\/skills/u);
+      await closeOverlay(session);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -4696,6 +4698,7 @@ test("header and footer can be disabled without disabling the session", async ()
         "/evidence",
         "No evidence in the current run.",
       );
+      await closeOverlay(session);
       assert.doesNotMatch(session.output(), /codepunk · auto\/auto/u);
       assert.doesNotMatch(session.output(), /approvals ask · autonomy ask/u);
       assert.doesNotMatch(session.output(), /project [0-9a-f]{16}/u);
@@ -4775,7 +4778,7 @@ test(
         await waitForOutputAfter(
           session,
           allowMark,
-          "why:",
+          "esc cancel",
           "approval policy reason",
         );
         assert.match(
@@ -6106,8 +6109,11 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/evidence",
         "No evidence in the current run.",
       );
+      await closeOverlay(session);
       await runCommandAfter(session, "/doctor", "codepunk doctor (");
+      await closeOverlay(session);
       await runCommandAfter(session, "/policy", "approval: ask");
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/cp-export",
@@ -6116,7 +6122,9 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       await runCommandAfter(session, "/mcp", "MCP servers (user scope)");
       await closeOverlay(session);
       await runCommandAfter(session, "/skills", "Skills (0)");
+      await closeOverlay(session);
       await runCommandAfter(session, "/plugins", "Plugins (disabled, 0 files)");
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/sign",
@@ -6225,6 +6233,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "Model scope is file-backed in codepunk.",
       );
       await runCommandAfter(session, "/trust", "project resources: none");
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/trust grant",
@@ -6256,6 +6265,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         "/skills",
         "run /reload after changing skills",
       );
+      await closeOverlay(session);
       await runCommandAfter(
         session,
         "/mcp list",
@@ -6272,11 +6282,8 @@ test("product commands and intercepted Pi builtins render through a real pty", a
         session.output(),
         /Type \/help for the available Codepunk commands\./u,
       );
-      await runCommandAfter(
-        session,
-        "/help",
-        "Host commands that would bypass the Codepunk session",
-      );
+      await runCommandAfter(session, "/help", "Codepunk help");
+      await closeOverlay(session);
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -6871,6 +6878,7 @@ test("a real pty surfaces a stopped budget and refuses more model calls", async 
           "/budget",
           "budget: stopped at 5/1 tokens; start a new session with /new",
         );
+        await closeOverlay(session);
         await runCommandAfter(
           session,
           "/status",
@@ -7141,6 +7149,7 @@ test("a real pty runs /subagent as a read-only child session", async () => {
         "Skills (0)",
         "/capabilities skills",
       );
+      await closeOverlay(session);
 
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
