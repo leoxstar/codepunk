@@ -58,6 +58,8 @@ function usageData(): string[] {
     "  codepunk memory export [--scope user|project] [--output path]",
     "",
     "Model commands:",
+    "  codepunk setup [--provider <id>] [--api-key <key>] [--model <id>]",
+    "      guided provider/API-key setup wizard (or one-command non-interactive setup)",
     "  codepunk models [list]",
     "  codepunk models test [provider/id]",
     "  codepunk models set <provider/id> [--thinking <level>]",
@@ -288,6 +290,14 @@ function runtimeSubcommandUsage(
         "  codepunk memory delete <id> [--scope user|project]",
         "  codepunk memory archive <id> [--scope user|project]",
         "  codepunk memory export [--scope user|project] [--output path]",
+      ];
+    case "setup":
+      return [
+        "usage:",
+        "  codepunk setup",
+        "      interactive provider, API key, and default model setup wizard",
+        "  codepunk setup --provider <id> [--api-key <key>] [--model <id>] [--thinking <level>]",
+        "  codepunk setup --base-url <url> --provider <id> [--api <flavor>] [--api-key <key>] [--model <id>]",
       ];
     case "models":
       return [

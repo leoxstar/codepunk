@@ -14,6 +14,7 @@ import type { CliOptions } from "./args/options.ts";
 import { parseCli } from "./args/parse.ts";
 import { subcommandUsage, usage } from "./args/usage.ts";
 import { formatBuildIdentity, inspectCliBuild } from "./build-info.ts";
+import { installCrashGuards } from "./crash-guard.ts";
 import { commandAcp } from "./commands/acp.ts";
 import { commandCapabilities } from "./commands/capabilities.ts";
 import { commandCompletion } from "./commands/completion.ts";
@@ -35,6 +36,7 @@ import { commandPin } from "./commands/pin.ts";
 import { commandPlugins } from "./commands/plugins.ts";
 import { commandResume } from "./commands/resume.ts";
 import { commandSessions } from "./commands/sessions.ts";
+import { commandSetup } from "./commands/setup.ts";
 import { commandSign } from "./commands/sign.ts";
 import { commandSkills } from "./commands/skills.ts";
 import { commandTrust } from "./commands/trust.ts";
@@ -56,6 +58,7 @@ const commandRunners: Record<string, (options: CliOptions) => Promise<number>> =
     sign: commandSign,
     memory: commandMemory,
     models: commandModels,
+    setup: commandSetup,
     doctor: commandDoctor,
     config: commandConfig,
     permissions: commandPermissions,
@@ -105,22 +108,6 @@ async function main(argv: string[]): Promise<number> {
     return runPrint(options, prompt);
   }
   return runTui(options);
-}
-
-function installCrashGuards(): void {
-  const reportFatal = (label: string, error: unknown): void => {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `codepunk: ${label}: ${message}\nRun \`codepunk doctor\` to inspect local configuration and environment state.\n`,
-    );
-    process.exitCode = error instanceof ConfigError ? 2 : 1;
-  };
-  process.on("uncaughtException", (error) => {
-    reportFatal("unexpected error", error);
-  });
-  process.on("unhandledRejection", (reason) => {
-    reportFatal("unhandled rejection", reason);
-  });
 }
 
 installCrashGuards();

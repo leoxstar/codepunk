@@ -1,5 +1,6 @@
 import {
   installPackage,
+  resolveCodepunkHome,
   uninstallPackage,
   upgradePackage,
 } from "codepunk-core";
@@ -48,7 +49,14 @@ export async function commandPackage(
       `upgraded ${result.packageName} from ${result.previousVersion ?? "(not installed)"} to ${result.version ?? "latest"}\n`,
     );
   } else {
-    process.stdout.write(`uninstalled ${result.packageName}\n`);
+    const homeDir = resolveCodepunkHome(process.env);
+    process.stdout.write(
+      [
+        `uninstalled ${result.packageName}`,
+        `local state (sessions, config, credentials, evidence) was preserved at ${homeDir}`,
+        `remove that directory manually if you want to erase local data`,
+      ].join("\n") + "\n",
+    );
   }
   return 0;
 }

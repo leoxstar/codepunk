@@ -9,6 +9,7 @@ import {
 import type { CliOptions } from "../args/options.ts";
 import { preparedConfigOverrides } from "../args/overrides.ts";
 import { formatBuildLabel, inspectCliBuild } from "../build-info.ts";
+import { registerFatalCleanup } from "../crash-guard.ts";
 import { CodepunkTerminal } from "../branded-terminal.ts";
 import { ResumeHint } from "../exit-hint.ts";
 import type {
@@ -401,6 +402,11 @@ export async function runTui(options: CliOptions): Promise<number> {
   let stopWatch = () => {
     state.shuttingDown = true;
   };
+  const unregisterCrashCleanup = registerFatalCleanup(async () => {
+    stopWatch();
+    await tui.stopRunningSubagents(state).catch(() => undefined);
+    await slot.current?.dispose().catch(() => undefined);
+  });
   try {
     const sessionRuntime = await makeSessionRuntime(runtime, {
       switchState,
@@ -458,6 +464,7 @@ export async function runTui(options: CliOptions): Promise<number> {
     await interactive.run();
     return 0;
   } finally {
+    unregisterCrashCleanup();
     stopWatch();
     await tui.stopRunningSubagents(state);
     await slot.current?.dispose();
