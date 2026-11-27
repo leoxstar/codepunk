@@ -6,6 +6,115 @@ import { outputSha } from "../evidence/index.ts";
 
 export const OUTPUT_PREVIEW_CHARS = 4_096;
 export const APPROX_CHARS_PER_TOKEN = 4;
+export const TEST_FOLD_MIN_LINES = 80;
+const MAX_VISIBLE_PASSING_LINES = 8;
+
+const TEST_RUNNER_COMMAND_PATTERN =
+  /(?:^|[;&|()\s])(?:(?:pnpm|npm|yarn|bun)\s+(?:--\S+(?:\s+\S+)?\s+)*(?:run\s+)?test\b|node\s+[^\n;|&]*--test\b|(?:npx\s+|pnpm\s+exec\s+)?(?:vitest|jest|pytest)\b|cargo\s+test\b|go\s+test\b)/u;
+
+const SINGLE_PASSING_LINE_PATTERN =
+  /^\s*(?:[✔✓]\s+\S.*|PASS\s+\S.*|---\s+PASS:\s+\S.*|test\s+\S.*\.\.\.\s+ok\s*|\S+::\S+\s+PASSED(?:\s+\[\s*\d+%\])?\s*)$/u;
+
+const TAP_PASSING_LINE_PATTERN = /^\s*ok\s+\d+\b(?!.*#\s*(?:TODO|SKIP)\b)/iu;
+
+function isTestRunnerInvocation(
+  command?: string | null,
+  argv?: readonly string[] | null,
+): boolean {
+  if (
+    typeof command === "string" &&
+    TEST_RUNNER_COMMAND_PATTERN.test(command)
+  ) {
+    return true;
+  }
+  if (argv === undefined || argv === null || argv.length === 0) {
+    return false;
+  }
+  const joined = argv.join(" ");
+  return TEST_RUNNER_COMMAND_PATTERN.test(joined);
+}
+
+/**
+ * Fold repetitive passing test lines from large test-runner outputs so that
+ * bottom-of-log failures, stack traces, and totals survive preview truncation
+ * without extra artifact-read round-trips. Evidence hashes always bind raw
+ * unfolded output before calling this helper.
+ */
+export function foldTestRunnerOutput(
+  value: string,
+  options: {
+    command?: string | null;
+    argv?: readonly string[] | null;
+    artifact?: ToolOutputArtifact | null;
+  } = {},
+): { text: string; foldedPassingLines: number } {
+  if (!isTestRunnerInvocation(options.command, options.argv)) {
+    return { text: value, foldedPassingLines: 0 };
+  }
+  const lines = value.split("\n");
+  if (lines.length < TEST_FOLD_MIN_LINES) {
+    return { text: value, foldedPassingLines: 0 };
+  }
+  const kept: string[] = [];
+  let visiblePassing = 0;
+  let foldedPassingLines = 0;
+  let markerIndex = -1;
+  let skipTapYaml = false;
+
+  for (const line of lines) {
+    if (skipTapYaml) {
+      if (/^\s+\.\.\.\s*$/u.test(line)) {
+        skipTapYaml = false;
+        foldedPassingLines += 1;
+        continue;
+      }
+      if (/^\s{2,}\S/u.test(line)) {
+        foldedPassingLines += 1;
+        continue;
+      }
+      skipTapYaml = false;
+    }
+    const isTapOk = TAP_PASSING_LINE_PATTERN.test(line);
+    const isPassing = isTapOk || SINGLE_PASSING_LINE_PATTERN.test(line);
+    if (isPassing) {
+      if (visiblePassing < MAX_VISIBLE_PASSING_LINES) {
+        visiblePassing += 1;
+        kept.push(line);
+      } else {
+        if (markerIndex === -1) {
+          markerIndex = kept.length;
+          kept.push("");
+        }
+        foldedPassingLines += 1;
+        if (isTapOk) {
+          skipTapYaml = true;
+        }
+      }
+      continue;
+    }
+    if (
+      foldedPassingLines > 0 &&
+      /^\s+---\s*$/u.test(line) &&
+      kept[kept.length - 1] === ""
+    ) {
+      skipTapYaml = true;
+      foldedPassingLines += 1;
+      continue;
+    }
+    kept.push(line);
+  }
+
+  if (foldedPassingLines === 0 || markerIndex === -1) {
+    return { text: value, foldedPassingLines: 0 };
+  }
+  const artifactRef =
+    options.artifact === undefined || options.artifact === null
+      ? ""
+      : `; full raw log in ${options.artifact.absolutePath}`;
+  kept[markerIndex] =
+    `[... ${foldedPassingLines} passing test line(s) folded${artifactRef}]`;
+  return { text: kept.join("\n"), foldedPassingLines };
+}
 
 export interface ToolOutputArtifact {
   ref: string;

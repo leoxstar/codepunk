@@ -345,7 +345,13 @@ export class ApprovalBroker {
       scope !== "once" &&
       (request.tool === undefined ||
         (scope === "persistent" &&
-          (request.argv === undefined || request.cwd === undefined)));
+          (request.argv === undefined || request.cwd === undefined)) ||
+        (scope === "session" &&
+          isShellApprovalTool(request.tool) &&
+          request.argv === undefined &&
+          (request.command === undefined ||
+            request.command.trim().length === 0 ||
+            request.cwd === undefined)));
     const approved =
       !correlationMismatch && !scopeShapeMismatch && answer.answer === "allow";
     if (approved && scope !== "once" && !scopeShapeMismatch) {
@@ -391,16 +397,31 @@ export class ApprovalBroker {
   }
 }
 
+function isShellApprovalTool(tool: string | undefined): boolean {
+  return tool === "bash" || tool === "exec" || tool === "user_bash";
+}
+
 /**
- * The identity a session grant reuses. Shell calls stay exact, file
- * mutations reuse per target path, and every other tool reuses per tool
- * inside the same working directory. `once` and `persistent` scopes never
- * consult this key.
+ * The identity a session grant reuses. Shell calls stay exact (by parsed argv
+ * when simple, or by exact trimmed command string inside the same cwd for
+ * pipelines), file mutations reuse per target path, and every other tool
+ * reuses per tool inside the same working directory. `once` and `persistent`
+ * scopes never consult this key.
  */
 function approvalGrantKey(request: ApprovalRequest): string | null {
   const cwd = request.cwd === undefined ? "" : normalizeAbsolute(request.cwd);
   if (request.argv !== undefined && request.argv.length > 0) {
     return `argv\0${cwd}\0${request.argv.join("\0")}`;
+  }
+  if (
+    request.command !== undefined &&
+    request.command.trim().length > 0 &&
+    request.cwd !== undefined
+  ) {
+    return `cmd\0${cwd}\0${request.command.trim()}`;
+  }
+  if (isShellApprovalTool(request.tool)) {
+    return null;
   }
   if (request.path !== undefined && request.path.length > 0) {
     return `path\0${normalizeAbsolute(request.path)}`;

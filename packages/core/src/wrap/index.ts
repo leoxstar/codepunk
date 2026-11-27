@@ -4,6 +4,7 @@ import { validateSchema } from "codepunk-protocol";
 import {
   boundedToolOutput,
   estimateTextTokens,
+  foldTestRunnerOutput,
   redactOutputPreview,
   writeToolOutputArtifact,
   type ToolOutputArtifact,
@@ -45,6 +46,7 @@ import {
   evidenceSource,
   exactApprovalArgv,
   executionStateFor,
+  extractTaintOrigin,
   isShellTool,
   loopFingerprint,
   memoryEvidence,
@@ -57,6 +59,7 @@ import {
   resultText,
   resultWithBoundedOutput,
   shellCoverage,
+  shouldEscalateTaintedCall,
   snapshotFile,
   structuredNumber,
   structuredString,
@@ -69,6 +72,7 @@ import {
   type AnyToolDefinition,
   type AnyToolResult,
   type FileSnapshot,
+  type TaintOrigin,
   type ToolExecutionState,
   type ToolLifecycleHookInput,
   type ToolLifecycleHookResult,
@@ -79,6 +83,7 @@ import { deniedUserBashResult, wrapUserBashCommand } from "./user-bash.ts";
 export {
   deniedUserBashResult,
   wrapUserBashCommand,
+  type TaintOrigin,
   type ToolExecutionState,
   type ToolLifecycleHookInput,
   type ToolLifecycleHookResult,
@@ -246,6 +251,18 @@ export async function wrapToolDefinition(
         let finalRuleSha256 = gate.rule_sha256;
         let finalReason = gate.reason;
         let scopedRule = gate.scoped_rule;
+        let consultApproval = gate.consult_approval;
+        let taintEscalated = false;
+        if (
+          executionState.taintedBy !== null &&
+          finalDecision !== "deny" &&
+          scopedRule === null &&
+          shouldEscalateTaintedCall(definition.name, policy.decision)
+        ) {
+          finalDecision = "ask";
+          consultApproval = true;
+          taintEscalated = true;
+        }
         let budgetExceeded: EvidenceRecord["budget_exceeded"];
         const autonomyEvidence = () =>
           autonomy === null ? null : autonomy.evidence(scopedRule);
@@ -402,7 +419,7 @@ export async function wrapToolDefinition(
           }
         }
 
-        if (finalDecision !== "deny" && gate.consult_approval) {
+        if (finalDecision !== "deny" && consultApproval) {
           const approvalArgv = exactApprovalArgv(
             definition.name,
             command,
@@ -419,15 +436,21 @@ export async function wrapToolDefinition(
           const args = approvalArguments(definition.name, params);
           const approvalPath =
             typeof policy.match.path === "string" ? policy.match.path : target;
-          const requestReason = approvalReason(
+          const baseReason = approvalReason(
             policy,
             gate.reason,
             options.networkAllowedDomains,
             options.networkDeniedDomains,
           );
+          const taintNotice =
+            taintEscalated && executionState.taintedBy !== null
+              ? `[taint guard: session ingested untrusted ${executionState.taintedBy.tool} output from ${executionState.taintedBy.source}] `
+              : "";
+          const requestReason = `${taintNotice}${baseReason}`;
           const reviewer = options.reviewer ?? null;
           let review: ReviewResult | null = null;
           if (
+            !taintEscalated &&
             reviewer !== null &&
             approvalMode === "auto" &&
             gate.rule !== "scoped.unmatched" &&
@@ -475,11 +498,15 @@ export async function wrapToolDefinition(
           if (!reviewResolved) {
             if (options.approval === null || options.approval === undefined) {
               finalDecision = "deny";
-              finalRule =
-                review === null ? "approval.unavailable" : "reviewer.abstained";
+              finalRule = taintEscalated
+                ? "taint.untrusted_context"
+                : review === null
+                  ? "approval.unavailable"
+                  : "reviewer.abstained";
               finalRuleSha256 = recordHash({ rule: finalRule });
-              finalReason =
-                review === null
+              finalReason = taintEscalated
+                ? `${requestReason}; interactive human approval is required after untrusted web ingestion`
+                : review === null
                   ? gate.reason
                   : `reviewer abstained and no interactive approval channel is available: ${review.reason}`;
             } else {
@@ -489,9 +516,8 @@ export async function wrapToolDefinition(
                 toolCallId,
                 tool: definition.name,
                 command,
-                ...(approvalArgv === null
-                  ? {}
-                  : { argv: approvalArgv, cwd: options.cwd }),
+                ...(approvalArgv === null ? {} : { argv: approvalArgv }),
+                cwd: options.cwd,
                 path: approvalPath,
                 reason: requestReason,
                 ...(args === null
@@ -515,9 +541,15 @@ export async function wrapToolDefinition(
               if (!approval.approved) {
                 const failure = approvalFailure(approval);
                 finalDecision = "deny";
-                finalRule = failure.rule;
+                finalRule =
+                  taintEscalated && failure.rule === "approval.unavailable"
+                    ? "taint.untrusted_context"
+                    : failure.rule;
                 finalRuleSha256 = recordHash({ rule: finalRule });
-                finalReason = failure.reason;
+                finalReason =
+                  taintEscalated && failure.rule === "approval.unavailable"
+                    ? `${requestReason}; interactive human approval is required after untrusted web ingestion`
+                    : failure.reason;
               } else {
                 finalDecision = "allow";
               }
@@ -867,6 +899,17 @@ export async function wrapToolDefinition(
             : result.isError === true
               ? "failed"
               : "completed";
+        if (
+          outcome === "completed" &&
+          (definition.name === "web_fetch" ||
+            definition.name === "web_search") &&
+          executionState.taintedBy === null
+        ) {
+          executionState.taintedBy = extractTaintOrigin(
+            definition.name,
+            params,
+          );
+        }
         const output = resultText(result);
         const shellOutput = structuredString(result, "output");
         const effectiveOutput = shellOutput ?? output;
@@ -886,7 +929,14 @@ export async function wrapToolDefinition(
             ...(options.now !== undefined ? { now: options.now } : {}),
           });
         }
-        const visibleOutput = boundedToolOutput(effectiveOutput, {
+        const folded = isShellTool(definition.name)
+          ? foldTestRunnerOutput(effectiveOutput, {
+              command,
+              argv: commandArgv,
+              artifact,
+            })
+          : { text: effectiveOutput, foldedPassingLines: 0 };
+        const visibleOutput = boundedToolOutput(folded.text, {
           maxTokens: Math.max(1, options.maxToolOutputTokens ?? 8_000),
           artifact,
           home: options.codepunkHome,
@@ -1011,7 +1061,7 @@ export async function wrapToolDefinition(
           }
         }
         let finalResult =
-          artifact === null
+          artifact === null && folded.foldedPassingLines === 0
             ? result
             : resultWithBoundedOutput(result, visibleOutput);
         if (

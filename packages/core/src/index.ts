@@ -50,8 +50,10 @@ export {
 export {
   APPROX_CHARS_PER_TOKEN,
   OUTPUT_PREVIEW_CHARS,
+  TEST_FOLD_MIN_LINES,
   boundedToolOutput,
   estimateTextTokens,
+  foldTestRunnerOutput,
   redactOutputPreview,
   writeToolOutputArtifact,
   type ToolOutputArtifact,

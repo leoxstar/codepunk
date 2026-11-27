@@ -46,6 +46,11 @@ export interface ToolLifecycleHookResult extends ToolLifecycleHookInput {
   duration_ms: number;
 }
 
+export interface TaintOrigin {
+  tool: "web_fetch" | "web_search";
+  source: string;
+}
+
 export interface ToolExecutionState {
   runId: string | null;
   usedToolCalls: number;
@@ -53,6 +58,7 @@ export interface ToolExecutionState {
   lastLoopFingerprint: string | null;
   repeatCount: number;
   idempotentResults: Map<string, string>;
+  taintedBy: TaintOrigin | null;
 }
 
 export interface ToolWrapOptions {

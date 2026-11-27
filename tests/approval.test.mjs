@@ -579,3 +579,89 @@ test("a control denial settles the original request without a mismatch", async (
   assert.equal(delivered.failure, null);
   assert.equal(delivered.answer.answer, "deny");
 });
+
+test("session scope reuses exact pipeline command in cwd without blanket-approving bash or persisting", async () => {
+  const broker = new core.ApprovalBroker({ workspaceTrusted: true });
+  let calls = 0;
+  let answerScope = "session";
+  broker.registerChannel({
+    id: "tui-main",
+    kind: "tui",
+    isTTY: true,
+    async ask(request) {
+      calls += 1;
+      return answerFor(request, { scope: answerScope });
+    },
+  });
+
+  const pipeline = "pnpm test 2>&1 | tail -n 20";
+  const first = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-1",
+    tool: "bash",
+    command: pipeline,
+    cwd: "/workspace",
+  });
+  assert.equal(first.approved, true);
+  assert.equal(calls, 1);
+
+  const reused = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-2",
+    tool: "bash",
+    command: pipeline,
+    cwd: "/workspace",
+  });
+  assert.equal(reused.approved, true);
+  assert.equal(calls, 1);
+  assert.equal(
+    reused.evidence.reused_from_request_id,
+    first.evidence.request_id,
+  );
+
+  const differentCommand = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-3",
+    tool: "bash",
+    command: "pnpm test 2>&1 | rm -rf dist",
+    cwd: "/workspace",
+  });
+  assert.equal(differentCommand.approved, true);
+  assert.equal(calls, 2);
+
+  const differentCwd = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-4",
+    tool: "bash",
+    command: pipeline,
+    cwd: "/other",
+  });
+  assert.equal(differentCwd.approved, true);
+  assert.equal(calls, 3);
+
+  const missingCommand = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-5",
+    tool: "bash",
+    cwd: "/workspace",
+  });
+  assert.equal(missingCommand.approved, false);
+  assert.equal(missingCommand.failure, "mismatch");
+
+  answerScope = "persistent";
+  const persistentPipeline = await broker.request({
+    sessionId: "session-pipe",
+    workerId: "worker-1",
+    toolCallId: "pipe-6",
+    tool: "bash",
+    command: "npm test && echo ok",
+    cwd: "/workspace",
+  });
+  assert.equal(persistentPipeline.approved, false);
+  assert.equal(persistentPipeline.failure, "mismatch");
+});

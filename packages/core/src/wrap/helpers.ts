@@ -4,6 +4,7 @@ import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import type {
   ApprovalAnswer,
   AutonomyEvidence,
+  Decision,
   EvidenceRecord,
   PolicyDecision,
   SandboxDescriptor,
@@ -34,6 +35,7 @@ import {
   NONE_SANDBOX,
   type AnyToolResult,
   type FileSnapshot,
+  type TaintOrigin,
   type ToolExecutionState,
   type ToolWrapOptions,
 } from "./types.ts";
@@ -58,6 +60,7 @@ export function executionStateFor(
       lastLoopFingerprint: null,
       repeatCount: 0,
       idempotentResults: new Map(),
+      taintedBy: null,
     };
     executionStates.set(options, state);
   }
@@ -69,6 +72,41 @@ export function executionStateFor(
     state.repeatCount = 0;
   }
   return state;
+}
+
+export function extractTaintOrigin(
+  tool: "web_fetch" | "web_search",
+  params: Record<string, unknown>,
+): TaintOrigin {
+  if (tool === "web_fetch" && typeof params["url"] === "string") {
+    try {
+      const parsed = new URL(params["url"]);
+      if (parsed.host.length > 0) {
+        return { tool, source: parsed.host };
+      }
+    } catch {
+      // Fall back to redacted string preview below.
+    }
+    return {
+      tool,
+      source: redactOutputPreview(params["url"]).slice(0, 80),
+    };
+  }
+  const rawQuery =
+    typeof params["query"] === "string" ? params["query"].trim() : "query";
+  return {
+    tool,
+    source: `query:${redactOutputPreview(rawQuery).slice(0, 64)}`,
+  };
+}
+
+export function shouldEscalateTaintedCall(
+  tool: string,
+  policyDecision: Decision,
+): boolean {
+  return (
+    policyDecision === "ask" && (isShellTool(tool) || isMcpProductTool(tool))
+  );
 }
 
 export function emptySnapshot(): FileSnapshot {
