@@ -58,6 +58,13 @@ export interface CreatePiHostOptions extends ToolWrapOptions {
   truncationThreshold?: number;
   onRunStart?: (runId: string) => Promise<void> | void;
   onRunEnd?: (runId: string) => Promise<void> | void;
+  beforeStopHook?: (input: {
+    run_id: string;
+    session_id: string;
+    cwd: string;
+    attempt: number;
+  }) => Promise<void> | void;
+  maxBeforeStopRetries?: number;
   additionalExtensionFactories?: readonly InlineExtension[];
   extraTools?: readonly ToolDefinition<any, any, any>[];
   lazyMcp?: boolean;

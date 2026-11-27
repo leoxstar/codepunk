@@ -15,6 +15,7 @@ import { configureCommit } from "../format/commit.ts";
 import { cycleWorkMode } from "../format/mode-cycle.ts";
 import type { TuiState } from "../state.ts";
 import { runCopyAction } from "./copy.ts";
+import { executeCustomCommandAction } from "./custom-commands.ts";
 import { openExternalPromptEditor } from "./editor.ts";
 import {
   openAttestOverlay,
@@ -186,6 +187,14 @@ const STATIC_PALETTE_ITEMS: readonly CommandPaletteItem[] = [
     hint: "open $VISUAL or $EDITOR for multi-line prompt editing",
     shortcut: "Alt+G",
     keywords: "vim nvim vscode editor draft",
+  },
+  {
+    id: "custom:run",
+    category: "Tools",
+    label: "Run custom template command",
+    hint: "pick from $CODEPUNK_HOME/commands or trusted .codepunk/commands",
+    shortcut: "/run",
+    keywords: "template prompt slash markdown",
   },
   {
     id: "help:browse",
@@ -386,6 +395,9 @@ export async function openCommandPalette(
       return;
     case "editor:open":
       await openExternalPromptEditor(runtime, context, "");
+      return;
+    case "custom:run":
+      await executeCustomCommandAction(runtime, context, "");
       return;
   }
 }

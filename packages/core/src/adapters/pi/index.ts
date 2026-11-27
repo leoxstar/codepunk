@@ -30,9 +30,11 @@ import type { AgentState, PlanStep, TodoItem } from "codepunk-protocol";
 import { canonicalJson, createUlid, sha256Text } from "../../platform/hash.ts";
 import { normalizeAbsolute } from "../../platform/path.ts";
 import {
+  expandPromptFileSlices,
   loadContext,
   truncateContextAtTurnBoundary,
 } from "../../context/index.ts";
+import { HookBlockedError } from "../../capabilities/hooks.ts";
 import { outputSha } from "../../evidence/index.ts";
 import { redactMemoryContent } from "../../memory/index.ts";
 import {
@@ -292,6 +294,8 @@ export async function createPiHost(
     usedCostUsd = combined.cost_total;
   };
   let lastAssistantStopReason: string | null = null;
+  let beforeStopAttempt = 0;
+  let beforeStopBlockedReason: string | null = null;
   let lastMemoryDigestSha: string | null = null;
   let lastWorkState: { plan: WorkState | null; todos: TodoState | null } = {
     plan: null,
@@ -327,6 +331,8 @@ export async function createPiHost(
       return;
     }
     lastAssistantStopReason = null;
+    beforeStopAttempt = 0;
+    beforeStopBlockedReason = null;
     await options.onRunStart?.(currentRunId);
     await appendEvent("run/start", {
       run_id: currentRunId,
@@ -924,6 +930,24 @@ export async function createPiHost(
         }
         sessionTitleSet = true;
         inputRecorded = true;
+        const expanded = await expandPromptFileSlices(event.text, {
+          cwd,
+          workspaceRoot: options.workspaceRoot,
+          deliveryRoot: options.deliveryRoot,
+          ...(options.additionalRoots !== undefined
+            ? { additionalRoots: options.additionalRoots }
+            : {}),
+          codepunkHome,
+          ...(options.filesystem !== undefined
+            ? { filesystem: options.filesystem }
+            : {}),
+        });
+        for (const warning of expanded.warnings) {
+          context.ui.notify(warning, "warning");
+        }
+        if (expanded.slices.length > 0) {
+          return { action: "transform" as const, text: expanded.text };
+        }
         return { action: "continue" as const };
       });
       pi.on("tool_call", async () => {
@@ -940,15 +964,65 @@ export async function createPiHost(
       pi.on("agent_start", async () => {
         await beginRun();
       });
+      pi.on("agent_before_settle", async (event) => {
+        if (
+          options.beforeStopHook === undefined ||
+          event.outcome !== "completed" ||
+          budgetExceeded
+        ) {
+          return undefined;
+        }
+        try {
+          await options.beforeStopHook({
+            run_id: currentRunId,
+            session_id: options.sessionId,
+            cwd,
+            attempt: beforeStopAttempt + 1,
+          });
+          beforeStopBlockedReason = null;
+          return undefined;
+        } catch (error) {
+          beforeStopAttempt += 1;
+          const maxRetries = options.maxBeforeStopRetries ?? 2;
+          const reason = error instanceof Error ? error.message : String(error);
+          const preview =
+            error instanceof HookBlockedError ? error.preview : null;
+          if (beforeStopAttempt <= maxRetries) {
+            const feedback = [
+              `[before_stop hook blocked completion (attempt ${beforeStopAttempt}/${maxRetries})]: ${reason}`,
+              ...(preview !== null ? [preview] : []),
+              "Resolve the verification failure before finishing.",
+            ].join("\n");
+            return {
+              entries: [
+                ...event.entries,
+                {
+                  type: "custom_message" as const,
+                  customType: "codepunk:before_stop",
+                  content: [{ type: "text" as const, text: feedback }],
+                  display: true,
+                },
+              ],
+              continue: true,
+            };
+          }
+          beforeStopBlockedReason = reason;
+          return undefined;
+        }
+      });
       pi.on("agent_settled", async (event: AgentSettledEvent) => {
         await retryEventTail;
         const retryFailure = retryEventFailure;
         const state = event.aborted
           ? "aborted"
-          : lastAssistantStopReason === "error"
+          : lastAssistantStopReason === "error" ||
+              beforeStopBlockedReason !== null
             ? "failed"
             : "settled";
-        await endRun(state);
+        await endRun(
+          state,
+          beforeStopBlockedReason !== null ? "before_stop_blocked" : null,
+        );
         if (state === "settled") {
           await maybeSummarizeSession("settled");
         }

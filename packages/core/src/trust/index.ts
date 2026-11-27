@@ -78,7 +78,7 @@ const TRUST_REQUIRING_FILES = [
   "policy.toml",
 ] as const;
 
-const TRUST_REQUIRING_DIRECTORIES = ["skills", "agents"] as const;
+const TRUST_REQUIRING_DIRECTORIES = ["skills", "agents", "commands"] as const;
 const PREVIEW_MAX_ENTRIES = 512;
 const PREVIEW_MAX_BYTES = 1024 * 1024;
 const NOFOLLOW = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
@@ -180,7 +180,7 @@ export function workspaceTrustResourceKind(
   ) {
     return "config";
   }
-  if (resource.endsWith("/agents")) {
+  if (resource.endsWith("/agents") || resource.endsWith("/commands")) {
     return "config";
   }
   if (resource.endsWith("/policy.toml")) {

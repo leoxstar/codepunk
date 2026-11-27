@@ -13,6 +13,13 @@ import {
   discoverProjectInstructionFiles,
   discoverUserInstructionFile,
 } from "../platform/context-files.ts";
+export {
+  MAX_PROMPT_FILE_SLICES,
+  MAX_PROMPT_SLICE_TOTAL_BYTES,
+  expandPromptFileSlices,
+  type ExpandPromptFileSlicesOptions,
+  type PromptFileSlice,
+} from "./file-slices.ts";
 
 export const DEFAULT_CONTEXT_FILE_BYTES = 64 * 1024;
 export const DEFAULT_CONTEXT_TOTAL_BYTES = 128 * 1024;

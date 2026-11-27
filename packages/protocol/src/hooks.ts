@@ -8,6 +8,7 @@ import {
 export const HookLifecycleEventSchema = Type.Union([
   Type.Literal("before_tool"),
   Type.Literal("after_tool"),
+  Type.Literal("before_stop"),
   Type.Literal("session_start"),
   Type.Literal("session_end"),
 ]);

@@ -94,14 +94,27 @@ export {
   type HookRunnerOptions,
 } from "./capabilities/hooks.ts";
 export {
+  MAX_CUSTOM_COMMAND_BYTES,
+  expandCustomCommand,
+  formatCustomCommands,
+  loadCustomCommands,
+  type CustomCommandBundle,
+  type CustomCommandTemplate,
+} from "./capabilities/commands.ts";
+export {
   DEFAULT_CONTEXT_FILE_BYTES,
   DEFAULT_CONTEXT_TOTAL_BYTES,
+  MAX_PROMPT_FILE_SLICES,
+  MAX_PROMPT_SLICE_TOTAL_BYTES,
+  expandPromptFileSlices,
   loadContext,
   truncateContextAtTurnBoundary,
   type ContextAppendFile,
   type ContextBundle,
   type ContextLoadOptions,
   type ContextWarning,
+  type ExpandPromptFileSlicesOptions,
+  type PromptFileSlice,
   type TurnBoundaryTruncationOptions,
   type TurnBoundaryTruncationResult,
 } from "./context/index.ts";

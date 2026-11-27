@@ -796,6 +796,9 @@ async function createRuntimeInner(
       afterToolHook: async (input) => {
         await hooks.run("after_tool", input, appendHookEvidence);
       },
+      beforeStopHook: async (input) => {
+        await hooks.run("before_stop", input, appendHookEvidence);
+      },
       sessionStore: session,
       settings: piSettings(config, settingsContextWindow),
       enabledTools: tools,

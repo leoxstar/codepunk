@@ -89,6 +89,7 @@ export function codepunkHelp(): string {
     "  F2 / /model                cycle recent models or search all models",
     "  Shift+Tab                  cycle reasoning/thinking level",
     "  /copy [last|<n>|code [n]]  copy latest assistant reply or fenced code block",
+    "  /run [list|<name> [args]]  run a custom Markdown command template",
     "  /permissions, /settings    configure approvals, sandbox, theme, and TUI options",
     "  /diff, /commit, /context   inspect diff, commit changes, or view context budget",
     "  /resume                    fuzzy-search and switch project sessions",

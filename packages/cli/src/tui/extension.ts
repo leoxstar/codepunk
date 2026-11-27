@@ -15,6 +15,7 @@ import {
   presetCommand,
 } from "./commands/background.ts";
 import { copyCommand } from "./commands/copy.ts";
+import { runCommand } from "./commands/custom-commands.ts";
 import { editorCommand } from "./commands/editor.ts";
 import { imageCommand, image_genCommand } from "./commands/images.ts";
 import {
@@ -112,6 +113,7 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   memoryCommand,
   copyCommand,
   editorCommand,
+  runCommand,
 ];
 
 export function createTuiExtension(

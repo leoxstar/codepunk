@@ -61,3 +61,4 @@ registerCommand remember	Remember a user or project fact
 registerCommand memory	List, search, delete, or archive memory
 registerCommand copy	Copy the latest assistant reply or code block to clipboard
 registerCommand editor	Compose or edit the current prompt in $VISUAL/$EDITOR
+registerCommand run	Run or list custom Markdown prompt templates (/run [list|<name> [args...]])

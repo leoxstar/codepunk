@@ -12,17 +12,22 @@ import {
   type HookScope,
   type HooksConfig,
 } from "codepunk-protocol";
+import { redactOutputPreview } from "../artifacts/index.ts";
 import { parseToml } from "../config/toml.ts";
 import { sha256Bytes } from "../platform/hash.ts";
 import { assertProjectConfigFileSafe } from "../platform/paths.ts";
 
 export const HOOK_CONFIG_FILE = "hooks.toml";
 export const MAX_HOOK_CONFIG_BYTES = 64 * 1024;
+const MAX_HOOK_PREVIEW_CHARS = 400;
 
 export class HookBlockedError extends Error {
-  constructor(message: string) {
+  readonly preview: string | null;
+
+  constructor(message: string, preview: string | null = null) {
     super(message);
     this.name = "HookBlockedError";
+    this.preview = preview;
   }
 }
 
@@ -507,7 +512,7 @@ export class HookRunner {
     event: HookLifecycleEvent,
     payload: unknown,
     appendEvidence: HookEvidenceAppend,
-  ): Promise<HookEvidence> {
+  ): Promise<{ record: HookEvidence; preview: string | null }> {
     const definition = scoped.definition;
     const result = await this.spawnHook(definition, payload);
     if (result.errorMessage !== null) {
@@ -524,7 +529,7 @@ export class HookRunner {
         this.now,
       );
       await appendEvidenceOrBlock(appendEvidence, record);
-      return record;
+      return { record, preview: null };
     }
     const outcome: HookEvidence["outcome"] = result.timedOut
       ? "timed_out"
@@ -546,7 +551,25 @@ export class HookRunner {
       this.now,
     );
     await appendEvidenceOrBlock(appendEvidence, record);
-    return record;
+    let preview: string | null = null;
+    if (outcome !== "passed") {
+      const rawStderr =
+        result.stderr !== null && result.stderr.byteLength > 0
+          ? Buffer.from(result.stderr).toString("utf8").trim()
+          : "";
+      const rawStdout =
+        result.stdout !== null && result.stdout.byteLength > 0
+          ? Buffer.from(result.stdout).toString("utf8").trim()
+          : "";
+      const combined = rawStderr.length > 0 ? rawStderr : rawStdout;
+      if (combined.length > 0) {
+        preview = redactOutputPreview(
+          combined,
+          path.dirname(this.userConfigPath),
+        ).slice(0, MAX_HOOK_PREVIEW_CHARS);
+      }
+    }
+    return { record, preview };
   }
 
   async run(
@@ -561,12 +584,18 @@ export class HookRunner {
     };
     const scoped = await this.definitions(event, append);
     for (const hook of scoped) {
-      const record = await this.runHook(hook, event, payload, append);
+      const { record, preview } = await this.runHook(
+        hook,
+        event,
+        payload,
+        append,
+      );
       if (record.outcome !== "passed") {
         throw new HookBlockedError(
           `hook ${record.hook_name} failed closed (${record.outcome}): ${
             record.reason ?? "no reason"
           }`,
+          preview,
         );
       }
     }
