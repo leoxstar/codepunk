@@ -26,6 +26,18 @@ import { createWebSearchTool } from "../websearch/index.ts";
 import { createAskUserTool, type AskUserChannel } from "./ask-user.ts";
 import { createSubagentTool, type SubagentToolExecutor } from "./subagent.ts";
 import {
+  DEFAULT_TOOL_SEARCH_LIMIT,
+  LAZY_MCP_TOOL_THRESHOLD,
+  TOOL_SEARCH_TOOL_NAME,
+  createToolSearchTool,
+  rankDeferredTools,
+  shouldDeferMcpTools,
+  type RankedDeferredTool,
+  type ToolSearchCandidate,
+  type ToolSearchNamespace,
+  type ToolSearchRegistry,
+} from "./tool-search.ts";
+import {
   createPlanTool,
   createTodoTool,
   type TodoState,
@@ -51,6 +63,7 @@ export const CODEPUNK_TOOL_NAMES = [
   "subagent",
   "plan",
   "todo",
+  "tool_search",
 ] as const;
 export const HEADLESS_EXEC_TOOL_NAME = "exec" as const;
 export type CodepunkToolName = (typeof CODEPUNK_TOOL_NAMES)[number];
@@ -143,6 +156,12 @@ export const TOOL_EXECUTION_POLICIES: Readonly<
     resultBudgetBytes: 16 * 1_024,
     retry: "never",
   },
+  tool_search: {
+    sideEffect: "none",
+    idempotent: false,
+    resultBudgetBytes: 32 * 1_024,
+    retry: "never",
+  },
 };
 
 export function toolExecutionPolicy(name: string): ToolExecutionPolicy {
@@ -155,6 +174,19 @@ export function toolExecutionPolicy(name: string): ToolExecutionPolicy {
     }
   );
 }
+
+export {
+  DEFAULT_TOOL_SEARCH_LIMIT,
+  LAZY_MCP_TOOL_THRESHOLD,
+  TOOL_SEARCH_TOOL_NAME,
+  createToolSearchTool,
+  rankDeferredTools,
+  shouldDeferMcpTools,
+  type RankedDeferredTool,
+  type ToolSearchCandidate,
+  type ToolSearchNamespace,
+  type ToolSearchRegistry,
+};
 
 export {
   createEnhancedEditToolDefinition,

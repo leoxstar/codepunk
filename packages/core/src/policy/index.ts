@@ -512,6 +512,19 @@ function toolDecision(request: PolicyRequest): {
       approvalClass: "routine",
     };
   }
+  if (request.tool === "tool_search") {
+    return {
+      decision: "allow",
+      reason: "deferred tool discovery is product-owned",
+      rule: {
+        id: "tool.search.allow",
+        tool: request.tool,
+        decision: "allow",
+      },
+      pathTarget: null,
+      approvalClass: "routine",
+    };
+  }
   if (request.tool.startsWith("mcp__")) {
     return {
       decision: "ask",

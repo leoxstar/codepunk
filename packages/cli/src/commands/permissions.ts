@@ -108,7 +108,7 @@ function formatPermissions(
     "  codepunk permissions sandbox required|uncovered",
     "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
     "  codepunk permissions filesystem workspace|full",
-    "  codepunk permissions rules",
+    "  codepunk permissions rules [add -- <argv...>]",
     "  codepunk permissions insights",
     "  codepunk permissions why -- <shell command>",
     "  codepunk trust [status|grant|revoke] [path] [--resources <kinds>]",

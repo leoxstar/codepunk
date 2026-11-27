@@ -83,7 +83,7 @@ function usageCapabilityPermission(): string[] {
     "  codepunk permissions sandbox required|uncovered",
     "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
     "  codepunk permissions filesystem workspace|full",
-    "  codepunk permissions rules [--json]",
+    "  codepunk permissions rules [add -- <argv...>] [--json]",
     "  codepunk permissions insights [--json]",
     "  codepunk permissions why -- <shell command>",
     "  codepunk trust [status|grant|revoke] [path] [--resources config,policy,skills,instructions] [--json]",
@@ -340,7 +340,7 @@ function configurationSubcommandUsage(
         "  codepunk permissions sandbox required|uncovered",
         "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
         "  codepunk permissions filesystem workspace|full",
-        "  codepunk permissions rules [--json]",
+        "  codepunk permissions rules [add -- <argv...>] [--json]",
         "  codepunk permissions insights [--json]",
         "  codepunk permissions why -- <shell command>",
       ];

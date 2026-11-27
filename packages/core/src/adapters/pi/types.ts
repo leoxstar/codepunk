@@ -60,6 +60,7 @@ export interface CreatePiHostOptions extends ToolWrapOptions {
   onRunEnd?: (runId: string) => Promise<void> | void;
   additionalExtensionFactories?: readonly InlineExtension[];
   extraTools?: readonly ToolDefinition<any, any, any>[];
+  lazyMcp?: boolean;
   questionChannel?: AskUserChannel | null;
   subagentExecutor?: SubagentToolExecutor | null;
   extraInstruction?: string;

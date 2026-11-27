@@ -66,7 +66,10 @@ import {
 import { GoalCorruptError, goalModelContext } from "../../session/goal.ts";
 import { normalizeSessionTitle } from "../../session/ops.ts";
 import {
+  TOOL_SEARCH_TOOL_NAME,
   createCodepunkToolDefinitions,
+  createToolSearchTool,
+  shouldDeferMcpTools,
   type CodepunkToolName,
 } from "../../tools/index.ts";
 import { MCP_RESOURCE_TOOL_NAMES } from "../../mcp/names.ts";
@@ -1417,7 +1420,23 @@ export async function createPiHost(
         work,
       },
     );
-    const definitions = [...baseDefinitions, ...(options.extraTools ?? [])];
+    const buildExtraDefinitions = (
+      rawExtra: readonly ToolDefinition<any, any, any>[],
+    ): ToolDefinition<any, any, any>[] => {
+      if (!shouldDeferMcpTools(rawExtra, options.lazyMcp)) {
+        return [...rawExtra];
+      }
+      const deferredExtra = rawExtra.map((definition) =>
+        definition.name.startsWith("mcp__")
+          ? { ...definition, exposure: "deferred" as const }
+          : definition,
+      );
+      return [createToolSearchTool(() => session), ...deferredExtra];
+    };
+    const definitions = [
+      ...baseDefinitions,
+      ...buildExtraDefinitions(options.extraTools ?? []),
+    ];
     const wrapped = await wrapToolDefinitions(definitions, wrapOptions);
     // MCP servers can be added or removed while this session is running. Keep
     // their name patterns in Pi's allowlist so tools from a reloaded server are
@@ -1425,13 +1444,16 @@ export async function createPiHost(
     // every registered MCP tool through the normal policy/approval path.
     const mcpToolPatterns = [
       "mcp__*",
+      TOOL_SEARCH_TOOL_NAME,
       ...[...MCP_RESOURCE_TOOL_NAMES].filter(
         (name) => !wrapped.some((definition) => definition.name === name),
       ),
     ];
     const activeNames = [
       ...new Set([
-        ...wrapped.map((definition) => definition.name),
+        ...wrapped
+          .filter((definition) => definition.exposure !== "deferred")
+          .map((definition) => definition.name),
         ...mcpToolPatterns,
       ]),
     ];
@@ -1440,7 +1462,7 @@ export async function createPiHost(
       sessionManager,
       tools: activeNames,
       noTools: "all",
-      excludeTools: ["codemode", "tool_search"],
+      excludeTools: ["codemode"],
       customTools: wrapped,
       ...(sessionModel !== undefined ? { model: sessionModel } : {}),
       ...(options.thinkingLevel !== undefined
@@ -1531,7 +1553,11 @@ export async function createPiHost(
       if (session === null) {
         throw new HostIsolationError("Pi session is not ready");
       }
-      const wrappedExtra = await wrapToolDefinitions(tools, wrapOptions);
+      const preparedExtra = buildExtraDefinitions(tools);
+      const wrappedExtra = await wrapToolDefinitions(
+        preparedExtra,
+        wrapOptions,
+      );
       wrapped.splice(
         baseDefinitions.length,
         wrapped.length - baseDefinitions.length,

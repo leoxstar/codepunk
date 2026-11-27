@@ -8,6 +8,7 @@ import { planRenderers } from "./plan.ts";
 import { searchRenderers } from "./search.ts";
 import { subagentRenderers } from "./subagent.ts";
 import { todoRenderers } from "./todo.ts";
+import { toolSearchRenderers } from "./tool-search.ts";
 import { webFetchRenderers, webSearchRenderers } from "./web.ts";
 import { bashRenderers, editRenderers, writeRenderers } from "./workspace.ts";
 
@@ -20,6 +21,7 @@ export {
   searchRenderers,
   subagentRenderers,
   todoRenderers,
+  toolSearchRenderers,
   webFetchRenderers,
   webSearchRenderers,
   writeRenderers,
@@ -29,6 +31,7 @@ const CODEPUNK_RENDERERS: Readonly<Record<string, ToolRenderers>> = {
   search: searchRenderers,
   plan: planRenderers,
   todo: todoRenderers,
+  tool_search: toolSearchRenderers,
   web_fetch: webFetchRenderers,
   web_search: webSearchRenderers,
   ask_user: askUserRenderers,

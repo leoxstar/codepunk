@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { redactOutputPreview } from "../artifacts/index.ts";
+import { isShellLauncher } from "../autonomy/index.ts";
 import { readEvidenceFile } from "../evidence/index.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 import { simpleShellArgv } from "../policy/index.ts";
@@ -11,6 +12,12 @@ export interface RepeatedApprovalCandidate {
   cwd: string;
   count: number;
   persistable_exact_argv: boolean;
+}
+
+export interface SuggestedWildcardRule {
+  argv: string[];
+  cwd: string;
+  count: number;
 }
 
 export interface PolicyDenialHotspot {
@@ -29,6 +36,7 @@ export interface PermissionInsights {
   reviewer_resolutions: number;
   denials: number;
   repeated_once_approvals: RepeatedApprovalCandidate[];
+  suggested_wildcard_rules?: SuggestedWildcardRule[];
   top_denials: PolicyDenialHotspot[];
 }
 
@@ -69,6 +77,10 @@ export async function analyzePermissionInsights(
   const onceMap = new Map<
     string,
     { command: string; cwd: string; count: number; persistable: boolean }
+  >();
+  const familyMap = new Map<
+    string,
+    { cwd: string; argvs: string[][]; count: number }
   >();
   const denyMap = new Map<
     string,
@@ -123,9 +135,11 @@ export async function analyzePermissionInsights(
                   paths.home,
                 );
                 const key = `${cleanedCwd}\0${cleanedCmd}`;
-                const persistable =
-                  record.command_argv !== null ||
-                  simpleShellArgv(rawCmd) !== null;
+                const parsedArgv =
+                  record.command_argv !== null
+                    ? [...record.command_argv]
+                    : simpleShellArgv(rawCmd);
+                const persistable = parsedArgv !== null;
                 const prev = onceMap.get(key);
                 if (prev === undefined) {
                   onceMap.set(key, {
@@ -136,6 +150,24 @@ export async function analyzePermissionInsights(
                   });
                 } else {
                   prev.count += 1;
+                }
+                if (
+                  parsedArgv !== null &&
+                  parsedArgv.length >= 3 &&
+                  !isShellLauncher(parsedArgv)
+                ) {
+                  const familyKey = `${cleanedCwd}\0${parsedArgv[0]}\0${parsedArgv[1]}`;
+                  const existingFamily = familyMap.get(familyKey);
+                  if (existingFamily === undefined) {
+                    familyMap.set(familyKey, {
+                      cwd: cleanedCwd,
+                      argvs: [parsedArgv],
+                      count: 1,
+                    });
+                  } else {
+                    existingFamily.count += 1;
+                    existingFamily.argvs.push(parsedArgv);
+                  }
                 }
               }
             }
@@ -176,6 +208,42 @@ export async function analyzePermissionInsights(
       persistable_exact_argv: item.persistable,
     }));
 
+  const suggestedWildcards: SuggestedWildcardRule[] = [];
+  for (const family of familyMap.values()) {
+    const distinctKeys = new Set(family.argvs.map((entry) => entry.join("\0")));
+    if (distinctKeys.size < 2) {
+      continue;
+    }
+    const first = family.argvs[0]!;
+    const sameLength = family.argvs.every(
+      (entry) => entry.length === first.length,
+    );
+    if (sameLength) {
+      const differingIndices: number[] = [];
+      for (let idx = 1; idx < first.length; idx += 1) {
+        if (family.argvs.some((entry) => entry[idx] !== first[idx])) {
+          differingIndices.push(idx);
+        }
+      }
+      if (differingIndices.length === 1) {
+        const slot = differingIndices[0]!;
+        const pattern = first.map((tok, idx) => (idx === slot ? "*" : tok));
+        suggestedWildcards.push({
+          argv: pattern,
+          cwd: family.cwd,
+          count: family.count,
+        });
+        continue;
+      }
+    }
+    suggestedWildcards.push({
+      argv: [first[0]!, first[1]!, "**"],
+      cwd: family.cwd,
+      count: family.count,
+    });
+  }
+  suggestedWildcards.sort((a, b) => b.count - a.count);
+
   const topDenials = [...denyMap.values()]
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
@@ -189,6 +257,7 @@ export async function analyzePermissionInsights(
     reviewer_resolutions: reviewerResolutions,
     denials,
     repeated_once_approvals: repeatedOnce,
+    suggested_wildcard_rules: suggestedWildcards.slice(0, 5),
     top_denials: topDenials,
   };
 }
@@ -209,6 +278,21 @@ export function formatPermissionInsights(insights: PermissionInsights): string {
         : "pipeline; eligible for 'Allow for session' (s)";
       lines.push(
         `  ${candidate.count}x  ${candidate.command}  [cwd: ${candidate.cwd}] — ${hint}`,
+      );
+    }
+  }
+
+  if (
+    insights.suggested_wildcard_rules !== undefined &&
+    insights.suggested_wildcard_rules.length > 0
+  ) {
+    lines.push(
+      "",
+      "Suggested controlled wildcard rules (codepunk permissions rules add -- ...):",
+    );
+    for (const item of insights.suggested_wildcard_rules) {
+      lines.push(
+        `  ${item.count}x  ${item.argv.join(" ")}  [cwd: ${item.cwd}]`,
       );
     }
   }

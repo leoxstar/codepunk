@@ -50,6 +50,7 @@ const PLAN_MODE_READ_ONLY_TOOLS = new Set([
   "ask_user",
   "subagent",
   "memory_search",
+  "tool_search",
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",

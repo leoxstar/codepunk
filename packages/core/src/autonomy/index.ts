@@ -44,6 +44,100 @@ export function autonomyRulesHash(rules: readonly ScopedRule[]): string {
   return recordHash({ rules: rules.map((rule) => rule.rule_sha256) });
 }
 
+export const SCOPED_SINGLE_WILDCARD = "*" as const;
+export const SCOPED_REST_WILDCARD = "**" as const;
+
+const DANGEROUS_WILDCARD_FLAGS = new Set([
+  "-f",
+  "-rf",
+  "-fr",
+  "--force",
+  "--force-with-lease",
+  "--hard",
+  "--no-verify",
+  "--delete",
+  "-D",
+]);
+
+function isSafeWildcardArgument(token: string): boolean {
+  if (token.length === 0 || /[\0\n\r]/u.test(token)) {
+    return false;
+  }
+  if (/[;&|<>`]/u.test(token) || token.includes("$(")) {
+    return false;
+  }
+  if (DANGEROUS_WILDCARD_FLAGS.has(token)) {
+    return false;
+  }
+  return true;
+}
+
+export function matchScopedArgv(
+  pattern: readonly string[],
+  candidate: readonly string[],
+): boolean {
+  if (pattern.length === 0 || candidate.length === 0) {
+    return false;
+  }
+  if (
+    pattern[0] === SCOPED_SINGLE_WILDCARD ||
+    pattern[0] === SCOPED_REST_WILDCARD ||
+    pattern[0] !== candidate[0]
+  ) {
+    return false;
+  }
+  const hasTrailingRest =
+    pattern.length >= 3 && pattern[pattern.length - 1] === SCOPED_REST_WILDCARD;
+  if (hasTrailingRest) {
+    const fixedPrefix = pattern.slice(0, -1);
+    if (candidate.length < fixedPrefix.length) {
+      return false;
+    }
+    for (let index = 1; index < fixedPrefix.length; index += 1) {
+      const ruleToken = fixedPrefix[index]!;
+      const value = candidate[index]!;
+      if (ruleToken === SCOPED_REST_WILDCARD) {
+        return false;
+      }
+      if (ruleToken === SCOPED_SINGLE_WILDCARD) {
+        if (!isSafeWildcardArgument(value)) {
+          return false;
+        }
+        continue;
+      }
+      if (ruleToken !== value) {
+        return false;
+      }
+    }
+    for (let index = fixedPrefix.length; index < candidate.length; index += 1) {
+      if (!isSafeWildcardArgument(candidate[index]!)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (pattern.length !== candidate.length) {
+    return false;
+  }
+  for (let index = 1; index < pattern.length; index += 1) {
+    const ruleToken = pattern[index]!;
+    const value = candidate[index]!;
+    if (ruleToken === SCOPED_REST_WILDCARD) {
+      return false;
+    }
+    if (ruleToken === SCOPED_SINGLE_WILDCARD) {
+      if (!isSafeWildcardArgument(value)) {
+        return false;
+      }
+      continue;
+    }
+    if (ruleToken !== value) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export { isShellLauncher };
 
 export async function resolveExecutable(
@@ -224,10 +318,7 @@ export class AutonomyController {
       if (resolveRealPath(rule.cwd) !== cwd) {
         continue;
       }
-      if (
-        rule.argv.length !== argv.length ||
-        rule.argv.some((value, index) => value !== argv?.[index])
-      ) {
+      if (!matchScopedArgv(rule.argv, argv)) {
         continue;
       }
       const issue = await verifyScopedRule(

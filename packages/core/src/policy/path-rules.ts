@@ -38,6 +38,7 @@ export function toolEffects(tool: string): Effects {
     case "plan":
     case "todo":
     case "ask_user":
+    case "tool_search":
       return { fs: "none", shell: false, network: false };
     case "write":
     case "edit":
@@ -81,7 +82,8 @@ export function coverageFor(
     tool === "plan" ||
     tool === "todo" ||
     tool === "ask_user" ||
-    tool === "subagent"
+    tool === "subagent" ||
+    tool === "tool_search"
   ) {
     return "app-layer";
   }

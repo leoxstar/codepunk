@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
+  SCOPED_REST_WILDCARD,
+  SCOPED_SINGLE_WILDCARD,
   autonomyRuleHash,
   autonomyRulesHash,
   executableDigest,
@@ -84,12 +86,9 @@ function validateRule(entry: unknown, index: number): ScopedRule {
     throw new ConfigError(`scoped rule ${index + 1} needs an id`);
   }
   const argv = stringArray(table["argv"], `scoped rule ${id} argv`);
-  for (const token of argv) {
-    if (/[*?[\]{}]/u.test(token)) {
-      throw new ConfigError(
-        `scoped rule ${id} argv contains a glob or pattern token`,
-      );
-    }
+  let sawWildcard = false;
+  let sawFixedSubarg = false;
+  for (const [tokenIndex, token] of argv.entries()) {
     if (/[\0\n\r]/u.test(token)) {
       throw new ConfigError(
         `scoped rule ${id} argv contains a control character`,
@@ -98,6 +97,31 @@ function validateRule(entry: unknown, index: number): ScopedRule {
     if (/[;&|<>`]/u.test(token) || token.includes("$(")) {
       throw new ConfigError(`scoped rule ${id} argv contains a shell fragment`);
     }
+    if (tokenIndex >= 1 && token === SCOPED_SINGLE_WILDCARD) {
+      sawWildcard = true;
+      continue;
+    }
+    if (
+      tokenIndex >= 2 &&
+      tokenIndex === argv.length - 1 &&
+      token === SCOPED_REST_WILDCARD
+    ) {
+      sawWildcard = true;
+      continue;
+    }
+    if (/[*?[\]{}]/u.test(token)) {
+      throw new ConfigError(
+        `scoped rule ${id} argv contains a glob or pattern token`,
+      );
+    }
+    if (tokenIndex >= 1) {
+      sawFixedSubarg = true;
+    }
+  }
+  if (sawWildcard && !sawFixedSubarg) {
+    throw new ConfigError(
+      `scoped rule ${id} wildcard argv requires at least one fixed subcommand or flag (glob or pattern-only argv is not allowed)`,
+    );
   }
   if (isShellLauncher(argv)) {
     throw new ConfigError(
