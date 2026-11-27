@@ -1,6 +1,8 @@
 import { AcpServer, RuntimeControlBackend, createRuntime } from "codepunk-core";
+import { readCliVersion } from "../build-info.ts";
 
 export async function commandAcp(): Promise<number> {
+  const agentVersion = await readCliVersion();
   const backend = new RuntimeControlBackend({
     cwd: process.cwd(),
     createRuntime: (input) =>
@@ -21,6 +23,7 @@ export async function commandAcp(): Promise<number> {
     backend,
     input: process.stdin,
     output: process.stdout,
+    agentVersion,
   });
   await server.run();
   return 0;

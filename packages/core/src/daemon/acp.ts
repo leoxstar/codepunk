@@ -195,7 +195,7 @@ export class AcpServer {
     this.output = options.output;
     this.maxRequestBytes = options.maxRequestBytes ?? ACP_REQUEST_MAX_BYTES;
     this.maxResponseBytes = options.maxResponseBytes ?? ACP_RESPONSE_MAX_BYTES;
-    this.agentVersion = options.agentVersion ?? "0.1.0";
+    this.agentVersion = options.agentVersion ?? "0.1.1";
   }
 
   async run(): Promise<void> {
