@@ -31,7 +31,7 @@ complete -c codepunk -n '__fish_seen_subcommand_from mcp' -a 'list add remove te
 complete -c codepunk -n '__fish_seen_subcommand_from skills' -a 'list add remove'
 complete -c codepunk -n '__fish_seen_subcommand_from plugins' -a 'list add remove enable disable'
 complete -c codepunk -n '__fish_seen_subcommand_from memory' -a 'list search add edit delete archive export'
-complete -c codepunk -n '__fish_seen_subcommand_from models' -a 'list test set remove import'
+complete -c codepunk -n '__fish_seen_subcommand_from models' -a 'list test set auth remove import'
 complete -c codepunk -n '__fish_seen_subcommand_from config' -a 'show path'
 complete -c codepunk -l 'print' -d 'single-shot print mode'
 complete -c codepunk -l 'mode' -r -d 'text or json print output'

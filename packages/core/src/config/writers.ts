@@ -18,6 +18,7 @@ import {
   type ApprovalClass,
   type ApprovalMode,
   type CodepunkConfig,
+  type CredentialStoreMode,
   type PermissionConfigUpdate,
   type PermissionProfile,
   type SandboxMode,
@@ -532,6 +533,32 @@ export async function writeUserPermissionSelection(
       );
     }
     await atomicWriteFile(filePath, content, 0o600);
+    return filePath;
+  });
+}
+
+export async function writeUserCredentialStoreSelection(
+  paths: ProjectPaths,
+  mode: CredentialStoreMode,
+): Promise<string> {
+  if (mode !== "file" && mode !== "keychain" && mode !== "auto") {
+    throw new ConfigError(
+      "model.credential_store must be file, keychain, or auto",
+      "model.credential_store",
+    );
+  }
+  const filePath = path.join(paths.home, CONFIG_FILE_NAME);
+  return withUserConfigLock(paths, async () => {
+    const content = await readUserConfigContent(filePath);
+    await atomicWriteFile(
+      filePath,
+      upsertSectionValues(
+        content,
+        "model",
+        new Map([["credential_store", tomlString(mode)]]),
+      ),
+      0o600,
+    );
     return filePath;
   });
 }

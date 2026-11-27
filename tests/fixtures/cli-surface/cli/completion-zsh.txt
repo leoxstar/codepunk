@@ -83,7 +83,7 @@ _codepunk() {
         skills) _values 'skills command' list add remove ;;
         plugins) _values 'plugins command' list add remove enable disable ;;
         memory) _values 'memory command' list search add edit delete archive export ;;
-        models) _values 'models command' list test set remove import ;;
+        models) _values 'models command' list test set auth remove import ;;
         config) _values 'config command' show path ;;
       esac
       ;;

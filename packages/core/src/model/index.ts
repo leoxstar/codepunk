@@ -10,11 +10,25 @@ import {
 } from "../config/index.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 import {
+  LockedAuthStore,
   ModelError,
+  inspectCredentialStorage,
+  migrateCredentialsToKeychain,
   openModelRuntime,
   setProviderAuthCredential,
+  type CredentialKeychainMigrationResult,
+  type CredentialStorageProviderStatus,
+  type CredentialStorageStatus,
+  type LockedAuthStoreOptions,
   type ModelErrorCode,
 } from "./auth-store.ts";
+import {
+  InMemoryKeychainDriver,
+  KEYCHAIN_SERVICE_NAME,
+  createNativeKeychainDriver,
+  validateKeychainAccount,
+  type KeychainDriver,
+} from "./keychain.ts";
 import {
   fallbackConfigurationErrors,
   isFallbackModel,
@@ -49,9 +63,21 @@ import {
 export type ConfiguredModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
 export {
+  InMemoryKeychainDriver,
+  KEYCHAIN_SERVICE_NAME,
+  LockedAuthStore,
   ModelError,
+  createNativeKeychainDriver,
+  inspectCredentialStorage,
+  migrateCredentialsToKeychain,
   openModelRuntime,
   setProviderAuthCredential,
+  validateKeychainAccount,
+  type CredentialKeychainMigrationResult,
+  type CredentialStorageProviderStatus,
+  type CredentialStorageStatus,
+  type KeychainDriver,
+  type LockedAuthStoreOptions,
   type ModelErrorCode,
 };
 export {

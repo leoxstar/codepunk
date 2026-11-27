@@ -1,13 +1,16 @@
 import {
   formatModelCatalog,
   importProviderModels,
+  inspectCredentialStorage,
   isThinkingLevel,
   listModelCatalog,
+  migrateCredentialsToKeychain,
   openModelRuntime,
   removeModelsProvider,
   resolveModelSelection,
   setConfiguredModel,
   testConfiguredModel,
+  writeUserCredentialStoreSelection,
 } from "codepunk-core";
 import type { CliOptions } from "../args/options.ts";
 import { resolveProject } from "../run/project.ts";
@@ -32,7 +35,75 @@ export async function commandModels(options: CliOptions): Promise<number> {
   if (subcommand === "import") {
     return modelsImport(options, project);
   }
+  if (subcommand === "auth") {
+    return modelsAuth(options, project);
+  }
   throw new Error(`unknown models command: ${subcommand}`);
+}
+
+async function modelsAuth(
+  options: CliOptions,
+  { paths, config }: ProjectContext,
+): Promise<number> {
+  const action = options.positionals[2] ?? "status";
+  if (action === "status") {
+    const status = await inspectCredentialStorage(paths, {
+      credentialStore: config.model.credential_store,
+    });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(status)}\n`);
+      return 0;
+    }
+    const lines = [
+      `credential_store: ${status.configuredMode}`,
+      `keychain_backend: ${status.keychainBackend} (${status.keychainAvailable ? "available" : "unavailable"})`,
+      `auth_file: ${status.authPath}`,
+      ...(status.providers.length === 0
+        ? ["providers: none"]
+        : status.providers.map(
+            (p) => `provider: ${p.providerId} · ${p.type} · ${p.storage}`,
+          )),
+    ];
+    process.stdout.write(`${lines.join("\n")}\n`);
+    return 0;
+  }
+  if (action === "file" || action === "keychain" || action === "auto") {
+    const configPath = await writeUserCredentialStoreSelection(paths, action);
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({ credential_store: action, configPath })}\n`,
+      );
+      return 0;
+    }
+    process.stdout.write(
+      `model.credential_store set to ${action}\nconfig: ${configPath}\n`,
+    );
+    return 0;
+  }
+  if (action === "migrate") {
+    const migrated = await migrateCredentialsToKeychain(paths);
+    const configPath = await writeUserCredentialStoreSelection(
+      paths,
+      "keychain",
+    );
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({ ...migrated, configPath })}\n`);
+      return 0;
+    }
+    process.stdout.write(
+      [
+        `migrated ${migrated.migratedProviders.length} provider(s) to ${migrated.keychainBackend}`,
+        ...(migrated.migratedProviders.length > 0
+          ? [`migrated: ${migrated.migratedProviders.join(", ")}`]
+          : []),
+        `config: ${configPath}`,
+      ].join("\n") + "\n",
+    );
+    return 0;
+  }
+  throw new Error(
+    `unknown models auth action: ${action}; expected status, file, keychain, auto, or migrate`,
+  );
 }
 
 async function modelsList(

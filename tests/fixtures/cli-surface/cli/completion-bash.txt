@@ -39,7 +39,7 @@ _codepunk_completion() {
       return 0
       ;;
     models)
-      COMPREPLY=( $(compgen -W "list test set remove import" -- "$cur") )
+      COMPREPLY=( $(compgen -W "list test set auth remove import" -- "$cur") )
       return 0
       ;;
     config)

@@ -174,7 +174,7 @@ _codepunk_completion() {
       return 0
       ;;
     models)
-      COMPREPLY=( $(compgen -W "list test set remove import" -- "$cur") )
+      COMPREPLY=( $(compgen -W "list test set auth remove import" -- "$cur") )
       return 0
       ;;
     config)
@@ -270,7 +270,7 @@ _codepunk() {
         skills) _values 'skills command' list add remove ;;
         plugins) _values 'plugins command' list add remove enable disable ;;
         memory) _values 'memory command' list search add edit delete archive export ;;
-        models) _values 'models command' list test set remove import ;;
+        models) _values 'models command' list test set auth remove import ;;
         config) _values 'config command' show path ;;
       esac
       ;;
@@ -299,7 +299,7 @@ function fishScript(): string {
     ["skills", "list add remove"],
     ["plugins", "list add remove enable disable"],
     ["memory", "list search add edit delete archive export"],
-    ["models", "list test set remove import"],
+    ["models", "list test set auth remove import"],
     ["config", "show path"],
   ];
   for (const [command, values] of nested) {

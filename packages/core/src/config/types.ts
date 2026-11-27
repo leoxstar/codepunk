@@ -17,6 +17,7 @@ export type SandboxMode = "required" | "uncovered";
 export type TelemetryMode = "off" | "local" | "remote-opt-in";
 export type ThinkingLevel =
   "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type CredentialStoreMode = "file" | "keychain" | "auto";
 export type CompactionMode = "auto" | "manual";
 
 export const STATUSLINE_SEGMENTS = [
@@ -106,6 +107,7 @@ export interface CodepunkConfig {
     enabled: string[];
     fallback: string[];
     fallback_allow_cross_provider: boolean;
+    credential_store: CredentialStoreMode;
   };
   plugins: {
     enabled: boolean;
@@ -385,6 +387,14 @@ export const KEY_SPECS = new Map<string, KeySpec>([
   ["model.enabled", { type: "string-array", scope: "any" }],
   ["model.fallback", { type: "string-array", scope: "user" }],
   ["model.fallback_allow_cross_provider", { type: "boolean", scope: "user" }],
+  [
+    "model.credential_store",
+    {
+      type: "string",
+      allowed: ["file", "keychain", "auto"],
+      scope: "user",
+    },
+  ],
   ["plugins.enabled", { type: "boolean", scope: "user" }],
   ["tools.enabled", { type: "string-array", scope: "any" }],
   [
@@ -515,6 +525,7 @@ export function defaultConfig(): CodepunkConfig {
       enabled: [],
       fallback: [],
       fallback_allow_cross_provider: false,
+      credential_store: "file",
     },
     plugins: {
       enabled: false,

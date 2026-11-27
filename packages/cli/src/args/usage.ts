@@ -64,6 +64,7 @@ function usageData(): string[] {
     "  codepunk models [list]",
     "  codepunk models test [provider/id]",
     "  codepunk models set <provider/id> [--thinking <level>]",
+    "  codepunk models auth [status|file|keychain|auto|migrate] [--json]",
     "  codepunk models remove <provider>",
     "  codepunk models import <base-url> --provider <id>",
     "      [--api openai-responses|openai-completions] [--api-key <key>]",
