@@ -4,6 +4,7 @@ import type {
   AskUserChannel,
   AskUserRequest,
 } from "codepunk-core";
+import { startAttentionBellTimer } from "./attention-bell.ts";
 
 export class TuiQuestionChannel implements AskUserChannel {
   readonly isTTY: boolean;
@@ -19,6 +20,20 @@ export class TuiQuestionChannel implements AskUserChannel {
 
   async ask(request: AskUserRequest): Promise<AskUserAnswer | null> {
     if (!this.isTTY || this.context === null) {
+      return null;
+    }
+    const stopBell = startAttentionBellTimer({ isTTY: this.isTTY });
+    try {
+      return await this.askInternal(request);
+    } finally {
+      stopBell();
+    }
+  }
+
+  private async askInternal(
+    request: AskUserRequest,
+  ): Promise<AskUserAnswer | null> {
+    if (this.context === null) {
       return null;
     }
     const ui = this.context.ui;

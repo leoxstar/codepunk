@@ -1,6 +1,7 @@
 export * from "./tui/state.ts";
 export * from "./tui/define-command.ts";
 export * from "./tui/host-commands.ts";
+export * from "./tui/approval/attention-bell.ts";
 export * from "./tui/approval/channel.ts";
 export * from "./tui/approval/question-channel.ts";
 export * from "./tui/approval/text.ts";
@@ -26,6 +27,8 @@ export * from "./tui/format/subagents.ts";
 export * from "./tui/format/subagent-tool.ts";
 export * from "./tui/format/mode-cycle.ts";
 export * from "./tui/commands/background.ts";
+export * from "./tui/commands/copy.ts";
+export * from "./tui/commands/editor.ts";
 export * from "./tui/commands/tasks.ts";
 export * from "./tui/commands/rewind.ts";
 export * from "./tui/commands/settings.ts";

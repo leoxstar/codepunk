@@ -14,6 +14,8 @@ import {
   btwCommand,
   presetCommand,
 } from "./commands/background.ts";
+import { copyCommand } from "./commands/copy.ts";
+import { editorCommand } from "./commands/editor.ts";
 import { imageCommand, image_genCommand } from "./commands/images.ts";
 import {
   rolesCommand,
@@ -106,6 +108,8 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   signCommand,
   rememberCommand,
   memoryCommand,
+  copyCommand,
+  editorCommand,
 ];
 
 export function createTuiExtension(
@@ -205,6 +209,13 @@ function registerShortcuts(
     handler: async (context) => {
       const { openCommandPalette } = await import("./commands/palette.ts");
       await openCommandPalette(state, context);
+    },
+  });
+  pi.registerShortcut("alt+g" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Compose or edit prompt in external editor",
+    handler: async (context) => {
+      const { openExternalPromptEditor } = await import("./commands/editor.ts");
+      await openExternalPromptEditor(state.runtime, context);
     },
   });
   pi.registerShortcut("f1" as Parameters<typeof pi.registerShortcut>[0], {

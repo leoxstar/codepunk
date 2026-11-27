@@ -14,7 +14,7 @@ registerCommand redo	Reapply changes removed by /undo
 registerCommand commit	Review and create a Git commit as a human action
 registerCommand status	Show model, session, permission, trust, and usage status
 registerCommand cp-sessions	List codepunk sessions
-registerCommand plan	Show the current plan, or plan a request in read-only plan mode
+registerCommand plan	Show, enter, approve, or exit plan mode, or plan a request read-only
 registerCommand plan-mode	Show, enter, approve, or exit plan mode
 registerCommand goal	Create or manage the goal that survives turns
 registerCommand hooks	Show lifecycle hook evidence
@@ -36,6 +36,7 @@ registerShortcut alt+m	Cycle work mode (plan/standard/auto/auto-approve)
 registerShortcut alt+t	Open the unified task and subagent center
 registerShortcut alt+r	Open the interactive rewind picker
 registerShortcut alt+k	Open the interactive command palette
+registerShortcut alt+g	Compose or edit prompt in external editor
 registerShortcut f1	Open searchable command help
 registerCommand budget	Show model token and cost usage against the budget
 registerCommand doctor	Run codepunk doctor diagnostics
@@ -57,3 +58,5 @@ registerCommand stop	Stop a background task
 registerCommand sign	Sign the current settled run
 registerCommand remember	Remember a user or project fact
 registerCommand memory	List, search, delete, or archive memory
+registerCommand copy	Copy the latest assistant reply or code block to clipboard
+registerCommand editor	Compose or edit the current prompt in $VISUAL/$EDITOR

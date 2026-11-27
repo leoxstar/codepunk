@@ -1,4 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { permissionProfileFor } from "codepunk-core";
 import { openInteractiveHelp } from "../chrome/help-action.ts";
 import { setupChrome } from "../chrome/setup.ts";
@@ -8,9 +11,22 @@ import {
   type CommandPaletteItem,
 } from "../components/command-palette.ts";
 import { defaultViewportHeight } from "../components/frame.ts";
+import { configureCommit } from "../format/commit.ts";
 import { cycleWorkMode } from "../format/mode-cycle.ts";
 import type { TuiState } from "../state.ts";
+import { runCopyAction } from "./copy.ts";
+import { openExternalPromptEditor } from "./editor.ts";
+import {
+  openContextOverlay,
+  openDoctorOverlay,
+  openEvidenceOverlay,
+  openPluginsOverlay,
+  openSkillsOverlay,
+} from "./inspect.ts";
+import { openInteractiveMcpPanel } from "./mcp.ts";
 import { configurePermissions } from "./permission-actions.ts";
+import { openMemoryBrowserLoop } from "./permissions.ts";
+import { openDiffOverlay, openStatusOverlay } from "./project.ts";
 import { openRewindPicker } from "./rewind.ts";
 import { resumeSession, startNewSession } from "./session.ts";
 import { showInteractiveSettingsMenu } from "./settings.ts";
@@ -145,6 +161,22 @@ const STATIC_PALETTE_ITEMS: readonly CommandPaletteItem[] = [
     hint: "search, add, archive, or delete saved facts",
     shortcut: "/memory",
     keywords: "remember notes facts",
+  },
+  {
+    id: "copy:last",
+    category: "Work",
+    label: "Copy last assistant reply",
+    hint: "copy latest reply or use /copy code for fenced code",
+    shortcut: "/copy",
+    keywords: "clipboard yank snippet output",
+  },
+  {
+    id: "editor:open",
+    category: "Work",
+    label: "Compose prompt in external editor",
+    hint: "open $VISUAL or $EDITOR for multi-line prompt editing",
+    shortcut: "Alt+G",
+    keywords: "vim nvim vscode editor draft",
   },
   {
     id: "help:browse",
@@ -308,34 +340,40 @@ export async function openCommandPalette(
       );
       return;
     case "git:diff":
-      await runtime.host.session.prompt("/diff");
+      await openDiffOverlay(state, runtime, context);
       return;
     case "git:commit":
-      await runtime.host.session.prompt("/commit");
+      await configureCommit(state, context as ExtensionCommandContext, "");
       return;
     case "inspect:context":
-      await runtime.host.session.prompt("/context");
+      await openContextOverlay(runtime, context);
       return;
     case "inspect:status":
-      await runtime.host.session.prompt("/status");
+      await openStatusOverlay(runtime, context);
       return;
     case "inspect:evidence":
-      await runtime.host.session.prompt("/evidence");
+      await openEvidenceOverlay(runtime, context);
       return;
     case "inspect:doctor":
-      await runtime.host.session.prompt("/doctor");
+      await openDoctorOverlay(runtime, context);
       return;
     case "caps:mcp":
-      await runtime.host.session.prompt("/mcp");
+      await openInteractiveMcpPanel(state, runtime, context);
       return;
     case "caps:skills":
-      await runtime.host.session.prompt("/skills");
+      await openSkillsOverlay(state, runtime, context);
       return;
     case "caps:plugins":
-      await runtime.host.session.prompt("/plugins");
+      await openPluginsOverlay(state, runtime, context);
       return;
     case "caps:memory":
-      await runtime.host.session.prompt("/memory");
+      await openMemoryBrowserLoop(runtime, context);
+      return;
+    case "copy:last":
+      await runCopyAction(runtime, context, "");
+      return;
+    case "editor:open":
+      await openExternalPromptEditor(runtime, context, "");
       return;
   }
 }

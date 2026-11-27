@@ -23,7 +23,10 @@ import {
 import type { TuiCommand } from "../define-command.ts";
 import { commandContext } from "../command-context.ts";
 import type { TuiState } from "../state.ts";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { defineCommand } from "../define-command.ts";
 
 async function mcpStatusOrLogout(
@@ -181,11 +184,23 @@ async function mcpLogin(
   }
 }
 
-async function openInteractiveMcpPanel(
+export async function openInteractiveMcpPanel(
   state: TuiState,
   runtime: CodepunkRuntime,
-  context: ExtensionCommandContext,
+  context: ExtensionContext,
 ): Promise<void> {
+  const cmdContext = context as ExtensionCommandContext;
+  if (typeof context.ui.custom !== "function") {
+    const snapshot = await collectCapabilities(runtime.paths, {
+      pluginEnabled: runtime.plugins.enabled,
+      skills: runtime.skills,
+      ...(runtime.plugins.paths.length > 0
+        ? { pluginFiles: runtime.plugins.paths }
+        : {}),
+    });
+    await notify(context, formatMcpServers(snapshot.mcp).join("\n"));
+    return;
+  }
   const configs = await readMcpConfig(runtime.paths);
   const store = new McpAuthStore(runtime.paths.home);
   const entries: McpPanelEntry[] = [];
@@ -228,7 +243,11 @@ async function openInteractiveMcpPanel(
     return;
   }
   if (decision.action === "add") {
-    const result = await addMcpServerInteractive(runtime, context, undefined);
+    const result = await addMcpServerInteractive(
+      runtime,
+      cmdContext,
+      undefined,
+    );
     if (result !== null) {
       (state.context ?? context).ui.notify(result.message, result.level);
     }
@@ -245,18 +264,18 @@ async function openInteractiveMcpPanel(
   if (decision.action === "status") {
     await mcpStatusOrLogout(
       runtime,
-      context,
+      cmdContext,
       "status",
       decision.name === undefined ? ["status"] : ["status", decision.name],
     );
     return;
   }
   if (decision.action === "login") {
-    await mcpLogin(runtime, context, ["login", decision.name]);
+    await mcpLogin(runtime, cmdContext, ["login", decision.name]);
     return;
   }
   if (decision.action === "logout") {
-    await mcpStatusOrLogout(runtime, context, "logout", [
+    await mcpStatusOrLogout(runtime, cmdContext, "logout", [
       "logout",
       decision.name,
     ]);
@@ -265,7 +284,7 @@ async function openInteractiveMcpPanel(
   if (decision.action === "remove") {
     const result = await removeMcpServerInteractive(
       runtime,
-      context,
+      cmdContext,
       decision.name,
     );
     if (result !== null) {

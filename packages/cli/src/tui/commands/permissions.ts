@@ -3,6 +3,7 @@ import { configurePermissions } from "./permission-actions.ts";
 import { exportSession } from "codepunk-core";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TuiCommand } from "../define-command.ts";
 import { commandContext } from "../command-context.ts";
 import type { TuiState } from "../state.ts";
@@ -163,10 +164,22 @@ export function rememberCommand(state: TuiState): TuiCommand {
   });
 }
 
-async function openMemoryBrowserLoop(
+export async function openMemoryBrowserLoop(
   runtime: NonNullable<TuiState["runtime"]>,
-  context: Parameters<TuiCommand["handler"]>[1],
+  context: ExtensionContext,
 ): Promise<void> {
+  if (typeof context.ui.custom !== "function") {
+    const result = await runtime.memory.search("", "all", 8);
+    await notify(
+      context,
+      result.records.length === 0
+        ? "No memory records matched."
+        : result.records
+            .map((record) => `${record.id} [${record.scope}] ${record.content}`)
+            .join("\n"),
+    );
+    return;
+  }
   const [{ createMemoryBrowser }, { defaultViewportHeight }] =
     await Promise.all([
       import("../components/memory-browser.ts"),

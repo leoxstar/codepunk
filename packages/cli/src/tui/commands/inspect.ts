@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   collectCapabilities,
   configSummary,
@@ -37,7 +37,7 @@ import {
 import type { TuiState } from "../state.ts";
 
 async function showStructuredOrNotify(
-  context: ExtensionCommandContext,
+  context: ExtensionContext,
   title: string,
   sections: {
     readonly label: string;
@@ -88,29 +88,36 @@ async function triggerReload(
   }
 }
 
+export async function openContextOverlay(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  if (typeof context.ui.custom === "function") {
+    const action = await context.ui.custom<"compact" | null>(
+      (_tui, theme, keybindings, done) =>
+        createContextPanel(runtime, theme, keybindings, done),
+    );
+    if (action === "compact") {
+      await runtime.host.session.prompt("/compact");
+    }
+    return;
+  }
+  const b = buildContextBreakdown(runtime);
+  const lines = [
+    `Context usage: ${b.usedTokens} tokens${b.contextWindow ? ` / ${b.contextWindow}` : ""}${b.percent !== null ? ` (${b.percent}%)` : ""}`,
+    ...b.categories.map(
+      (cat) => `  ${cat.label}: ${cat.tokens} tokens (${cat.detail})`,
+    ),
+  ];
+  await notify(context, lines.join("\n"));
+}
+
 export function contextCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "context",
     description: "Visualize context window token usage and breakdown",
     handler: commandContext(state, async (runtime, context) => {
-      if (typeof context.ui.custom === "function") {
-        const action = await context.ui.custom<"compact" | null>(
-          (_tui, theme, keybindings, done) =>
-            createContextPanel(runtime, theme, keybindings, done),
-        );
-        if (action === "compact") {
-          await runtime.host.session.prompt("/compact");
-        }
-        return;
-      }
-      const b = buildContextBreakdown(runtime);
-      const lines = [
-        `Context usage: ${b.usedTokens} tokens${b.contextWindow ? ` / ${b.contextWindow}` : ""}${b.percent !== null ? ` (${b.percent}%)` : ""}`,
-        ...b.categories.map(
-          (cat) => `  ${cat.label}: ${cat.tokens} tokens (${cat.detail})`,
-        ),
-      ];
-      await notify(context, lines.join("\n"));
+      await openContextOverlay(runtime, context);
     }),
   });
 }
@@ -139,33 +146,40 @@ export function hooksCommand(state: TuiState): TuiCommand {
   });
 }
 
+export async function openEvidenceOverlay(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  const records = runtime.ledger.all;
+  if (typeof context.ui.custom === "function") {
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createEvidenceInspector(
+        {
+          records,
+          head: runtime.ledger.head,
+          viewportHeight: defaultViewportHeight(),
+        },
+        theme,
+        keybindings,
+        done,
+      ),
+    );
+    return;
+  }
+  await notify(
+    context,
+    records.length === 0
+      ? "No evidence in the current run."
+      : `${records.length} evidence record(s); head ${runtime.ledger.head ?? "none"}`,
+  );
+}
+
 export function evidenceCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "evidence",
     description: "Inspect current run evidence ledger",
     handler: commandContext(state, async (runtime, context) => {
-      const records = runtime.ledger.all;
-      if (typeof context.ui.custom === "function") {
-        await context.ui.custom<void>((_tui, theme, keybindings, done) =>
-          createEvidenceInspector(
-            {
-              records,
-              head: runtime.ledger.head,
-              viewportHeight: defaultViewportHeight(),
-            },
-            theme,
-            keybindings,
-            done,
-          ),
-        );
-        return;
-      }
-      await notify(
-        context,
-        records.length === 0
-          ? "No evidence in the current run."
-          : `${records.length} evidence record(s); head ${runtime.ledger.head ?? "none"}`,
-      );
+      await openEvidenceOverlay(runtime, context);
     }),
   });
 }
@@ -204,28 +218,35 @@ export function budgetCommand(state: TuiState): TuiCommand {
   });
 }
 
+export async function openDoctorOverlay(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  const build = await inspectCliBuild();
+  const report = appendBuildDoctorCheck(
+    await runDoctor({
+      paths: runtime.paths,
+      config: runtime.config,
+      pluginEnabled: runtime.plugins.enabled,
+      packageVersion: build.version,
+    }),
+    build,
+  );
+  if (typeof context.ui.custom === "function") {
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createDoctorPanel(report, theme, keybindings, done),
+    );
+    return;
+  }
+  await notify(context, formatDoctor(report));
+}
+
 export function doctorCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "doctor",
     description: "Run codepunk doctor diagnostics",
     handler: commandContext(state, async (runtime, context) => {
-      const build = await inspectCliBuild();
-      const report = appendBuildDoctorCheck(
-        await runDoctor({
-          paths: runtime.paths,
-          config: runtime.config,
-          pluginEnabled: runtime.plugins.enabled,
-          packageVersion: build.version,
-        }),
-        build,
-      );
-      if (typeof context.ui.custom === "function") {
-        await context.ui.custom<void>((_tui, theme, keybindings, done) =>
-          createDoctorPanel(report, theme, keybindings, done),
-        );
-        return;
-      }
-      await notify(context, formatDoctor(report));
+      await openDoctorOverlay(runtime, context);
     }),
   });
 }
@@ -287,63 +308,135 @@ export function capabilitiesCommand(state: TuiState): TuiCommand {
   });
 }
 
+export async function openSkillsOverlay(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  const summary = runtime.isolation.skills
+    ? "Skills (disabled for this session)"
+    : `Skills (${runtime.skills.length})`;
+  const notes = runtime.isolation.skills
+    ? ["restart without --no-skills or --bare to load installed skills"]
+    : [
+        "add:    codepunk skills add <dir> [--scope user|project]",
+        "remove: codepunk skills remove <name> [--scope user|project]",
+        "run /reload after changing skills",
+      ];
+  if (typeof context.ui.custom === "function") {
+    const action = await context.ui.custom<CapabilityPanelAction>(
+      (_tui, theme, keybindings, done) =>
+        createCapabilitiesPanel(
+          {
+            title: "codepunk skills",
+            summary,
+            items: runtime.isolation.skills
+              ? []
+              : runtime.skills.map((skill) => ({
+                  label: `${skill.name}  (${skill.bytes} B)${skill.disable_model_invocation ? ` · manual-only (/skill:${skill.name})` : ""}`,
+                  badge: skill.scope,
+                  detail: skill.path,
+                })),
+            emptyText: "none",
+            notes,
+            viewportHeight: defaultViewportHeight(),
+          },
+          theme,
+          keybindings,
+          done,
+        ),
+    );
+    if (action === "reload") {
+      await triggerReload(state, runtime);
+    }
+    return;
+  }
+  const lines = [
+    summary,
+    ...(runtime.skills.length === 0
+      ? ["  none"]
+      : runtime.skills.map(
+          (skill) =>
+            `  ${skill.scope.padEnd(7)} ${skill.name}  ${skill.bytes} B`,
+        )),
+    "",
+    ...notes,
+  ];
+  await notify(context, lines.join("\n"));
+}
+
 export function skillsCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "skills",
     description: "Inspect loaded skills and reload",
     handler: commandContext(state, async (runtime, context) => {
-      const summary = runtime.isolation.skills
-        ? "Skills (disabled for this session)"
-        : `Skills (${runtime.skills.length})`;
-      const notes = runtime.isolation.skills
-        ? ["restart without --no-skills or --bare to load installed skills"]
-        : [
-            "add:    codepunk skills add <dir> [--scope user|project]",
-            "remove: codepunk skills remove <name> [--scope user|project]",
-            "run /reload after changing skills",
-          ];
-      if (typeof context.ui.custom === "function") {
-        const action = await context.ui.custom<CapabilityPanelAction>(
-          (_tui, theme, keybindings, done) =>
-            createCapabilitiesPanel(
-              {
-                title: "codepunk skills",
-                summary,
-                items: runtime.isolation.skills
-                  ? []
-                  : runtime.skills.map((skill) => ({
-                      label: `${skill.name}  (${skill.bytes} B)${skill.disable_model_invocation ? ` · manual-only (/skill:${skill.name})` : ""}`,
-                      badge: skill.scope,
-                      detail: skill.path,
-                    })),
-                emptyText: "none",
-                notes,
-                viewportHeight: defaultViewportHeight(),
-              },
-              theme,
-              keybindings,
-              done,
-            ),
-        );
-        if (action === "reload") {
-          await triggerReload(state, runtime);
-        }
-        return;
-      }
-      const lines = [
-        summary,
-        ...(runtime.skills.length === 0
-          ? ["  none"]
-          : runtime.skills.map(
-              (skill) =>
-                `  ${skill.scope.padEnd(7)} ${skill.name}  ${skill.bytes} B`,
-            )),
-        "",
-        ...notes,
-      ];
-      await notify(context, lines.join("\n"));
+      await openSkillsOverlay(state, runtime, context);
     }),
   });
+}
+
+export async function openPluginsOverlay(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  const directory = path.join(runtime.paths.home, "extensions");
+  const files = await listUserPluginFiles(directory);
+  const summary = `Plugins (${runtime.plugins.enabled ? "enabled" : runtime.isolation.plugins ? "disabled for this session" : "disabled"}, ${files.length} file${files.length === 1 ? "" : "s"})`;
+  const notes = [
+    `directory: ${directory}`,
+    "enable:  codepunk plugins enable",
+    "disable: codepunk plugins disable",
+    "add:     codepunk plugins add <file> [--force]",
+    "remove:  codepunk plugins remove <file>",
+    "run /reload after changes; plugin tools are rejected",
+  ];
+  if (typeof context.ui.custom === "function") {
+    const action = await context.ui.custom<CapabilityPanelAction>(
+      (_tui, theme, keybindings, done) =>
+        createCapabilitiesPanel(
+          {
+            title: "codepunk plugins",
+            summary,
+            items: files.map((file) => ({ label: file })),
+            emptyText: "none",
+            notes,
+            allowPluginToggle: !runtime.isolation.plugins,
+            pluginsEnabled: runtime.plugins.enabled,
+            viewportHeight: defaultViewportHeight(),
+          },
+          theme,
+          keybindings,
+          done,
+        ),
+    );
+    if (action === "reload") {
+      await triggerReload(state, runtime);
+    } else if (action === "toggle-plugins") {
+      const next = !runtime.plugins.enabled;
+      if (next) {
+        const confirmed = await context.ui.confirm(
+          "Enable plugins?",
+          "Plugins run trusted in-process code and can bypass policy, approval, sandbox, and evidence.",
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+      await writeUserPluginsEnabled(runtime.paths, next);
+      await triggerReload(state, runtime);
+    }
+    return;
+  }
+  await notify(
+    context,
+    [
+      summary,
+      ...(files.length === 0 ? ["  none"] : files.map((f) => `  ${f}`)),
+      "",
+      ...notes,
+    ].join("\n"),
+  );
 }
 
 export function pluginsCommand(state: TuiState): TuiCommand {
@@ -351,63 +444,7 @@ export function pluginsCommand(state: TuiState): TuiCommand {
     name: "plugins",
     description: "Inspect plugins, toggle enablement, or reload",
     handler: commandContext(state, async (runtime, context) => {
-      const directory = path.join(runtime.paths.home, "extensions");
-      const files = await listUserPluginFiles(directory);
-      const summary = `Plugins (${runtime.plugins.enabled ? "enabled" : runtime.isolation.plugins ? "disabled for this session" : "disabled"}, ${files.length} file${files.length === 1 ? "" : "s"})`;
-      const notes = [
-        `directory: ${directory}`,
-        "enable:  codepunk plugins enable",
-        "disable: codepunk plugins disable",
-        "add:     codepunk plugins add <file> [--force]",
-        "remove:  codepunk plugins remove <file>",
-        "run /reload after changes; plugin tools are rejected",
-      ];
-      if (typeof context.ui.custom === "function") {
-        const action = await context.ui.custom<CapabilityPanelAction>(
-          (_tui, theme, keybindings, done) =>
-            createCapabilitiesPanel(
-              {
-                title: "codepunk plugins",
-                summary,
-                items: files.map((file) => ({ label: file })),
-                emptyText: "none",
-                notes,
-                allowPluginToggle: !runtime.isolation.plugins,
-                pluginsEnabled: runtime.plugins.enabled,
-                viewportHeight: defaultViewportHeight(),
-              },
-              theme,
-              keybindings,
-              done,
-            ),
-        );
-        if (action === "reload") {
-          await triggerReload(state, runtime);
-        } else if (action === "toggle-plugins") {
-          const next = !runtime.plugins.enabled;
-          if (next) {
-            const confirmed = await context.ui.confirm(
-              "Enable plugins?",
-              "Plugins run trusted in-process code and can bypass policy, approval, sandbox, and evidence.",
-            );
-            if (!confirmed) {
-              return;
-            }
-          }
-          await writeUserPluginsEnabled(runtime.paths, next);
-          await triggerReload(state, runtime);
-        }
-        return;
-      }
-      await notify(
-        context,
-        [
-          summary,
-          ...(files.length === 0 ? ["  none"] : files.map((f) => `  ${f}`)),
-          "",
-          ...notes,
-        ].join("\n"),
-      );
+      await openPluginsOverlay(state, runtime, context);
     }),
   });
 }

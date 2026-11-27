@@ -15,6 +15,10 @@ import { physicalModel, modelOnboardingMessage } from "../chrome/model.ts";
 import { refreshStatus } from "../chrome/statusline.ts";
 import { refreshWorkWidget } from "../chrome/work-widget.ts";
 import { openInteractiveHelp } from "../chrome/help-action.ts";
+import type {
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   GoalController,
   GoalCorruptError,
@@ -25,6 +29,7 @@ import {
   planContentHash,
   readWorkspaceDiff,
   readWorkState,
+  type CodepunkRuntime,
 } from "codepunk-core";
 import type { DiffViewAction } from "../components/diff-view.ts";
 import type { TuiCommand } from "../define-command.ts";
@@ -64,6 +69,79 @@ export function initCommand(state: TuiState): TuiCommand {
   });
 }
 
+export async function openDiffOverlay(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  try {
+    const diff = await readWorkspaceDiff({
+      root: runtime.paths.deliveryRoot,
+    });
+    let action: DiffViewAction | null = null;
+    try {
+      const [{ createDiffView }, { defaultViewportHeight }] = await Promise.all(
+        [
+          import("../components/diff-view.ts"),
+          import("../components/frame.ts"),
+        ],
+      );
+      action = await context.ui.custom<DiffViewAction | null>(
+        (_tui, theme, keybindings, done) =>
+          createDiffView(
+            {
+              title: `Working tree diff · ${diff.root}`,
+              source: {
+                root: diff.root,
+                status: diff.status,
+                stat: diff.stat,
+                staged: diff.staged,
+                unstaged: diff.unstaged,
+                untracked: diff.untracked
+                  .split(/\r?\n/u)
+                  .map((entry) => entry.trim())
+                  .filter((entry) => entry.length > 0),
+                truncated: diff.truncated,
+              },
+              viewportHeight: Math.max(6, defaultViewportHeight() - 1),
+              onAction: (next) => done(next),
+            },
+            theme,
+            keybindings,
+            () => done(null),
+          ),
+      );
+    } catch {
+      await notify(context, formatWorkspaceDiff(diff));
+      return;
+    }
+    if (action === "commit") {
+      await configureCommit(state, context as ExtensionCommandContext, "");
+    } else if (action === "undo") {
+      await restoreCheckpoint(
+        state,
+        context as ExtensionCommandContext,
+        "undo",
+        "",
+      );
+    } else if (action === "review") {
+      await runtime.host.session.prompt("/review");
+    }
+  } catch (error) {
+    if (error instanceof NotAGitWorktreeError) {
+      context.ui.notify(
+        `Not a Git worktree; /diff needs a Git repository (${runtime.paths.deliveryRoot})`,
+        "warning",
+      );
+      return;
+    }
+    context.ui.notify(
+      `/diff failed: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
+  }
+}
+
 export function diffCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "diff",
@@ -73,68 +151,7 @@ export function diffCommand(state: TuiState): TuiCommand {
         context.ui.notify("usage: /diff", "warning");
         return;
       }
-      try {
-        const diff = await readWorkspaceDiff({
-          root: runtime.paths.deliveryRoot,
-        });
-        let action: DiffViewAction | null = null;
-        try {
-          const [{ createDiffView }, { defaultViewportHeight }] =
-            await Promise.all([
-              import("../components/diff-view.ts"),
-              import("../components/frame.ts"),
-            ]);
-          action = await context.ui.custom<DiffViewAction | null>(
-            (_tui, theme, keybindings, done) =>
-              createDiffView(
-                {
-                  title: `Working tree diff · ${diff.root}`,
-                  source: {
-                    root: diff.root,
-                    status: diff.status,
-                    stat: diff.stat,
-                    staged: diff.staged,
-                    unstaged: diff.unstaged,
-                    untracked: diff.untracked
-                      .split(/\r?\n/u)
-                      .map((entry) => entry.trim())
-                      .filter((entry) => entry.length > 0),
-                    truncated: diff.truncated,
-                  },
-                  viewportHeight: Math.max(6, defaultViewportHeight() - 1),
-                  onAction: (next) => done(next),
-                },
-                theme,
-                keybindings,
-                () => done(null),
-              ),
-          );
-        } catch {
-          await notify(context, formatWorkspaceDiff(diff));
-          return;
-        }
-        if (action === "commit") {
-          await configureCommit(state, context, "");
-        } else if (action === "undo") {
-          await restoreCheckpoint(state, context, "undo", "");
-        } else if (action === "review") {
-          await runtime.host.session.prompt("/review");
-        }
-      } catch (error) {
-        if (error instanceof NotAGitWorktreeError) {
-          context.ui.notify(
-            `Not a Git worktree; /diff needs a Git repository (${runtime.paths.deliveryRoot})`,
-            "warning",
-          );
-          return;
-        }
-        context.ui.notify(
-          `/diff failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          "error",
-        );
-      }
+      await openDiffOverlay(state, runtime, context);
     }),
   });
 }
@@ -169,20 +186,26 @@ export function commitCommand(state: TuiState): TuiCommand {
   });
 }
 
+export async function openStatusOverlay(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+): Promise<void> {
+  try {
+    const { createStatusPanel } = await import("../components/status-panel.ts");
+    await context.ui.custom<void>((_tui, theme, keybindings, done) =>
+      createStatusPanel(runtime, theme, keybindings, done),
+    );
+  } catch {
+    await notify(context, formatStatusSummary(runtime));
+  }
+}
+
 export function statusCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "status",
     description: "Show model, session, permission, trust, and usage status",
     handler: commandContext(state, async (runtime, context) => {
-      try {
-        const { createStatusPanel } =
-          await import("../components/status-panel.ts");
-        await context.ui.custom<void>((_tui, theme, keybindings, done) =>
-          createStatusPanel(runtime, theme, keybindings, done),
-        );
-      } catch {
-        await notify(context, formatStatusSummary(runtime));
-      }
+      await openStatusOverlay(runtime, context);
     }),
   });
 }
@@ -201,15 +224,124 @@ export function cp_sessionsCommand(state: TuiState): TuiCommand {
   });
 }
 
+async function runPlanModeSubcommand(
+  state: TuiState,
+  runtime: CodepunkRuntime,
+  context: ExtensionCommandContext,
+  subcommand: string,
+  commandLabel: "/plan" | "/plan-mode",
+): Promise<boolean> {
+  try {
+    if (subcommand === "" || subcommand === "status") {
+      const current = runtime.planMode.state();
+      const plan = readWorkState(runtime.session.allEvents).plan;
+      if (
+        subcommand === "" &&
+        current?.mode === "planning" &&
+        plan !== null &&
+        plan.steps.length > 0 &&
+        typeof context.ui.select === "function"
+      ) {
+        const action = await context.ui.select(
+          formatPlanModeStatus(current, plan),
+          ["Approve and execute plan", "Keep planning", "Exit plan mode"],
+        );
+        if (action === "Approve and execute plan") {
+          const next = await runtime.planMode.approve();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
+          await notify(context, `Plan mode: ${next.mode}`);
+          return true;
+        }
+        if (action === "Exit plan mode") {
+          const next = await runtime.planMode.exit();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
+          await notify(context, `Plan mode: ${next.mode}`);
+          return true;
+        }
+        return true;
+      }
+      await notify(context, formatPlanModeStatus(current, plan));
+      return true;
+    }
+    if (subcommand === "on") {
+      const next = await runtime.planMode.enter();
+      refreshWorkWidget(state, context);
+      refreshStatus(state, context);
+      await notify(
+        context,
+        [
+          `Plan mode: ${next.mode}`,
+          "Only read-only tools are available. Record a plan, then run /plan approve.",
+        ].join("\n"),
+      );
+      return true;
+    }
+    if (subcommand === "approve") {
+      const next = await runtime.planMode.approve();
+      refreshWorkWidget(state, context);
+      refreshStatus(state, context);
+      const planHash =
+        next.plan_sha256 ??
+        planContentHash(readWorkState(runtime.session.allEvents).plan);
+      await notify(
+        context,
+        [
+          `Plan mode: ${next.mode}`,
+          planHash === null
+            ? "No plan hash is bound."
+            : `Approved plan hash: ${planHash}`,
+        ].join("\n"),
+      );
+      return true;
+    }
+    if (subcommand === "off") {
+      const next = await runtime.planMode.exit();
+      refreshWorkWidget(state, context);
+      refreshStatus(state, context);
+      await notify(context, `Plan mode: ${next.mode}`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    context.ui.notify(
+      `${commandLabel} failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+    return true;
+  }
+}
+
 export function planCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "plan",
     description:
-      "Show the current plan, or plan a request in read-only plan mode",
+      "Show, enter, approve, or exit plan mode, or plan a request read-only",
     handler: commandContext(state, async (runtime, context, args) => {
       const request = args.trim();
+      if (
+        request === "status" ||
+        request === "on" ||
+        request === "approve" ||
+        request === "off"
+      ) {
+        await runPlanModeSubcommand(state, runtime, context, request, "/plan");
+        return;
+      }
       if (request.length === 0) {
         const work = readWorkState(runtime.session.allEvents);
+        if (
+          runtime.planMode.state()?.mode === "planning" &&
+          work.plan !== null &&
+          work.plan.steps.length > 0 &&
+          typeof context.ui.select === "function"
+        ) {
+          await runPlanModeSubcommand(state, runtime, context, "", "/plan");
+          return;
+        }
         await notify(context, formatPlan(work.plan));
         return;
       }
@@ -224,10 +356,12 @@ export function planCommand(state: TuiState): TuiCommand {
       try {
         if (runtime.planMode.state()?.mode !== "planning") {
           await runtime.planMode.enter();
+          refreshWorkWidget(state, context);
+          refreshStatus(state, context);
           context.ui.notify(
             [
               "Plan mode: planning",
-              "Only read-only tools are available. Approve the recorded plan with /plan-mode approve.",
+              "Only read-only tools are available. Approve the recorded plan with /plan approve.",
             ].join("\n"),
             "info",
           );
@@ -251,88 +385,17 @@ export function plan_modeCommand(state: TuiState): TuiCommand {
     description: "Show, enter, approve, or exit plan mode",
     handler: commandContext(state, async (runtime, context, args) => {
       const subcommand = args.trim();
-      try {
-        if (subcommand === "" || subcommand === "status") {
-          const current = runtime.planMode.state();
-          const plan = readWorkState(runtime.session.allEvents).plan;
-          if (
-            subcommand === "" &&
-            current?.mode === "planning" &&
-            plan !== null &&
-            plan.steps.length > 0 &&
-            typeof context.ui.select === "function"
-          ) {
-            const action = await context.ui.select(
-              formatPlanModeStatus(current, plan),
-              ["Approve and execute plan", "Keep planning", "Exit plan mode"],
-            );
-            if (action === "Approve and execute plan") {
-              const next = await runtime.planMode.approve();
-              refreshWorkWidget(state, context);
-              refreshStatus(state, context);
-              await notify(context, `Plan mode: ${next.mode}`);
-              return;
-            }
-            if (action === "Exit plan mode") {
-              const next = await runtime.planMode.exit();
-              refreshWorkWidget(state, context);
-              refreshStatus(state, context);
-              await notify(context, `Plan mode: ${next.mode}`);
-              return;
-            }
-            return;
-          }
-          await notify(context, formatPlanModeStatus(current, plan));
-          return;
-        }
-        if (subcommand === "on") {
-          const next = await runtime.planMode.enter();
-          refreshWorkWidget(state, context);
-          refreshStatus(state, context);
-          await notify(
-            context,
-            [
-              `Plan mode: ${next.mode}`,
-              "Only read-only tools are available. Record a plan, then run /plan-mode approve.",
-            ].join("\n"),
-          );
-          return;
-        }
-        if (subcommand === "approve") {
-          const next = await runtime.planMode.approve();
-          refreshWorkWidget(state, context);
-          refreshStatus(state, context);
-          const planHash =
-            next.plan_sha256 ??
-            planContentHash(readWorkState(runtime.session.allEvents).plan);
-          await notify(
-            context,
-            [
-              `Plan mode: ${next.mode}`,
-              planHash === null
-                ? "No plan hash is bound."
-                : `Approved plan hash: ${planHash}`,
-            ].join("\n"),
-          );
-          return;
-        }
-        if (subcommand === "off") {
-          const next = await runtime.planMode.exit();
-          refreshWorkWidget(state, context);
-          refreshStatus(state, context);
-          await notify(context, `Plan mode: ${next.mode}`);
-          return;
-        }
+      const handled = await runPlanModeSubcommand(
+        state,
+        runtime,
+        context,
+        subcommand,
+        "/plan-mode",
+      );
+      if (!handled) {
         context.ui.notify(
           "usage: /plan-mode [status|on|approve|off]",
           "warning",
-        );
-      } catch (error) {
-        context.ui.notify(
-          `/plan-mode failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          "error",
         );
       }
     }),

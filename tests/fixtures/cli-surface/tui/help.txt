@@ -6,9 +6,11 @@ Daily essentials
   Alt+M                      cycle work mode (plan/standard/auto/auto-approve)
   Alt+T / /tasks             open the unified interactive task & subagent center
   Alt+R / /rewind            rewind file checkpoints or switch session branches
+  Alt+G / /editor [--reply]  compose or edit the prompt in $VISUAL/$EDITOR
   F1 / /help [query]         search, browse, and run commands interactively
   F2 / /model                cycle recent models or search all models
   Shift+Tab                  cycle reasoning/thinking level
+  /copy [last|<n>|code [n]]  copy latest assistant reply or fenced code block
   /permissions, /settings    configure approvals, sandbox, theme, and TUI options
   /diff, /commit, /context   inspect diff, commit changes, or view context budget
   /resume                    fuzzy-search and switch project sessions
@@ -48,9 +50,10 @@ Permissions and work
   /ps                        list background tasks
   /logs <id>                 show bounded background task logs
   /stop <id>                 stop a background task
-  /plan [request]            show the current plan, or plan a request read-only
+  /plan [request|status|on|approve|off]
+                             show/approve/exit plan mode or plan a request read-only
   /plan-mode [status|on|approve|off]
-                             show, enter, approve, or exit plan mode
+                             alias for plan mode lifecycle controls
   /preset [list|use <name>]  apply a user preset to this session
   /btw <prompt>              run a read-only side question in the background
   /side <prompt>             run a background side task

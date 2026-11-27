@@ -6,6 +6,7 @@ import type {
   ApprovalScope,
 } from "codepunk-protocol";
 import type { ApprovalChoice } from "../components/approval-card.ts";
+import { startAttentionBellTimer } from "./attention-bell.ts";
 import { formatApproval, persistentApprovalPreview } from "./text.ts";
 
 const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
@@ -75,20 +76,25 @@ export class TuiApprovalChannel implements ApprovalChannel {
     if (!this.isTTY || this.context === null) {
       return null;
     }
-    const canPersistExact =
-      request.argv !== undefined &&
-      request.argv.length > 0 &&
-      request.cwd !== undefined;
-    const choices = APPROVAL_CHOICES.filter((choice) =>
-      choice.scope === "persistent"
-        ? canPersistExact && this.workspaceTrusted
-        : true,
-    );
-    const inline = await this.askInline(request, choices);
-    if (inline.used) {
-      return this.resolveChoice(request, inline.choice);
+    const stopBell = startAttentionBellTimer({ isTTY: this.isTTY });
+    try {
+      const canPersistExact =
+        request.argv !== undefined &&
+        request.argv.length > 0 &&
+        request.cwd !== undefined;
+      const choices = APPROVAL_CHOICES.filter((choice) =>
+        choice.scope === "persistent"
+          ? canPersistExact && this.workspaceTrusted
+          : true,
+      );
+      const inline = await this.askInline(request, choices);
+      if (inline.used) {
+        return await this.resolveChoice(request, inline.choice);
+      }
+      return await this.askWithSelect(request, choices);
+    } finally {
+      stopBell();
     }
-    return this.askWithSelect(request, choices);
   }
 
   private async askInline(

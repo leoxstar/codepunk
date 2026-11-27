@@ -1,7 +1,7 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export async function notify(
-  context: ExtensionCommandContext,
+  context: Pick<ExtensionContext, "ui">,
   message: string,
 ): Promise<void> {
   context.ui.notify(message, "info");
