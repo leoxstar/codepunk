@@ -90,6 +90,7 @@ export class TuiApprovalChannel implements ApprovalChannel {
         request.argv.length > 0 &&
         request.cwd !== undefined;
       const canRunUnsandboxedOnce =
+        this.workspaceTrusted &&
         (request.tool === "bash" || request.tool === "user_bash") &&
         !/no srt sandbox|uncovered/iu.test(request.coverage_preview ?? "");
       const choices = APPROVAL_CHOICES.filter((choice) => {

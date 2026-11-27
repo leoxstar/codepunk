@@ -15,3 +15,6 @@
 {"id":"coding_edit_anchor_hints","kind":"coding_edit_anchor_hints","expected":"pass"}
 {"id":"coding_read_large_outline","kind":"coding_read_large_outline","expected":"pass"}
 {"id":"coding_post_write_diagnostics","kind":"coding_post_write_diagnostics","expected":"pass"}
+{"id":"coding_lsp_symbol_navigation","kind":"coding_lsp_symbol_navigation","expected":"pass"}
+{"id":"coding_shadow_git_bash_rewind","kind":"coding_shadow_git_bash_rewind","expected":"pass"}
+{"id":"coding_lazy_mcp_tool_search","kind":"coding_lazy_mcp_tool_search","expected":"pass"}

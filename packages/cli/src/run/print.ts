@@ -18,6 +18,7 @@ import {
   resolveRunWorkspaceTrust,
   trustRuntimeOptions,
 } from "./trust-prompt.ts";
+import { prepareCliWorktree } from "./worktree.ts";
 
 function writeRuntimeWarnings(runtime: CodepunkRuntime): void {
   for (const warning of runtime.loadedConfig.warnings) {
@@ -184,12 +185,14 @@ export async function runPrint(
       `print mode exposes read-only tools unless --headless-policy grants write or shell; --permission-mode ${options.permissionMode} would not take effect`,
     );
   }
+  const isolatedWorktree = await prepareCliWorktree(options.worktree);
+  const effectiveCwd = isolatedWorktree?.cwd ?? process.cwd();
   let outputSchema: Record<string, unknown> | null = null;
   if (options.jsonSchema !== undefined) {
     try {
       outputSchema = await loadJsonOutputSchema(
         options.jsonSchema,
-        process.cwd(),
+        effectiveCwd,
       );
     } catch (error) {
       if (error instanceof JsonSchemaValidationError) {
@@ -202,12 +205,12 @@ export async function runPrint(
     outputSchema === null
       ? prompt
       : `${prompt}${buildJsonSchemaPromptSuffix(outputSchema)}`;
-  const forkedSessionId = await prepareFork(options);
+  const forkedSessionId = await prepareFork(options, effectiveCwd);
   const selector =
     forkedSessionId === undefined
       ? sessionSelector(options.session)
       : { sessionId: forkedSessionId };
-  const project = await findDeliveryRoot(process.cwd());
+  const project = await findDeliveryRoot(effectiveCwd);
   const workspaceTrust = await resolveRunWorkspaceTrust(
     options,
     project,
@@ -218,7 +221,7 @@ export async function runPrint(
     projectPaths(project),
   );
   const runtime = await createRuntime({
-    cwd: process.cwd(),
+    cwd: effectiveCwd,
     additionalDirs: options.additionalDirs,
     environment: process.env,
     configOverrides: overrides,

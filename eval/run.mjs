@@ -860,6 +860,146 @@ async function runCodingPostWriteDiagnostics(paths, ledger) {
   assert.doesNotMatch(cleanText, /\[post-write diagnostics\]/u);
 }
 
+async function runCodingLspSymbolNavigation(paths, ledger) {
+  const srcDir = path.join(paths.workspace, "src");
+  await fs.mkdir(srcDir, { recursive: true });
+  await fs.writeFile(
+    path.join(srcDir, "math.ts"),
+    [
+      "export interface ChecksumResult {",
+      "  readonly digest: number;",
+      "}",
+      "",
+      "export function computeChecksum(values: readonly number[]): ChecksumResult {",
+      "  return { digest: values.reduce((a, b) => a + b, 0) };",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(srcDir, "app.ts"),
+    [
+      'import { computeChecksum } from "./math.ts";',
+      "export const total = computeChecksum([1, 2, 3]);",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const lsp = await wrappedTool(paths, ledger, "lsp_query");
+  const defs = await execute(lsp, "eval-lsp-def-1", {
+    action: "definition",
+    symbol: "computeChecksum",
+  });
+  assert.notEqual(defs.isError, true);
+  assert.match(
+    defs.content.map((b) => b.text ?? "").join("\n"),
+    /src\/math\.ts:5/u,
+  );
+  const refs = await execute(lsp, "eval-lsp-ref-1", {
+    action: "references",
+    symbol: "computeChecksum",
+  });
+  assert.notEqual(refs.isError, true);
+  assert.match(
+    refs.content.map((b) => b.text ?? "").join("\n"),
+    /src\/app\.ts:2/u,
+  );
+  const syms = await execute(lsp, "eval-lsp-sym-1", {
+    action: "symbols",
+    path: "src/math.ts",
+  });
+  assert.notEqual(syms.isError, true);
+  assert.match(
+    syms.content.map((b) => b.text ?? "").join("\n"),
+    /ChecksumResult/u,
+  );
+}
+
+async function runCodingShadowGitBashRewind(paths, ledger) {
+  const tracked = path.join(paths.workspace, "tracked.txt");
+  const generated = path.join(paths.workspace, "generated.log");
+  await fs.writeFile(tracked, "v0\n", "utf8");
+  const shadowGit = new core.ShadowGitStore({
+    sessionDir: path.join(paths.home, "shadow-session"),
+    workspaceRoot: paths.workspace,
+  });
+  const write = await wrappedTool(paths, ledger, "write", { shadowGit });
+  await execute(write, "eval-shadow-write-1", {
+    path: "tracked.txt",
+    content: "v1\n",
+  });
+  const directShell = new core.UnsandboxedShell();
+  const bash = await wrappedTool(paths, ledger, "bash", {
+    sandbox: directShell,
+    shadowGit,
+  });
+  const bashRes = await execute(bash, "eval-shadow-bash-1", {
+    command: `${JSON.stringify(process.execPath)} -e 'const fs=require("node:fs"); fs.writeFileSync("tracked.txt","v2\\n"); fs.writeFileSync("generated.log","artifact\\n");'`,
+  });
+  assert.notEqual(bashRes.isError, true);
+  assert.equal(await fs.readFile(tracked, "utf8"), "v2\n");
+  assert.equal(await fs.readFile(generated, "utf8"), "artifact\n");
+
+  const step1 = await shadowGit.rewindSteps(1);
+  assert.equal(step1.snapshot.tool, "bash");
+  assert.ok(step1.restoredFiles.includes("tracked.txt"));
+  assert.ok(step1.removedAddedFiles.includes("generated.log"));
+  assert.equal(await fs.readFile(tracked, "utf8"), "v1\n");
+  await assert.rejects(() => fs.access(generated));
+
+  const step2 = await shadowGit.rewindSteps(1);
+  assert.equal(step2.snapshot.tool, "write");
+  assert.ok(step2.restoredFiles.includes("tracked.txt"));
+  assert.equal(await fs.readFile(tracked, "utf8"), "v0\n");
+}
+
+async function runCodingLazyMcpToolSearch(paths, ledger) {
+  let active = ["tool_search"];
+  const catalog = [
+    {
+      name: "mcp__github__search_issues",
+      description: "Search GitHub issues and pull requests by query",
+      exposure: "deferred",
+      namespace: { name: "github" },
+    },
+    {
+      name: "mcp__postgres__query",
+      description: "Execute a read-only SQL query",
+      exposure: "deferred",
+      namespace: { name: "postgres" },
+    },
+  ];
+  const rawSearch = core.createToolSearchTool(() => ({
+    getActiveToolNames: () => [...active],
+    getAllTools: () => catalog,
+    setActiveToolsByName: (names) => {
+      active = [...names];
+    },
+  }));
+  const search = await core.wrapToolDefinition(
+    rawSearch,
+    wrapOptions(paths, ledger),
+  );
+  const hit = await execute(search, "eval-tool-search-1", {
+    query: "github issues",
+  });
+  assert.notEqual(hit.isError, true);
+  const hitText = hit.content.map((b) => b.text ?? "").join("\n");
+  assert.match(hitText, /mcp__github__search_issues/u);
+  assert.equal(active.includes("mcp__github__search_issues"), true);
+  assert.equal(active.includes("mcp__postgres__query"), false);
+
+  const miss = await execute(search, "eval-tool-search-2", {
+    query: "kubernetes_nonexistent_xyz",
+  });
+  assert.notEqual(miss.isError, true);
+  assert.match(
+    miss.content.map((b) => b.text ?? "").join("\n"),
+    /No matching tools found\./u,
+  );
+}
+
 async function runCase(testCase) {
   const paths = await fixture();
   paths.caseId = testCase.id;
@@ -900,6 +1040,15 @@ async function runCase(testCase) {
         return;
       case "coding_post_write_diagnostics":
         await runCodingPostWriteDiagnostics(paths, paths.ledger);
+        return;
+      case "coding_lsp_symbol_navigation":
+        await runCodingLspSymbolNavigation(paths, paths.ledger);
+        return;
+      case "coding_shadow_git_bash_rewind":
+        await runCodingShadowGitBashRewind(paths, paths.ledger);
+        return;
+      case "coding_lazy_mcp_tool_search":
+        await runCodingLazyMcpToolSearch(paths, paths.ledger);
         return;
       default:
         fail(`unknown case kind ${testCase.kind}`);

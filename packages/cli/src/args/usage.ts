@@ -132,6 +132,7 @@ function usageOptions(): string[] {
     "      --session <id>       resume a session by id",
     "      --fork <id>          clone a session into a new child session",
     "      --new-session        force a new session",
+    "  -w, --worktree [name]    run inside an isolated git worktree",
     "      --model <provider/id>",
     "      --provider <id>",
     "      --thinking <level>",

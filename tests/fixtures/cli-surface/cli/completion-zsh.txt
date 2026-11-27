@@ -34,6 +34,7 @@ _codepunk() {
     '--session[resume a session by id]:value:'
     '--fork[clone a session into a child]:value:'
     '--new-session[force a new session]'
+    '--worktree[run inside an isolated git worktree]:value:'
     '--model[select provider/model]:value:'
     '--provider[select a provider]:value:'
     '--thinking[set the thinking level]:value:'

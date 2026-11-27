@@ -14,6 +14,7 @@ export const ACP_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const ACP_METHODS = [
   "initialize",
   "session/new",
+  "session/load",
   "session/prompt",
   "session/cancel",
 ] as const;
@@ -61,23 +62,103 @@ export const ACP_ERROR_MESSAGES = {
 
 const ReasonSchema = Type.String({ minLength: 1, maxLength: 2_000 });
 
-export const AcpInitializeParamsSchema = Type.Object(
+export const AcpPromptTextBlockSchema = Type.Object(
   {
-    protocolVersion: Type.Literal(ACP_PROTOCOL_VERSION),
-    scopes: Type.Array(
-      Type.Union(DAEMON_SCOPES.map((scope) => Type.Literal(scope))),
-      { uniqueItems: true },
-    ),
+    type: Type.Literal("text"),
+    text: Type.String({ minLength: 1, maxLength: 32_000 }),
   },
-  { additionalProperties: false },
+  { additionalProperties: true },
 );
 
-export const AcpSessionNewParamsSchema = Type.Object(
+export const AcpPromptResourceLinkBlockSchema = Type.Object(
   {
-    scopes: Type.Array(
-      Type.Union(DAEMON_SCOPES.map((scope) => Type.Literal(scope))),
-      { uniqueItems: true },
+    type: Type.Literal("resource_link"),
+    uri: Type.String({ minLength: 1, maxLength: 2_048 }),
+    name: Type.Optional(Type.String({ maxLength: 512 })),
+    description: Type.Optional(Type.String({ maxLength: 2_000 })),
+  },
+  { additionalProperties: true },
+);
+
+export const AcpPromptEmbeddedResourceBlockSchema = Type.Object(
+  {
+    type: Type.Literal("resource"),
+    resource: Type.Object(
+      {
+        uri: Type.String({ minLength: 1, maxLength: 2_048 }),
+        text: Type.Optional(Type.String({ maxLength: 32_000 })),
+        mimeType: Type.Optional(Type.String({ maxLength: 256 })),
+      },
+      { additionalProperties: true },
     ),
+  },
+  { additionalProperties: true },
+);
+
+export const AcpPromptBlockSchema = Type.Union([
+  AcpPromptTextBlockSchema,
+  AcpPromptResourceLinkBlockSchema,
+  AcpPromptEmbeddedResourceBlockSchema,
+]);
+
+export type AcpPromptBlock = Static<typeof AcpPromptBlockSchema>;
+
+export const AcpInitializeParamsSchema = Type.Union([
+  Type.Object(
+    {
+      protocolVersion: Type.Literal(ACP_PROTOCOL_VERSION),
+      scopes: Type.Array(
+        Type.Union(DAEMON_SCOPES.map((scope) => Type.Literal(scope))),
+        { uniqueItems: true },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      protocolVersion: Type.Optional(Type.Literal(ACP_PROTOCOL_VERSION)),
+      clientCapabilities: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown()),
+      ),
+      clientInfo: Type.Optional(
+        Type.Object(
+          {
+            name: Type.String({ minLength: 1, maxLength: 128 }),
+            title: Type.Optional(Type.String({ maxLength: 256 })),
+            version: Type.Optional(Type.String({ maxLength: 128 })),
+          },
+          { additionalProperties: true },
+        ),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const AcpSessionNewParamsSchema = Type.Union([
+  Type.Object(
+    {
+      scopes: Type.Array(
+        Type.Union(DAEMON_SCOPES.map((scope) => Type.Literal(scope))),
+        { uniqueItems: true },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
+      mcpServers: Type.Optional(Type.Array(Type.Unknown())),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const AcpSessionLoadParamsSchema = Type.Object(
+  {
+    sessionId: DaemonSessionIdSchema,
+    cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
+    mcpServers: Type.Optional(Type.Array(Type.Unknown())),
   },
   { additionalProperties: false },
 );
@@ -85,8 +166,11 @@ export const AcpSessionNewParamsSchema = Type.Object(
 export const AcpSessionPromptParamsSchema = Type.Object(
   {
     sessionId: DaemonSessionIdSchema,
-    prompt: Type.String({ minLength: 1, maxLength: 32_000 }),
-    reason: ReasonSchema,
+    prompt: Type.Union([
+      Type.String({ minLength: 1, maxLength: 32_000 }),
+      Type.Array(AcpPromptBlockSchema, { minItems: 1, maxItems: 64 }),
+    ]),
+    reason: Type.Optional(ReasonSchema),
   },
   { additionalProperties: false },
 );
@@ -94,7 +178,7 @@ export const AcpSessionPromptParamsSchema = Type.Object(
 export const AcpSessionCancelParamsSchema = Type.Object(
   {
     sessionId: DaemonSessionIdSchema,
-    reason: ReasonSchema,
+    reason: Type.Optional(ReasonSchema),
   },
   { additionalProperties: false },
 );
@@ -108,7 +192,7 @@ export const AcpInitializeRequestSchema = Type.Object(
   {
     ...AcpRequestBase,
     method: Type.Literal("initialize"),
-    params: AcpInitializeParamsSchema,
+    params: Type.Optional(AcpInitializeParamsSchema),
   },
   { additionalProperties: false },
 );
@@ -117,7 +201,16 @@ export const AcpSessionNewRequestSchema = Type.Object(
   {
     ...AcpRequestBase,
     method: Type.Literal("session/new"),
-    params: AcpSessionNewParamsSchema,
+    params: Type.Optional(AcpSessionNewParamsSchema),
+  },
+  { additionalProperties: false },
+);
+
+export const AcpSessionLoadRequestSchema = Type.Object(
+  {
+    ...AcpRequestBase,
+    method: Type.Literal("session/load"),
+    params: AcpSessionLoadParamsSchema,
   },
   { additionalProperties: false },
 );
@@ -133,7 +226,8 @@ export const AcpSessionPromptRequestSchema = Type.Object(
 
 export const AcpSessionCancelRequestSchema = Type.Object(
   {
-    ...AcpRequestBase,
+    jsonrpc: Type.Literal("2.0"),
+    id: Type.Optional(IdSchema),
     method: Type.Literal("session/cancel"),
     params: AcpSessionCancelParamsSchema,
   },
@@ -143,6 +237,7 @@ export const AcpSessionCancelRequestSchema = Type.Object(
 export const AcpRequestSchema = Type.Union([
   AcpInitializeRequestSchema,
   AcpSessionNewRequestSchema,
+  AcpSessionLoadRequestSchema,
   AcpSessionPromptRequestSchema,
   AcpSessionCancelRequestSchema,
 ]);
@@ -168,6 +263,33 @@ export const AcpInitializeResultSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AcpStandardInitializeResultSchema = Type.Object(
+  {
+    protocolVersion: Type.Literal(ACP_PROTOCOL_VERSION),
+    agentCapabilities: Type.Object(
+      {
+        loadSession: Type.Boolean(),
+        promptCapabilities: Type.Object(
+          {
+            embeddedContext: Type.Boolean(),
+          },
+          { additionalProperties: false },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    agentInfo: Type.Object(
+      {
+        name: Type.String({ minLength: 1, maxLength: 64 }),
+        title: Type.String({ minLength: 1, maxLength: 128 }),
+        version: Type.String({ minLength: 1, maxLength: 64 }),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const AcpSessionNewResultSchema = Type.Object(
   {
     sessionId: DaemonSessionIdSchema,
@@ -176,6 +298,13 @@ export const AcpSessionNewResultSchema = Type.Object(
       { uniqueItems: true },
     ),
     writerLease: DaemonWriterLeaseSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const AcpStandardSessionResultSchema = Type.Object(
+  {
+    sessionId: DaemonSessionIdSchema,
   },
   { additionalProperties: false },
 );
@@ -190,15 +319,39 @@ export const AcpControlResultSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AcpStandardPromptResultSchema = Type.Object(
+  {
+    stopReason: Type.Union([
+      Type.Literal("end_turn"),
+      Type.Literal("cancelled"),
+    ]),
+    sessionId: DaemonSessionIdSchema,
+    runId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  },
+  { additionalProperties: false },
+);
+
 export const AcpResultSchema = Type.Union([
   AcpInitializeResultSchema,
+  AcpStandardInitializeResultSchema,
   AcpSessionNewResultSchema,
+  AcpStandardSessionResultSchema,
   AcpControlResultSchema,
+  AcpStandardPromptResultSchema,
 ]);
 
 export type AcpInitializeResult = Static<typeof AcpInitializeResultSchema>;
+export type AcpStandardInitializeResult = Static<
+  typeof AcpStandardInitializeResultSchema
+>;
 export type AcpSessionNewResult = Static<typeof AcpSessionNewResultSchema>;
+export type AcpStandardSessionResult = Static<
+  typeof AcpStandardSessionResultSchema
+>;
 export type AcpControlResult = Static<typeof AcpControlResultSchema>;
+export type AcpStandardPromptResult = Static<
+  typeof AcpStandardPromptResultSchema
+>;
 
 export const AcpSuccessResponseSchema = Type.Object(
   {
@@ -231,7 +384,7 @@ export const AcpResponseSchema = Type.Union([
 
 export type AcpResponse = Static<typeof AcpResponseSchema>;
 
-export const AcpNotificationSchema = Type.Object(
+export const AcpEventNotificationSchema = Type.Object(
   {
     jsonrpc: Type.Literal("2.0"),
     method: Type.Literal("session/event"),
@@ -245,5 +398,47 @@ export const AcpNotificationSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const AcpSessionUpdateNotificationSchema = Type.Object(
+  {
+    jsonrpc: Type.Literal("2.0"),
+    method: Type.Literal("session/update"),
+    params: Type.Object(
+      {
+        sessionId: DaemonSessionIdSchema,
+        update: Type.Union([
+          Type.Object(
+            {
+              sessionUpdate: Type.Literal("agent_message_chunk"),
+              content: Type.Object(
+                {
+                  type: Type.Literal("text"),
+                  text: Type.String({ maxLength: 64_000 }),
+                },
+                { additionalProperties: false },
+              ),
+            },
+            { additionalProperties: false },
+          ),
+          Type.Object(
+            {
+              sessionUpdate: Type.Literal("status"),
+              kind: Type.String({ minLength: 1, maxLength: 64 }),
+              reason: Type.Optional(Type.String({ maxLength: 2_000 })),
+            },
+            { additionalProperties: false },
+          ),
+        ]),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const AcpNotificationSchema = Type.Union([
+  AcpEventNotificationSchema,
+  AcpSessionUpdateNotificationSchema,
+]);
 
 export type AcpNotification = Static<typeof AcpNotificationSchema>;

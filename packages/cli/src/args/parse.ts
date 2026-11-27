@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { DAEMON_SCOPES, type DaemonScope } from "codepunk-protocol";
 import {
   APPROVAL_MODE_NAMES,
+  ConfigError,
   PERMISSION_PROFILE_NAMES,
   WORKSPACE_TRUST_RESOURCE_KINDS,
   isPermissionProfile,
@@ -14,9 +15,31 @@ import { parseTrustConflicts, parseTrustFlags } from "./parse-trust.ts";
 
 type ParsedValues = ReturnType<typeof parseArguments>["values"];
 
+function normalizeWorktreeArgv(argv: string[]): string[] {
+  const out: string[] = [];
+  let afterTerminator = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i]!;
+    if (!afterTerminator && token === "--") {
+      afterTerminator = true;
+      out.push(token);
+      continue;
+    }
+    if (!afterTerminator && (token === "--worktree" || token === "-w")) {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        out.push("--worktree=auto");
+        continue;
+      }
+    }
+    out.push(token);
+  }
+  return out;
+}
+
 function parseArguments(argv: string[]) {
   return parseArgs({
-    args: argv,
+    args: normalizeWorktreeArgv(argv),
     allowPositionals: true,
     strict: true,
     options: {
@@ -29,6 +52,7 @@ function parseArguments(argv: string[]) {
       "new-session-id": { type: "string" },
       "parent-session-id": { type: "string" },
       "new-session": { type: "boolean" },
+      worktree: { type: "string", short: "w" },
       model: { type: "string" },
       provider: { type: "string" },
       thinking: { type: "string" },
@@ -229,6 +253,14 @@ function parseSessionSelectionFlags(values: ParsedValues): {
     sandbox !== "uncovered"
   ) {
     throw new Error("--sandbox must be required or uncovered");
+  }
+  if (
+    values.worktree !== undefined &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(values.worktree)
+  ) {
+    throw new ConfigError(
+      "--worktree name must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    );
   }
   return { sandbox };
 }
@@ -446,6 +478,7 @@ export function parseCli(argv: string[]): CliOptions {
     newSessionId: values["new-session-id"],
     parentSessionId: values["parent-session-id"],
     newSession: values["new-session"] === true,
+    worktree: values.worktree,
     model: values.model,
     provider: values.provider,
     thinking: values.thinking,

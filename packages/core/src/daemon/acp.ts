@@ -13,10 +13,13 @@ import {
   DAEMON_WRITE_LEASE_TTL_MS,
   validateSchema,
   type AcpInitializeResult,
+  type AcpPromptBlock,
   type AcpResponse,
   type AcpSessionNewResult,
+  type AcpStandardInitializeResult,
+  type AcpStandardPromptResult,
+  type AcpStandardSessionResult,
   type DaemonControlEvent,
-  type DaemonControlResult,
   type DaemonScope,
   type DaemonWriterLease,
 } from "codepunk-protocol";
@@ -27,6 +30,7 @@ import {
   ControlScopeError,
   ControlWriteConflictError,
   type ControlBackend,
+  type ControlRunResult,
 } from "./control.ts";
 
 export interface AcpServerOptions {
@@ -35,6 +39,7 @@ export interface AcpServerOptions {
   output: NodeJS.WritableStream;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
+  agentVersion?: string;
 }
 
 interface AcpSessionState {
@@ -48,6 +53,8 @@ interface AcpRunState {
   cancelResponse: Promise<void>;
   releaseCancel: () => void;
 }
+
+type AcpWireMode = "scoped" | "standard";
 
 type AcpErrorCode =
   | -32700
@@ -63,27 +70,58 @@ type AcpErrorCode =
   | 49006
   | 49007;
 
-type AcpRequest =
+type AcpWireRequest =
   | {
       id: string | number;
       method: "initialize";
-      params: { protocolVersion: 1; scopes: DaemonScope[] };
+      params?: {
+        protocolVersion?: 1;
+        scopes?: DaemonScope[];
+        clientCapabilities?: Record<string, unknown>;
+        clientInfo?: { name: string; title?: string; version?: string };
+      };
     }
   | {
       id: string | number;
       method: "session/new";
-      params: { scopes: DaemonScope[] };
+      params?: {
+        scopes?: DaemonScope[];
+        cwd?: string;
+        mcpServers?: unknown[];
+      };
+    }
+  | {
+      id: string | number;
+      method: "session/load";
+      params: {
+        sessionId: string;
+        cwd?: string;
+        mcpServers?: unknown[];
+      };
     }
   | {
       id: string | number;
       method: "session/prompt";
-      params: { sessionId: string; prompt: string; reason: string };
+      params: {
+        sessionId: string;
+        prompt: string | AcpPromptBlock[];
+        reason?: string;
+      };
     }
   | {
-      id: string | number;
+      id?: string | number;
       method: "session/cancel";
-      params: { sessionId: string; reason: string };
+      params: {
+        sessionId: string;
+        reason?: string;
+      };
     };
+
+const STANDARD_ACP_DEFAULT_SCOPES: readonly DaemonScope[] = [
+  "daemon:read",
+  "sessions:read",
+  "runs:write",
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -106,17 +144,49 @@ function hasControlEvent(
   return events.some((event) => event.kind === kind);
 }
 
+export function normalizeAcpPrompt(
+  prompt: string | readonly AcpPromptBlock[],
+): string | null {
+  if (typeof prompt === "string") {
+    return prompt.length > 0 && prompt.length <= 32_000 ? prompt : null;
+  }
+  const parts: string[] = [];
+  for (const block of prompt) {
+    if (block.type === "text") {
+      parts.push(block.text);
+    } else if (block.type === "resource_link") {
+      const label = block.name ? `${block.name} (${block.uri})` : block.uri;
+      parts.push(
+        block.description
+          ? `[Resource link: ${label} - ${block.description}]`
+          : `[Resource link: ${label}]`,
+      );
+    } else if (block.type === "resource") {
+      const body =
+        typeof block.resource.text === "string" &&
+        block.resource.text.length > 0
+          ? `\n${block.resource.text}`
+          : "";
+      parts.push(`[Resource: ${block.resource.uri}]${body}`);
+    }
+  }
+  const joined = parts.join("\n\n").trim();
+  return joined.length > 0 && joined.length <= 32_000 ? joined : null;
+}
+
 export class AcpServer {
   private readonly backend: ControlBackend;
   private readonly output: NodeJS.WritableStream;
   private readonly input: NodeJS.ReadableStream;
   private readonly maxRequestBytes: number;
   private readonly maxResponseBytes: number;
+  private readonly agentVersion: string;
   private readonly sessions = new Map<string, AcpSessionState>();
   private readonly activeRuns = new Map<string, AcpRunState>();
   private readonly tasks = new Set<Promise<void>>();
   private setupTail: Promise<void> = Promise.resolve();
   private scopes: readonly DaemonScope[] = [];
+  private mode: AcpWireMode = "scoped";
   private initialized = false;
 
   constructor(options: AcpServerOptions) {
@@ -125,6 +195,7 @@ export class AcpServer {
     this.output = options.output;
     this.maxRequestBytes = options.maxRequestBytes ?? ACP_REQUEST_MAX_BYTES;
     this.maxResponseBytes = options.maxResponseBytes ?? ACP_RESPONSE_MAX_BYTES;
+    this.agentVersion = options.agentVersion ?? "0.1.0";
   }
 
   async run(): Promise<void> {
@@ -173,9 +244,34 @@ export class AcpServer {
       this.writeError(requestId(value), -32600);
       return;
     }
-    const request = validation.value as unknown as AcpRequest;
+    const request = validation.value as unknown as AcpWireRequest;
     if (request.method === "initialize") {
-      this.scopes = request.params.scopes;
+      this.handleInitialize(request);
+      return;
+    }
+    const setup = this.setupTail;
+    if (request.method === "session/new") {
+      const handler = this.handleNewSession(request);
+      this.setupTail = handler;
+      await handler;
+      return;
+    }
+    if (request.method === "session/load") {
+      const handler = this.handleLoadSession(request, setup);
+      this.setupTail = handler;
+      await handler;
+      return;
+    }
+    await this.handleControlRequest(request, setup);
+  }
+
+  private handleInitialize(
+    request: Extract<AcpWireRequest, { method: "initialize" }>,
+  ): void {
+    const explicitScopes = request.params?.scopes;
+    if (Array.isArray(explicitScopes)) {
+      this.mode = "scoped";
+      this.scopes = explicitScopes;
       this.initialized = true;
       this.writeResponse({
         jsonrpc: "2.0",
@@ -192,41 +288,73 @@ export class AcpServer {
       });
       return;
     }
-    const setup = this.setupTail;
-    if (request.method === "session/new") {
-      const handler = this.handleNewSession(request);
-      this.setupTail = handler;
-      await handler;
-      return;
-    }
-    await this.handleControlRequest(request, setup);
+    this.mode = "standard";
+    this.scopes = [...STANDARD_ACP_DEFAULT_SCOPES];
+    this.initialized = true;
+    const result: AcpStandardInitializeResult = {
+      protocolVersion: ACP_PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: {
+          embeddedContext: true,
+        },
+      },
+      agentInfo: {
+        name: "codepunk",
+        title: "Codepunk",
+        version: this.agentVersion,
+      },
+    };
+    this.writeResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result,
+    });
   }
 
   private async handleNewSession(
-    request: Extract<AcpRequest, { method: "session/new" }>,
+    request: Extract<AcpWireRequest, { method: "session/new" }>,
   ): Promise<void> {
     try {
       if (!this.initialized) {
         throw new ControlScopeError("initialize must be called first");
       }
+      const requestedScopes = request.params?.scopes;
+      const effectiveScopes =
+        requestedScopes !== undefined ? requestedScopes : [...this.scopes];
       if (
         !this.scopes.includes("runs:write") ||
-        request.params.scopes.some((scope) => !this.scopes.includes(scope))
+        effectiveScopes.some((scope) => !this.scopes.includes(scope))
       ) {
         throw new ControlScopeError();
       }
-      const session = await this.backend.newSession(request.params.scopes);
+      const cwd = request.params?.cwd;
+      const session = await this.backend.newSession(
+        effectiveScopes,
+        cwd === undefined ? undefined : { cwd },
+      );
       this.sessions.set(session.sessionId, {
         sessionId: session.sessionId,
-        scopes: request.params.scopes,
+        scopes: effectiveScopes,
         writerLease: session.writerLease,
       });
+      if (this.mode === "standard" && requestedScopes === undefined) {
+        const result: AcpStandardSessionResult = {
+          sessionId: session.sessionId,
+        };
+        this.writeResponse({
+          jsonrpc: "2.0",
+          id: request.id,
+          result,
+        });
+        return;
+      }
       this.writeResponse({
         jsonrpc: "2.0",
         id: request.id,
         result: {
           sessionId: session.sessionId,
-          scopes: request.params.scopes,
+          scopes: [...effectiveScopes],
           writerLease: session.writerLease,
         } as AcpSessionNewResult,
       });
@@ -235,8 +363,57 @@ export class AcpServer {
     }
   }
 
+  private async handleLoadSession(
+    request: Extract<AcpWireRequest, { method: "session/load" }>,
+    setup: Promise<void>,
+  ): Promise<void> {
+    try {
+      await setup;
+      if (!this.initialized) {
+        throw new ControlScopeError("initialize must be called first");
+      }
+      if (
+        !this.scopes.includes("sessions:read") ||
+        !this.scopes.includes("runs:write")
+      ) {
+        throw new ControlScopeError();
+      }
+      const existing = this.sessions.get(request.params.sessionId);
+      if (existing === undefined) {
+        if (typeof this.backend.loadSession !== "function") {
+          throw new ControlNotFoundError();
+        }
+        const loaded = await this.backend.loadSession(
+          request.params.sessionId,
+          this.scopes,
+          request.params.cwd === undefined
+            ? undefined
+            : { cwd: request.params.cwd },
+        );
+        this.sessions.set(loaded.sessionId, {
+          sessionId: loaded.sessionId,
+          scopes: [...this.scopes],
+          writerLease: loaded.writerLease,
+        });
+      }
+      const result: AcpStandardSessionResult = {
+        sessionId: request.params.sessionId,
+      };
+      this.writeResponse({
+        jsonrpc: "2.0",
+        id: request.id,
+        result,
+      });
+    } catch (error) {
+      this.writeError(request.id, this.errorCode(error));
+    }
+  }
+
   private async handleControlRequest(
-    request: Exclude<AcpRequest, { method: "initialize" | "session/new" }>,
+    request: Extract<
+      AcpWireRequest,
+      { method: "session/prompt" | "session/cancel" }
+    >,
     setup: Promise<void>,
   ): Promise<void> {
     try {
@@ -265,14 +442,22 @@ export class AcpServer {
       }
       await this.cancelRun(request, session);
     } catch (error) {
-      this.writeError(request.id, this.errorCode(error));
+      if (request.id !== undefined) {
+        this.writeError(request.id, this.errorCode(error));
+      }
     }
   }
 
   private async runPrompt(
-    request: Extract<AcpRequest, { method: "session/prompt" }>,
+    request: Extract<AcpWireRequest, { method: "session/prompt" }>,
     session: AcpSessionState,
   ): Promise<void> {
+    const normalizedPrompt = normalizeAcpPrompt(request.params.prompt);
+    if (normalizedPrompt === null) {
+      this.writeError(request.id, -32602);
+      return;
+    }
+    const reason = request.params.reason ?? "acp prompt";
     let releaseCancel = (): void => {};
     const run: AcpRunState = {
       cancelRequested: false,
@@ -282,12 +467,12 @@ export class AcpServer {
       releaseCancel: () => releaseCancel(),
     };
     this.activeRuns.set(request.params.sessionId, run);
-    let result: DaemonControlResult;
+    let result: ControlRunResult;
     try {
       result = await this.backend.run({
         sessionId: request.params.sessionId,
-        prompt: request.params.prompt,
-        reason: request.params.reason,
+        prompt: normalizedPrompt,
+        reason,
         writerLease: session.writerLease,
       });
     } catch (error) {
@@ -296,7 +481,7 @@ export class AcpServer {
       }
       if (run.cancelRequested) {
         await run.cancelResponse;
-        this.writeError(request.id, 49007);
+        this.writeCancelledPrompt(request.id, request.params.sessionId);
       } else if (error instanceof ControlRunError) {
         this.writeError(request.id, 49006);
       } else {
@@ -309,14 +494,29 @@ export class AcpServer {
       return;
     }
     session.writerLease = result.writer_lease;
-    this.emitEvents(request.params.sessionId, result.events);
+    this.emitEvents(
+      request.params.sessionId,
+      result.events,
+      result.assistantText,
+    );
     if (run.cancelRequested) {
       await run.cancelResponse;
-      this.writeError(request.id, 49007);
+      this.writeCancelledPrompt(request.id, request.params.sessionId);
     } else if (hasControlEvent(result.events, "control/error")) {
       this.writeError(request.id, 49006);
     } else if (hasControlEvent(result.events, "control/stopped")) {
-      this.writeError(request.id, 49007);
+      this.writeCancelledPrompt(request.id, request.params.sessionId);
+    } else if (this.mode === "standard") {
+      const promptResult: AcpStandardPromptResult = {
+        stopReason: "end_turn",
+        sessionId: request.params.sessionId,
+        runId: result.run_id,
+      };
+      this.writeResponse({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: promptResult,
+      });
     } else {
       this.writeResponse({
         jsonrpc: "2.0",
@@ -333,6 +533,22 @@ export class AcpServer {
     run.releaseCancel();
   }
 
+  private writeCancelledPrompt(id: string | number, sessionId: string): void {
+    if (this.mode === "standard") {
+      const cancelledResult: AcpStandardPromptResult = {
+        stopReason: "cancelled",
+        sessionId,
+      };
+      this.writeResponse({
+        jsonrpc: "2.0",
+        id,
+        result: cancelledResult,
+      });
+      return;
+    }
+    this.writeError(id, 49007);
+  }
+
   private finishRun(sessionId: string, run: AcpRunState): void {
     if (this.activeRuns.get(sessionId) === run) {
       this.activeRuns.delete(sessionId);
@@ -340,9 +556,10 @@ export class AcpServer {
   }
 
   private async cancelRun(
-    request: Extract<AcpRequest, { method: "session/cancel" }>,
+    request: Extract<AcpWireRequest, { method: "session/cancel" }>,
     session: AcpSessionState,
   ): Promise<void> {
+    const reason = request.params.reason ?? "acp cancel";
     const run = this.activeRuns.get(request.params.sessionId);
     if (run !== undefined) {
       run.cancelRequested = true;
@@ -350,21 +567,12 @@ export class AcpServer {
         const result = await this.backend.stop({
           sessionId: request.params.sessionId,
           message: "",
-          reason: request.params.reason,
+          reason,
           writerLease: session.writerLease,
         });
         session.writerLease = result.writer_lease;
         this.emitEvents(request.params.sessionId, result.events);
-        this.writeResponse({
-          jsonrpc: "2.0",
-          id: request.id,
-          result: {
-            sessionId: request.params.sessionId,
-            runId: result.run_id,
-            events: [],
-            writerLease: result.writer_lease,
-          },
-        });
+        this.writeCancelAck(request.id, request.params.sessionId, result);
       } finally {
         run.releaseCancel();
       }
@@ -373,16 +581,35 @@ export class AcpServer {
     const result = await this.backend.stop({
       sessionId: request.params.sessionId,
       message: "",
-      reason: request.params.reason,
+      reason,
       writerLease: session.writerLease,
     });
     session.writerLease = result.writer_lease;
     this.emitEvents(request.params.sessionId, result.events);
+    this.writeCancelAck(request.id, request.params.sessionId, result);
+  }
+
+  private writeCancelAck(
+    id: string | number | undefined,
+    sessionId: string,
+    result: { run_id: string; writer_lease: DaemonWriterLease },
+  ): void {
+    if (id === undefined) {
+      return;
+    }
+    if (this.mode === "standard") {
+      this.writeResponse({
+        jsonrpc: "2.0",
+        id,
+        result: { sessionId },
+      });
+      return;
+    }
     this.writeResponse({
       jsonrpc: "2.0",
-      id: request.id,
+      id,
       result: {
-        sessionId: request.params.sessionId,
+        sessionId,
         runId: result.run_id,
         events: [],
         writerLease: result.writer_lease,
@@ -409,7 +636,50 @@ export class AcpServer {
   private emitEvents(
     sessionId: string,
     events: readonly DaemonControlEvent[],
+    assistantText?: string,
   ): void {
+    if (this.mode === "standard") {
+      if (assistantText !== undefined && assistantText.length > 0) {
+        const chunkNotification = {
+          jsonrpc: "2.0" as const,
+          method: "session/update" as const,
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk" as const,
+              content: {
+                type: "text" as const,
+                text: assistantText,
+              },
+            },
+          },
+        };
+        if (validateSchema(AcpNotificationSchema, chunkNotification).ok) {
+          this.writeRaw(chunkNotification);
+        }
+      }
+      for (const event of events) {
+        const notification = {
+          jsonrpc: "2.0" as const,
+          method: "session/update" as const,
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "status" as const,
+              kind: event.kind,
+              ...(event.reason === undefined ? {} : { reason: event.reason }),
+            },
+          },
+        };
+        const validation = validateSchema(AcpNotificationSchema, notification);
+        if (!validation.ok) {
+          this.writeError(null, -32603);
+          continue;
+        }
+        this.writeRaw(notification);
+      }
+      return;
+    }
     for (const event of events) {
       const notification = {
         jsonrpc: "2.0",

@@ -15,6 +15,7 @@ export interface CliOptions {
   newSessionId: string | undefined;
   parentSessionId: string | undefined;
   newSession: boolean;
+  worktree: string | undefined;
   model: string | undefined;
   provider: string | undefined;
   thinking: string | undefined;

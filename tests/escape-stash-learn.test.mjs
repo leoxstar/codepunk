@@ -263,7 +263,7 @@ test("sandbox.user_bash=uncovered runs interactive !cmd directly on host while b
 });
 
 test("TuiApprovalChannel offers Allow once (unsandboxed) only for srt-covered shell requests, and /stash + /learn helpers work safely", async () => {
-  // 1. TuiApprovalChannel choice filtering
+  // 1. TuiApprovalChannel choice filtering (untrusted negative control + trusted shell + non-shell)
   const seenMenus = [];
   const tuiChannel = new TuiApprovalChannel(true);
   tuiChannel.attach({
@@ -277,6 +277,29 @@ test("TuiApprovalChannel offers Allow once (unsandboxed) only for srt-covered sh
       notify() {},
     },
   });
+  const untrustedShellAnswer = await tuiChannel.ask({
+    request_id: "req-untrusted",
+    nonce_sha256: "a".repeat(64),
+    ttl_ms: 60_000,
+    worker_id: "local",
+    session_id: "s1",
+    tool_call_id: "tc-shell-untrusted",
+    channel_id: "codepunk-tui",
+    tool: "bash",
+    command: "pnpm install",
+    cwd: "/tmp",
+    coverage_preview: "srt 0.0.82 enforced; network off unless allowlisted",
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  assert.equal(untrustedShellAnswer?.unsandboxed_once, undefined);
+  assert.equal(
+    seenMenus[0].includes("Allow once (unsandboxed)"),
+    false,
+    "untrusted workspace must never offer unsandboxed shell escape",
+  );
+
+  tuiChannel.setWorkspaceTrusted(true);
   const shellAnswer = await tuiChannel.ask({
     request_id: "req-1",
     nonce_sha256: "b".repeat(64),
@@ -293,7 +316,7 @@ test("TuiApprovalChannel offers Allow once (unsandboxed) only for srt-covered sh
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
   assert.equal(shellAnswer?.unsandboxed_once, true);
-  assert.ok(seenMenus[0].includes("Allow once (unsandboxed)"));
+  assert.ok(seenMenus[1].includes("Allow once (unsandboxed)"));
 
   await tuiChannel.ask({
     request_id: "req-2",
@@ -310,7 +333,7 @@ test("TuiApprovalChannel offers Allow once (unsandboxed) only for srt-covered sh
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
   assert.equal(
-    seenMenus[1].includes("Allow once (unsandboxed)"),
+    seenMenus[2].includes("Allow once (unsandboxed)"),
     false,
     "write tool must never offer unsandboxed shell escape",
   );

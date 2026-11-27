@@ -80,12 +80,31 @@ export interface ControlApproval extends ControlLease {
   reason: string;
 }
 
+export interface ControlSessionOpenOptions {
+  cwd?: string;
+}
+
+export interface ControlRunResult extends DaemonControlResult {
+  assistantText?: string;
+}
+
 export interface ControlBackend {
-  newSession(scopes: readonly DaemonScope[]): Promise<{
+  newSession(
+    scopes: readonly DaemonScope[],
+    options?: ControlSessionOpenOptions,
+  ): Promise<{
     sessionId: string;
     writerLease: DaemonWriterLease;
   }>;
-  run(request: ControlRun): Promise<DaemonControlResult>;
+  loadSession?(
+    sessionId: string,
+    scopes: readonly DaemonScope[],
+    options?: ControlSessionOpenOptions,
+  ): Promise<{
+    sessionId: string;
+    writerLease: DaemonWriterLease;
+  }>;
+  run(request: ControlRun): Promise<ControlRunResult>;
   steer(request: ControlAction): Promise<DaemonControlResult>;
   stop(request: ControlAction): Promise<DaemonControlResult>;
   plan(request: ControlAction): Promise<DaemonControlResult>;
@@ -101,18 +120,51 @@ interface OpenRuntime {
   leaseHeartbeat: NodeJS.Timeout | null;
 }
 
+function extractLatestAssistantText(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const candidate = messages[i] as
+      { role?: unknown; content?: unknown } | undefined;
+    if (candidate?.role !== "assistant") {
+      continue;
+    }
+    if (typeof candidate.content === "string") {
+      return candidate.content;
+    }
+    if (!Array.isArray(candidate.content)) {
+      return "";
+    }
+    return candidate.content
+      .filter(
+        (part): part is { type: "text"; text: string } =>
+          part !== null &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "text" &&
+          typeof (part as { text?: unknown }).text === "string",
+      )
+      .map((part) => part.text)
+      .join("");
+  }
+  return "";
+}
+
 export class RuntimeControlBackend implements ControlBackend {
   private readonly sessions = new Map<string, OpenRuntime>();
   private nextEventSeq = 1;
   private readonly options: {
     cwd: string;
-    createRuntime: () => Promise<CodepunkRuntime>;
+    createRuntime: (input?: {
+      sessionId?: string;
+      cwd?: string;
+    }) => Promise<CodepunkRuntime>;
     now?: () => Date;
   };
 
   constructor(options: {
     cwd: string;
-    createRuntime: () => Promise<CodepunkRuntime>;
+    createRuntime: (input?: {
+      sessionId?: string;
+      cwd?: string;
+    }) => Promise<CodepunkRuntime>;
     now?: () => Date;
   }) {
     this.options = options;
@@ -120,8 +172,11 @@ export class RuntimeControlBackend implements ControlBackend {
 
   async newSession(
     _scopes: readonly DaemonScope[],
+    options?: ControlSessionOpenOptions,
   ): Promise<{ sessionId: string; writerLease: DaemonWriterLease }> {
-    const runtime = await this.options.createRuntime();
+    const runtime = await this.options.createRuntime(
+      options?.cwd === undefined ? undefined : { cwd: options.cwd },
+    );
     const now = this.now();
     const writerLease = this.lease(runtime, now);
     this.sessions.set(runtime.session.sessionId, {
@@ -133,7 +188,41 @@ export class RuntimeControlBackend implements ControlBackend {
     return { sessionId: runtime.session.sessionId, writerLease };
   }
 
-  async run(request: ControlRun): Promise<DaemonControlResult> {
+  async loadSession(
+    sessionId: string,
+    _scopes: readonly DaemonScope[],
+    options?: ControlSessionOpenOptions,
+  ): Promise<{ sessionId: string; writerLease: DaemonWriterLease }> {
+    const existing = this.sessions.get(sessionId);
+    if (existing !== undefined) {
+      this.refreshLease(existing);
+      return { sessionId, writerLease: existing.lease };
+    }
+    let runtime: CodepunkRuntime;
+    try {
+      runtime = await this.options.createRuntime({
+        sessionId,
+        ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "SessionNotFoundError") {
+        throw new ControlNotFoundError(
+          `control session ${sessionId} was not found`,
+        );
+      }
+      throw error;
+    }
+    const writerLease = this.lease(runtime, this.now());
+    this.sessions.set(runtime.session.sessionId, {
+      runtime,
+      lease: writerLease,
+      activeRun: false,
+      leaseHeartbeat: null,
+    });
+    return { sessionId: runtime.session.sessionId, writerLease };
+  }
+
+  async run(request: ControlRun): Promise<ControlRunResult> {
     const open = this.open(request);
     this.assertLease(open, request.writerLease);
     if (open.activeRun) {
@@ -175,9 +264,18 @@ export class RuntimeControlBackend implements ControlBackend {
     events.push(
       this.event(request.sessionId, open.lease.run_id, "control/completed"),
     );
+    const messages = (
+      open.runtime.host.session as { messages?: readonly unknown[] }
+    ).messages;
+    const assistantText = Array.isArray(messages)
+      ? extractLatestAssistantText(messages)
+      : "";
     open.activeRun = false;
     this.stopLeaseHeartbeat(open);
-    return this.result(request, open.lease, events);
+    return {
+      ...this.result(request, open.lease, events),
+      ...(assistantText.length > 0 ? { assistantText } : {}),
+    };
   }
 
   private runFailure(

@@ -18,8 +18,11 @@
     "coding_edit_indent_fallback": "pass",
     "coding_edit_anchor_hints": "pass",
     "coding_read_large_outline": "pass",
-    "coding_post_write_diagnostics": "pass"
+    "coding_post_write_diagnostics": "pass",
+    "coding_lsp_symbol_navigation": "pass",
+    "coding_shadow_git_bash_rewind": "pass",
+    "coding_lazy_mcp_tool_search": "pass"
   },
-  "min_passed": 17,
+  "min_passed": 20,
   "max_failed": 0
 }

@@ -67,11 +67,12 @@ export async function resolveProject(options: CliOptions): Promise<{
 
 export async function prepareFork(
   options: CliOptions,
+  cwd = process.cwd(),
 ): Promise<string | undefined> {
   if (options.fork === undefined) {
     return undefined;
   }
-  const project = await findDeliveryRoot(process.cwd());
+  const project = await findDeliveryRoot(cwd);
   const paths = projectPaths(project);
   const workspaceTrust = await resolveWorkspaceTrust({
     cwd: project.cwd,

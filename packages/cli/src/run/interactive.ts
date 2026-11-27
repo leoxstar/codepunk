@@ -22,6 +22,7 @@ import {
   resolveRunWorkspaceTrust,
   trustRuntimeOptions,
 } from "./trust-prompt.ts";
+import { prepareCliWorktree } from "./worktree.ts";
 
 type RuntimeOptions = Parameters<typeof createRuntime>[0];
 type ExtensionFactory = NonNullable<
@@ -95,6 +96,7 @@ async function loadTuiModules() {
 type TuiModule = Awaited<ReturnType<typeof loadTuiModules>>[1];
 
 interface TuiRuntimeBuilderContext {
+  cwd: string;
   options: CliOptions;
   extension: ExtensionFactory;
   channel: ApprovalChannel;
@@ -117,6 +119,7 @@ function createRuntimeBuilder(
   context: TuiRuntimeBuilderContext,
 ): (selection: TuiRuntimeSelection) => Promise<CodepunkRuntime> {
   const {
+    cwd,
     options,
     extension,
     channel,
@@ -127,7 +130,7 @@ function createRuntimeBuilder(
   } = context;
   return async (selection) =>
     createRuntime({
-      cwd: process.cwd(),
+      cwd,
       additionalDirs: options.additionalDirs,
       environment: process.env,
       configOverrides: overrides,
@@ -338,6 +341,21 @@ function startTitleAndBuildWatch(state: TuiState): () => void {
   };
 }
 
+async function collectStartupDiagnostics(runtime: CodepunkRuntime) {
+  const build = await inspectCliBuild();
+  return [
+    ...runtime.host.services.diagnostics,
+    ...(build.stale === true || build.rebuiltAfterStart
+      ? [
+          {
+            type: "warning" as const,
+            message: `codepunk build: ${formatBuildLabel(build)}. Run pnpm build if the source changed, then restart codepunk; a running process keeps the old UI in memory.`,
+          },
+        ]
+      : []),
+  ];
+}
+
 export async function runTui(
   options: CliOptions,
   initialPrompt?: string,
@@ -345,7 +363,9 @@ export async function runTui(
   // The interactive stack is heavy; load it only when a TUI actually starts.
   const [{ ProcessTerminal }, tui, { BrandedInteractiveMode }] =
     await loadTuiModules();
-  const forkedSessionId = await prepareFork(options);
+  const isolatedWorktree = await prepareCliWorktree(options.worktree);
+  const effectiveCwd = isolatedWorktree?.cwd ?? process.cwd();
+  const forkedSessionId = await prepareFork(options, effectiveCwd);
   const selector =
     forkedSessionId === undefined
       ? sessionSelector(options.session)
@@ -373,13 +393,14 @@ export async function runTui(
   // listener once the shutdown handler has armed it.
   state.resumeHint?.installOnExit();
   const extension = tui.createTuiExtension(state, channel);
-  const project = await findDeliveryRoot(process.cwd());
+  const project = await findDeliveryRoot(effectiveCwd);
   const workspaceTrust = await resolveRunWorkspaceTrust(options, project, true);
   const overrides = await preparedConfigOverrides(
     options,
     projectPaths(project),
   );
   const buildTuiRuntime = createRuntimeBuilder({
+    cwd: effectiveCwd,
     options,
     extension,
     channel,
@@ -444,18 +465,7 @@ export async function runTui(
     const modelFallbackMessage =
       tui.modelOnboardingMessage(runtime) ??
       sessionRuntime.modelFallbackMessage;
-    const build = await inspectCliBuild();
-    const startupDiagnostics = [
-      ...runtime.host.services.diagnostics,
-      ...(build.stale === true || build.rebuiltAfterStart
-        ? [
-            {
-              type: "warning" as const,
-              message: `codepunk build: ${formatBuildLabel(build)}. Run pnpm build if the source changed, then restart codepunk; a running process keeps the old UI in memory.`,
-            },
-          ]
-        : []),
-    ];
+    const startupDiagnostics = await collectStartupDiagnostics(runtime);
     const trimmedInitialPrompt = initialPrompt?.trim();
     const hasConfiguredModel = state.modelSelected;
     if (

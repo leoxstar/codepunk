@@ -3,12 +3,15 @@ import { AcpServer, RuntimeControlBackend, createRuntime } from "codepunk-core";
 export async function commandAcp(): Promise<number> {
   const backend = new RuntimeControlBackend({
     cwd: process.cwd(),
-    createRuntime: () =>
+    createRuntime: (input) =>
       createRuntime({
-        cwd: process.cwd(),
+        cwd: input?.cwd ?? process.cwd(),
         environment: process.env,
         headless: true,
-        newSession: true,
+        newSession: input?.sessionId === undefined,
+        ...(input?.sessionId === undefined
+          ? {}
+          : { sessionId: input.sessionId }),
         bindMode: "print",
         allowMissingModel: true,
         allowUnsandboxedShell: false,

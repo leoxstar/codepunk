@@ -82,13 +82,13 @@ _codepunk_completion() {
       COMPREPLY=( $(compgen -f -- "$cur") )
       return 0
       ;;
-    --mode|--json-schema|--session|--fork|--new-session-id|--parent-session-id|--model|--provider|--thinking|--tools|--model-fallback|--permission-mode|--approval|--approval-reviewer|--reviewer-model|--reviewer-timeout-ms|--autonomy|--scoped-rules|--sandbox|--filesystem|--add-dir|--trust-resources|--memory|--headless-policy|--verdict|--actor|--output|--scope|--prefix|--package-version|--base-url|--api|--api-key|--socket|--limit|--url|--header|--cwd|--env)
+    --mode|--json-schema|--session|--fork|--worktree|--new-session-id|--parent-session-id|--model|--provider|--thinking|--tools|--model-fallback|--permission-mode|--approval|--approval-reviewer|--reviewer-model|--reviewer-timeout-ms|--autonomy|--scoped-rules|--sandbox|--filesystem|--add-dir|--trust-resources|--memory|--headless-policy|--verdict|--actor|--output|--scope|--prefix|--package-version|--base-url|--api|--api-key|--socket|--limit|--url|--header|--cwd|--env)
       COMPREPLY=()
       return 0
       ;;
   esac
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--print --mode --json-schema --continue --session --fork --new-session --model --provider --thinking --tools --model-fallback --permission-mode --approval --approval-reviewer --reviewer-model --autonomy --sandbox --filesystem --add-dir --allow-unsandboxed-shell --dangerously-bypass-approvals-and-sandbox --trust --no-trust --trust-resources --bare --no-skills --no-plugins --no-mcp --memory --headless-policy --verdict --actor --json --limit --all-projects --socket --help --version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--print --mode --json-schema --continue --session --fork --new-session --worktree --model --provider --thinking --tools --model-fallback --permission-mode --approval --approval-reviewer --reviewer-model --autonomy --sandbox --filesystem --add-dir --allow-unsandboxed-shell --dangerously-bypass-approvals-and-sandbox --trust --no-trust --trust-resources --bare --no-skills --no-plugins --no-mcp --memory --headless-policy --verdict --actor --json --limit --all-projects --socket --help --version" -- "$cur") )
   else
     COMPREPLY=( $(compgen -W "resume sessions export attest pin sign memory setup models config doctor permissions trust capabilities mcp skills plugins daemon view completion install upgrade uninstall" -- "$cur") )
   fi
