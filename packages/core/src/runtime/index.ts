@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { type HookEvidence, type SignOffRequest } from "codepunk-protocol";
+import { type HookEvidence } from "codepunk-protocol";
 import { createPiHost, type PiHost } from "../adapters/pi/index.ts";
 import { ApprovalBroker } from "../approval/index.ts";
 import {
@@ -59,7 +59,6 @@ import {
   resolveAdditionalWorkspaceRoots,
 } from "../platform/paths.ts";
 import {
-  emptyIsolatedPluginBundle,
   loadIsolatedPluginBundle,
   type IsolatedPluginBundle,
 } from "../plugin/runtime-bridge.ts";
@@ -68,22 +67,13 @@ import {
   resolveActionReviewer,
   type ActionReviewer,
 } from "../reviewer/index.ts";
-import {
-  DeferredSandbox,
-  SandboxManager,
-  SrtSandbox,
-  UnsandboxedShell,
-  probeWindowsShell,
-  resolveWindowsShell,
-  type ShellProvider,
-} from "../sandbox/index.ts";
+import { resolveWindowsShell } from "../sandbox/index.ts";
 import { isBenignTailEventKind } from "../session/index.ts";
 import { loadSkills, type SkillBundle } from "../skills/index.ts";
 import {
   resolveWorkspaceTrust,
   skippedProjectResources,
 } from "../trust/index.ts";
-import { prepareSignOff } from "../verdict/index.ts";
 import {
   appendEvidenceIndex,
   deriveAndWriteVerdict,
@@ -97,17 +87,16 @@ import {
   type PlanModeState,
 } from "../work/index.ts";
 import {
-  CONFIG_SECTIONS,
   closePendingSandboxForStartupFailure,
-  configValuesEqual,
   effectiveTools,
-  latestSignOffId,
   openSession,
   pathsHome,
   sessionSelectorIssue,
   signStandalone,
   verifyHeadlessExec,
 } from "./helpers.ts";
+import { createRuntimeReloaders } from "./reloaders.ts";
+import { initializeRuntimeSandbox } from "./sandbox-setup.ts";
 import {
   RunLedger,
   type AgentSession,
@@ -142,10 +131,6 @@ export {
 export async function createRuntime(
   options: RuntimeOptions,
 ): Promise<CodepunkRuntime> {
-  // The srt sandbox starts a long-lived proxy process. If startup fails
-  // before the runtime is returned, cancel the pending initialization;
-  // otherwise a resolving provider would keep the event loop alive and the
-  // CLI would print its error and then hang instead of exiting.
   const startupCleanup: { current: (() => Promise<void>) | null } = {
     current: null,
   };
@@ -231,8 +216,6 @@ async function createRuntimeInner(
   const disableContext = bare;
   if (bare) {
     config.memory.enabled = false;
-  }
-  if (bare) {
     loadedConfig.warnings.push(
       "bare session: instruction files, skills, plugins, MCP servers, and memory are disabled",
     );
@@ -396,22 +379,9 @@ async function createRuntimeInner(
     rulesSha256: scopedRulesSha256,
   };
   const autonomy = new AutonomyController(autonomyRegistration);
-  let sandbox: ShellProvider | null = null;
-  let sandboxReady: Promise<ShellProvider | null> = Promise.resolve(null);
-  let sandboxUnavailableReason: string | null = null;
-  let shellPreflightIssue: string | null = null;
-  let closePendingSandbox: () => Promise<void> = () => Promise.resolve();
-  let pendingSandboxProvider: () => ShellProvider | null = () => sandbox;
-  let resolveShellPreflight: () => void = () => undefined;
-  const shellPreflightSettled = new Promise<void>((resolve) => {
-    resolveShellPreflight = resolve;
-  });
-  if (process.platform !== "win32" || windowsShell.kind === "auto") {
-    resolveShellPreflight();
-  }
-  // The sandbox starts before the Pi host exists. The ref is filled in once
-  // the host is created, so the sandbox's network events reach the session
-  // log through the host's own append chain.
+
+  const initialRunId =
+    options.runId ?? createUlid(options.now?.() ?? new Date());
   const hostRef: { current: PiHost | null } = { current: null };
   const appendHookEvidence = async (evidence: HookEvidence): Promise<void> => {
     if (hostRef.current === null) {
@@ -419,134 +389,19 @@ async function createRuntimeInner(
     }
     await hostRef.current.recordEvent("hook/result", evidence);
   };
-  let degradedUnsandboxedFallback = false;
-  const canFallbackToHumanApprovedShell = (): boolean =>
-    options.headless !== true &&
-    options.approvalChannel !== undefined &&
-    options.approvalChannel !== null &&
-    options.approvalChannel.isTTY === true &&
-    config.approval.mode === "ask" &&
-    config.autonomy.profile === "ask" &&
-    !(process.platform === "win32" && windowsShell.kind !== "auto");
-  if (config.sandbox.mode === "required") {
-    const sandboxFactory = options.createSandbox ?? SrtSandbox.create;
-    const createPromise = sandboxFactory(
-      {
-        cwd: paths.cwd,
-        workspaceRoot: paths.deliveryRoot,
-        deliveryRoot: paths.deliveryRoot,
-        codepunkHome: paths.home,
-        writeSet: writeSetWithAdditionalRoots,
-        additionalRoots: paths.additionalRoots,
-        networkAllow: config.sandbox.network_allow,
-        networkDeny: config.sandbox.network_deny,
-        networkMaxRequests: config.sandbox.network_max_requests,
-        networkMaxBytes: config.sandbox.network_max_bytes,
-        readOnly: config.autonomy.profile === "read-only",
-        ...(windowsShell.binShell === null
-          ? {}
-          : { windowsBinShell: windowsShell.binShell }),
-      },
-      {
-        // The sandbox starts before the session writer lock is acquired, so
-        // the run id and the sink are resolved lazily. The callback is only
-        // invoked for events after the host has acquired the writer.
-        runId: () => hostRef.current?.currentRunId ?? initialRunId,
-        onNetworkEvent: async (kind, data) => {
-          await hostRef.current?.recordEvent(kind, data);
-        },
-      },
-    );
-    sandboxReady = createPromise
-      .then((createdSandbox) => {
-        sandbox = createdSandbox;
-        return createdSandbox;
-      })
-      .catch((error: unknown) => {
-        sandboxUnavailableReason =
-          error instanceof Error ? error.message : String(error);
-        if (canFallbackToHumanApprovedShell()) {
-          degradedUnsandboxedFallback = true;
-          const fallbackShell = new UnsandboxedShell();
-          sandbox = fallbackShell;
-          loadedConfig.warnings.push(
-            `srt sandbox is unavailable (${sandboxUnavailableReason}); standard interactive mode degraded to per-command human-approved unsandboxed shell (uncovered)`,
-          );
-          return fallbackShell;
-        }
-        sandbox = null;
-        loadedConfig.warnings.push(
-          `sandbox required but srt is unavailable; shell tools are disabled: ${sandboxUnavailableReason}; run codepunk doctor`,
-        );
-        return null;
-      });
-    const pendingSandbox = new DeferredSandbox(sandboxReady, {
-      cancelPendingInitialization: () => {
-        // On Linux srt's initialize() spawns a socat bridge. A reset() that
-        // lands while that bridge is being created is not visible to the
-        // library's cleanup, so the bridge survives and keeps the process
-        // alive. Let initialization settle and close the provider through
-        // DeferredSandbox's late-close path instead.
-        if (process.platform !== "linux") {
-          void SandboxManager.reset();
-        }
-      },
-    });
-    sandbox = pendingSandbox;
-    pendingSandboxProvider = () => pendingSandbox;
-    closePendingSandbox = async () => {
-      if (startupCleanup.current === closePendingSandbox) {
-        startupCleanup.current = null;
-      }
-      await pendingSandbox.close();
-    };
-  }
-  const runtimeSandboxReady: Promise<ShellProvider | null> = sandboxReady;
-  if (config.sandbox.mode === "required") {
-    startupCleanup.current = closePendingSandbox;
-  }
-  if (process.platform === "win32" && windowsShell.kind !== "auto") {
-    void runtimeSandboxReady
-      .then(async (resolved) => {
-        if (resolved === null) {
-          throw new ConfigError(
-            `tools.shell=${windowsShell.kind} requires the srt sandbox on Windows; shell tools stay disabled until srt is available`,
-            "tools.shell",
-          );
-        }
-        await probeWindowsShell(resolved, windowsShell, paths.cwd);
-      })
-      .catch(async (error: unknown) => {
-        shellPreflightIssue =
-          error instanceof Error ? error.message : String(error);
-        sandbox = null;
-        sandboxUnavailableReason = shellPreflightIssue;
-      })
-      .finally(() => {
-        resolveShellPreflight?.();
-      });
-  } else {
-    resolveShellPreflight?.();
-  }
-  if (
-    sandbox === null &&
-    config.sandbox.mode === "uncovered" &&
-    options.allowUnsandboxedShell === true &&
-    options.headless !== true
-  ) {
-    sandbox = new UnsandboxedShell();
-  }
-  if (sandbox === null) {
-    loadedConfig.warnings.push(
-      config.sandbox.mode === "uncovered"
-        ? "sandbox mode is uncovered; shell tools are disabled unless this interactive process was started with --allow-unsandboxed-shell"
-        : `sandbox required but srt is unavailable; shell tools are disabled${
-            sandboxUnavailableReason === null
-              ? ""
-              : `: ${sandboxUnavailableReason}`
-          }; run codepunk doctor`,
-    );
-  }
+
+  const sandboxSetup = initializeRuntimeSandbox({
+    options,
+    paths,
+    config,
+    loadedConfig,
+    windowsShell,
+    writeSetWithAdditionalRoots,
+    hostRef,
+    getInitialRunId: () => initialRunId,
+    startupCleanup,
+  });
+
   const modelRuntime = await openModelRuntime(paths);
   let selectedModel = options.model;
   if (selectedModel === undefined) {
@@ -557,16 +412,12 @@ async function createRuntimeInner(
         options.allowMissingModel === true && error instanceof ModelError
       )) {
         await closePendingSandboxForStartupFailure(startupCleanup);
+        await pluginState.current.close().catch(() => undefined);
         throw error;
       }
       loadedConfig.warnings.push(error.message);
     }
   }
-  // Reviewer configuration is independent of the current approval snapshot.
-  // A session may start in ask/deny and switch to auto at runtime; resolving
-  // the concrete model now makes an optional reviewer a startup dependency.
-  // Resolve it on first use instead, so a stale/offline reviewer cannot block
-  // an ask/read-only session before an action ever needs it.
   const reviewerReference = config.approval.reviewer_model;
   const reviewerSeparator =
     reviewerReference === null ? -1 : reviewerReference.indexOf("/");
@@ -585,7 +436,7 @@ async function createRuntimeInner(
           ...reviewerIdentity,
           resolve: () =>
             resolveActionReviewer({
-              mode: "model",
+              mode: config.approval.reviewer,
               runtime: modelRuntime,
               fallbackModel: selectedModel,
               modelReference: config.approval.reviewer_model,
@@ -593,6 +444,7 @@ async function createRuntimeInner(
             }),
         })
       : null;
+
   const session = await openSession(
     options,
     paths,
@@ -646,9 +498,6 @@ async function createRuntimeInner(
       );
     }
   } else if (readOnly) {
-    // A read-only policy denies an MCP tool call, but a stdio server would
-    // already have run arbitrary code at startup. Do not start an uncovered
-    // process the session can never be allowed to use.
     mcp = emptyMcpBundle();
     mcpStatus = "skipped";
     if (hasMcpConfig) {
@@ -665,15 +514,13 @@ async function createRuntimeInner(
       mcp = await loadMcpTools({
         paths,
         projectTrusted: projectMcpTrusted,
-        // A broken optional MCP server must not make the coding session
-        // unusable. It is reported as a startup warning and omitted from the
-        // tool registry; explicit `mcp test <name>` remains strict.
         strict: false,
         onServerStart: (start) => {
           mcpStarts.push(start);
         },
       });
     } catch (error) {
+      await pluginState.current.close().catch(() => undefined);
       throw new Error(
         `MCP startup failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -747,8 +594,7 @@ async function createRuntimeInner(
       "session has events but no agent-state.json; refusing to resume empty",
     );
   }
-  const initialRunId =
-    options.runId ?? createUlid(options.now?.() ?? new Date());
+
   const ledger = new RunLedger(paths, session.sessionId, initialRunId);
   await ledger.prepare(initialRunId);
   const approval = new ApprovalBroker({
@@ -764,14 +610,11 @@ async function createRuntimeInner(
   }
   const tools = effectiveTools(
     config,
-    sandbox,
+    sandboxSetup.getSandbox(),
     memory,
     options.headless === true,
     headlessPolicy,
   );
-  // `/permissions sandbox` changes `config.sandbox.mode` for the next session
-  // while this process keeps the shell provider it started with. Denial text
-  // and evidence reasons must describe that provider, not the pending value.
   const sessionSandboxMode = config.sandbox.mode;
   const runEnded = async (runId: string): Promise<void> => {
     const evidence = await readEvidenceFile(
@@ -784,8 +627,6 @@ async function createRuntimeInner(
         runId,
         evidence.records,
       );
-    }
-    if (evidence.records.length > 0) {
       await deriveAndWriteVerdict({
         paths,
         sessionId: session.sessionId,
@@ -796,6 +637,7 @@ async function createRuntimeInner(
       });
     }
   };
+
   let host: PiHost;
   try {
     host = await createPiHost({
@@ -818,15 +660,18 @@ async function createRuntimeInner(
       ledger,
       reviewer,
       sandbox: () => {
-        if (shellPreflightIssue !== null) {
+        if (sandboxSetup.getShellPreflightIssue() !== null) {
           return null;
         }
-        if (degradedUnsandboxedFallback && !canFallbackToHumanApprovedShell()) {
+        if (
+          sandboxSetup.isDegradedUnsandboxedFallback() &&
+          !sandboxSetup.canFallbackToHumanApprovedShell()
+        ) {
           return null;
         }
-        return pendingSandboxProvider();
+        return sandboxSetup.pendingSandboxProvider();
       },
-      forceShellApproval: () => degradedUnsandboxedFallback,
+      forceShellApproval: () => sandboxSetup.isDegradedUnsandboxedFallback(),
       userBashUnsandboxed: () =>
         options.headless !== true && config.sandbox.user_bash === "uncovered",
       closeSandbox: false,
@@ -835,10 +680,12 @@ async function createRuntimeInner(
       currentPlan: () => readWorkState(session.allEvents).plan,
       networkAllowedDomains: config.sandbox.network_allow,
       networkDeniedDomains: config.sandbox.network_deny,
-      shellUnavailableReason: () =>
-        shellPreflightIssue === null
+      shellUnavailableReason: () => {
+        const issue = sandboxSetup.getShellPreflightIssue();
+        return issue === null
           ? shellUnavailableReason(sessionSandboxMode)
-          : `${shellUnavailableReason(sessionSandboxMode)} (${shellPreflightIssue})`,
+          : `${shellUnavailableReason(sessionSandboxMode)} (${issue})`;
+      },
       context: configuredContext,
       artifactsDir: paths.artifactsDir,
       checkpoints,
@@ -923,6 +770,7 @@ async function createRuntimeInner(
     await mcp.close();
     throw error;
   }
+
   hostRef.current = host;
   const wirePluginBundle = async (
     bundle: IsolatedPluginBundle,
@@ -935,6 +783,7 @@ async function createRuntimeInner(
     });
   };
   await wirePluginBundle(pluginState.current);
+
   await host.recordEvent("autonomy/profile", {
     profile: autonomy.profile,
     source: autonomy.source,
@@ -1056,11 +905,12 @@ async function createRuntimeInner(
   const applyAutonomy = async (
     next: CodepunkConfig["autonomy"],
   ): Promise<void> => {
+    const activeSandbox = sandboxSetup.getSandbox();
     if (next.profile === "read-only") {
       const issue = readOnlyLiveSwitchIssue({
         pluginsEnabled: pluginState.current.summary.enabled,
         mcpServers: mcp.servers,
-        sandboxStartedWritable: sandbox?.sandboxed === true && !readOnly,
+        sandboxStartedWritable: activeSandbox?.sandboxed === true && !readOnly,
       });
       if (issue !== null) {
         throw new Error(issue);
@@ -1068,7 +918,7 @@ async function createRuntimeInner(
     } else if (autonomy.profile === "read-only") {
       const issue = readOnlyLiveWidenIssue({
         target: next.profile,
-        sandboxStartedReadOnly: sandbox?.sandboxed === true && readOnly,
+        sandboxStartedReadOnly: activeSandbox?.sandboxed === true && readOnly,
       });
       if (issue !== null) {
         throw new Error(issue);
@@ -1105,11 +955,11 @@ async function createRuntimeInner(
       if (toolNamesBeforePlanMode === null) {
         toolNamesBeforePlanMode = host.session.getActiveToolNames();
       }
-      const readOnly = host.session
+      const readOnlyTools = host.session
         .getAllTools()
         .map((tool) => tool.name)
         .filter(isPlanModeReadOnlyTool);
-      host.session.setActiveToolsByName(readOnly);
+      host.session.setActiveToolsByName(readOnlyTools);
       return;
     }
     if (toolNamesBeforePlanMode !== null) {
@@ -1121,19 +971,53 @@ async function createRuntimeInner(
     mode: PlanModeState["mode"],
     planSha256: string | null,
   ): Promise<PlanModeState> => {
-    const state = {
+    const planState = {
       mode,
       plan_sha256: planSha256,
       updated_at: (options.now?.() ?? new Date()).toISOString(),
     };
-    await session.append("plan_mode/update", state);
+    await session.append("plan_mode/update", planState);
     applyPlanModeToolSurface(mode);
-    return state;
+    return planState;
   };
   const currentPlanMode = readPlanModeState(session.allEvents);
   if (currentPlanMode?.mode === "planning") {
     applyPlanModeToolSurface("planning");
   }
+
+  const primaryModel =
+    host.primaryModel ??
+    (host.session.model !== undefined && !isFallbackModel(host.session.model)
+      ? host.session.model
+      : undefined);
+
+  const reloaders = createRuntimeReloaders({
+    options,
+    paths,
+    environment,
+    config,
+    configOverrides,
+    workspaceTrust,
+    host,
+    session,
+    ledger,
+    autonomy,
+    disableSkills,
+    disablePlugins,
+    disableMcp,
+    projectMcpTrusted,
+    readableSkillFiles,
+    skillState,
+    pluginState,
+    getMcp: () => mcp,
+    setMcp: (next) => {
+      mcp = next;
+    },
+    getPrimaryModel: () => primaryModel,
+    applyApprovalMode,
+    applyAutonomy,
+    wirePluginBundle,
+  });
 
   const runtime: CodepunkRuntime = {
     project,
@@ -1175,23 +1059,19 @@ async function createRuntimeInner(
     shadowGit,
     ledger,
     get sandbox() {
-      return sandbox;
+      return sandboxSetup.getSandbox();
     },
-    sandboxReady: runtimeSandboxReady,
+    sandboxReady: sandboxSetup.runtimeSandboxReady,
     async shellPreflightSettled() {
-      await shellPreflightSettled;
+      await sandboxSetup.shellPreflightSettled;
     },
     get shellPreflightIssue() {
-      return shellPreflightIssue;
+      return sandboxSetup.getShellPreflightIssue();
     },
     autonomy,
     approval,
     host,
-    primaryModel:
-      host.primaryModel ??
-      (host.session.model !== undefined && !isFallbackModel(host.session.model)
-        ? host.session.model
-        : undefined),
+    primaryModel,
     fallbackModels: host.fallbackModels,
     runId: host.currentRunId,
     evidencePath: ledger.filePath,
@@ -1242,462 +1122,11 @@ async function createRuntimeInner(
         return appendPlanMode("off", null);
       },
     },
-    async reloadConfig() {
-      if (host.session.isStreaming) {
-        throw new Error(
-          "Wait for the current response to finish before reloading.",
-        );
-      }
-      if (host.session.isCompacting) {
-        throw new Error("Wait for compaction to finish before reloading.");
-      }
-      const loaded = await loadConfig(paths, environment, configOverrides, {
-        projectTrusted: workspaceTrust.grants.config,
-      });
-      const next = loaded.config;
-      const changedSections = CONFIG_SECTIONS.filter(
-        (section) => !configValuesEqual(config[section], next[section]),
-      );
-      if (changedSections.length === 0) {
-        return {
-          changed: false,
-          changedSections: [],
-          applied: [],
-          nextSession: [],
-          blocked: [],
-          warnings: [...loaded.warnings],
-          pluginsChanged: false,
-        };
-      }
-
-      const applied: string[] = [];
-      const nextSession: string[] = [];
-      const blocked: string[] = [];
-      let autonomyBlocked = false;
-      if (config.approval.mode !== next.approval.mode) {
-        applyApprovalMode(next.approval.mode);
-        applied.push(`approval.mode=${next.approval.mode}`);
-      }
-
-      if (!configValuesEqual(config.autonomy, next.autonomy)) {
-        try {
-          await applyAutonomy(next.autonomy);
-          applied.push(`autonomy=${next.autonomy.profile}`);
-        } catch (error) {
-          autonomyBlocked = true;
-          blocked.push(
-            `autonomy: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-
-      const reviewerChanged =
-        config.approval.reviewer !== next.approval.reviewer ||
-        config.approval.reviewer_model !== next.approval.reviewer_model ||
-        config.approval.reviewer_timeout_ms !==
-          next.approval.reviewer_timeout_ms;
-
-      const pluginsChanged = !configValuesEqual(config.plugins, next.plugins);
-      if (pluginsChanged) {
-        config.plugins.enabled = next.plugins.enabled;
-        applied.push(`plugins.enabled=${next.plugins.enabled}`);
-      }
-
-      if (!configValuesEqual(config.sandbox, next.sandbox)) {
-        config.sandbox = structuredClone(next.sandbox);
-      }
-      if (!configValuesEqual(config.filesystem, next.filesystem)) {
-        config.filesystem = structuredClone(next.filesystem);
-      }
-
-      for (const section of changedSections) {
-        if (section === "approval") {
-          if (reviewerChanged) {
-            nextSession.push("approval.reviewer");
-          }
-          continue;
-        }
-        if (section === "autonomy") {
-          if (autonomyBlocked) {
-            nextSession.push("autonomy");
-          }
-          continue;
-        }
-        if (section === "plugins") {
-          continue;
-        }
-        nextSession.push(section);
-      }
-
-      return {
-        changed: true,
-        changedSections,
-        applied,
-        nextSession,
-        blocked,
-        warnings: [...loaded.warnings],
-        pluginsChanged,
-      };
-    },
-    async signInProcess(verdict, signOptions = {}) {
-      const request: Omit<SignOffRequest, "run_id"> = {
-        version: 1,
-        evidence_head: ledger.head ?? "",
-        signed_verdict: verdict,
-        channel: signOptions.channel ?? "tui",
-        actor: signOptions.actor ?? "local-user",
-        is_tty: signOptions.tty ?? true,
-        source: "human",
-        previous_sign_off_id: latestSignOffId(
-          session.allEvents,
-          host.currentRunId,
-        ),
-      };
-      const currentEvidence = await readEvidenceFile(ledger.filePath);
-      const prepared = prepareSignOff({
-        runId: host.currentRunId,
-        records: currentEvidence.records,
-        events: session.allEvents,
-        request: { ...request, run_id: host.currentRunId },
-        ...(options.now !== undefined ? { now: options.now() } : {}),
-      });
-      if (!prepared.ok) {
-        throw new Error(`${prepared.code}: ${prepared.message}`);
-      }
-      await session.append("verdict/sign_off", prepared.prepared.data);
-      const result = await deriveAndWriteVerdict({
-        paths,
-        sessionId: session.sessionId,
-        runId: host.currentRunId,
-        evidencePath: ledger.filePath,
-        events: session.allEvents,
-        ...(options.now !== undefined ? { now: options.now() } : {}),
-      });
-      return {
-        verdict: result.derivation.verdict,
-        artifactPath: result.path,
-        issues: result.derivation.issues,
-      };
-    },
-    async recordMemoryWrite(input) {
-      await session.append("memory/write", {
-        scope: input.scope,
-        action: input.action,
-        memory_id: input.memoryId,
-        content_sha256: input.contentSha256,
-        source_refs: [...input.sourceRefs],
-        reason: input.reason,
-      });
-    },
-    async reloadSkills() {
-      if (host.session.isStreaming) {
-        throw new Error(
-          "Wait for the current response to finish before reloading.",
-        );
-      }
-      if (host.session.isCompacting) {
-        throw new Error("Wait for compaction to finish before reloading.");
-      }
-      const previous = skillState.current;
-      let next: SkillBundle;
-      try {
-        next = disableSkills
-          ? { skills: [], block: "", warnings: [] }
-          : await loadSkills({
-              deliveryRoot: paths.deliveryRoot,
-              codepunkHome: paths.home,
-              projectTrusted: workspaceTrust.grants.skills,
-            });
-      } catch (error) {
-        return {
-          skipped: disableSkills ? ("disabled" as const) : null,
-          skills: previous.skills,
-          blockSha256: sha256Text(previous.block),
-          warnings: previous.warnings,
-          error: `skill discovery failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
-      }
-      const previousReadable = [...readableSkillFiles];
-      try {
-        host.replaceExtraInstruction(next.block);
-        readableSkillFiles.splice(
-          0,
-          readableSkillFiles.length,
-          ...next.skills.map((skill) => skill.path),
-        );
-        await host.session.reload();
-      } catch (error) {
-        host.replaceExtraInstruction(previous.block);
-        readableSkillFiles.splice(
-          0,
-          readableSkillFiles.length,
-          ...previousReadable,
-        );
-        await host.session.reload().catch(() => undefined);
-        return {
-          skipped: disableSkills ? ("disabled" as const) : null,
-          skills: previous.skills,
-          blockSha256: sha256Text(previous.block),
-          warnings: previous.warnings,
-          error: `Pi skill reload failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
-      }
-      skillState.current = next;
-      const blockSha256 = sha256Text(next.block);
-      let error: string | null = null;
-      try {
-        await host.recordEvent("skill/loaded", {
-          skills: next.skills.map((skill) => ({
-            name: skill.name,
-            scope: skill.scope,
-            sha256: skill.sha256,
-            bytes: skill.bytes,
-          })),
-          block_sha256: blockSha256,
-        });
-      } catch (recordError) {
-        error = `skill/loaded event failed: ${
-          recordError instanceof Error
-            ? recordError.message
-            : String(recordError)
-        }`;
-      }
-      return {
-        skipped: disableSkills ? ("disabled" as const) : null,
-        skills: next.skills,
-        blockSha256,
-        warnings: next.warnings,
-        error,
-      };
-    },
-    async reloadPlugins() {
-      if (host.session.isStreaming) {
-        throw new Error(
-          "Wait for the current response to finish before reloading.",
-        );
-      }
-      if (host.session.isCompacting) {
-        throw new Error("Wait for compaction to finish before reloading.");
-      }
-      const skipped: PluginReloadResult["skipped"] = disablePlugins
-        ? "disabled"
-        : autonomy.profile === "read-only"
-          ? "read-only"
-          : options.headless === true
-            ? "headless"
-            : !(options.allowPlugins === true || config.plugins.enabled)
-              ? "disabled"
-              : null;
-      if (skipped !== null) {
-        const previous = pluginState.current;
-        const disabled = emptyIsolatedPluginBundle(
-          path.join(paths.home, "extensions"),
-          false,
-        );
-        pluginState.current = disabled;
-        host.replaceExtensionPaths([]);
-        await host.replaceExtraTools([...mcp.tools, ...mcp.resourceTools]);
-        await host.session.reload();
-        host.validateToolRegistry();
-        await previous.close().catch(() => undefined);
-        return { skipped, plugins: disabled.summary, error: null };
-      }
-
-      const previous = pluginState.current;
-      let next: IsolatedPluginBundle | null = null;
-      try {
-        next = await loadIsolatedPluginBundle({
-          allowed: true,
-          extensionDir: path.join(paths.home, "extensions"),
-          ...(options.now !== undefined ? { now: options.now } : {}),
-        });
-        host.replaceExtensionPaths(next.legacyExtensionPaths);
-        await host.replaceExtraTools([
-          ...mcp.tools,
-          ...mcp.resourceTools,
-          ...next.tools,
-        ]);
-        await host.session.reload();
-        host.validateToolRegistry();
-      } catch (error) {
-        if (next !== null) {
-          await next.close().catch(() => undefined);
-        }
-        host.replaceExtensionPaths(previous.legacyExtensionPaths);
-        await host
-          .replaceExtraTools([
-            ...mcp.tools,
-            ...mcp.resourceTools,
-            ...previous.tools,
-          ])
-          .catch(() => undefined);
-        await host.session.reload().catch(() => undefined);
-        try {
-          host.validateToolRegistry();
-        } catch {
-          // Preserve the reload error; the next model turn will fail closed if
-          // the previous registry could not be restored.
-        }
-        return {
-          skipped: null,
-          plugins: previous.summary,
-          error: `plugin reload failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
-      }
-
-      pluginState.current = next;
-      await wirePluginBundle(next);
-      await previous.close().catch(() => undefined);
-      const error =
-        next.summary.errors.length === 0
-          ? null
-          : next.summary.errors.join("; ");
-      return { skipped: null, plugins: next.summary, error };
-    },
-    async reloadMcp() {
-      if (host.session.isStreaming) {
-        throw new Error(
-          "Wait for the current response to finish before reloading.",
-        );
-      }
-      if (host.session.isCompacting) {
-        throw new Error("Wait for compaction to finish before reloading.");
-      }
-      const previous = mcp;
-      const previousTools = [
-        ...previous.tools,
-        ...previous.resourceTools,
-        ...pluginState.current.tools,
-      ];
-      const sessionModel = host.session.model;
-      const hasModel =
-        runtime.primaryModel !== undefined ||
-        (sessionModel !== undefined && !isFallbackModel(sessionModel));
-      const skipped: McpReloadSkip | null = disableMcp
-        ? "disabled"
-        : !hasModel
-          ? "no-model"
-          : autonomy.profile === "read-only"
-            ? "read-only"
-            : null;
-      const warnings: string[] = [];
-      const starts: McpServerStart[] = [];
-      let next: McpBundle | null = null;
-      let error: string | null = null;
-
-      if (skipped !== null) {
-        next = emptyMcpBundle();
-      } else {
-        try {
-          next = await loadMcpTools({
-            paths,
-            projectTrusted: projectMcpTrusted,
-            strict: false,
-            onServerStart: (start) => {
-              starts.push(start);
-            },
-          });
-        } catch (loadError) {
-          error = `MCP configuration could not be loaded: ${
-            loadError instanceof Error ? loadError.message : String(loadError)
-          }`;
-        }
-      }
-
-      let applied = false;
-      if (next !== null) {
-        try {
-          await host.replaceExtraTools([
-            ...next.tools,
-            ...next.resourceTools,
-            ...pluginState.current.tools,
-          ]);
-          applied = true;
-        } catch (replaceError) {
-          error = `MCP tools could not be registered: ${
-            replaceError instanceof Error
-              ? replaceError.message
-              : String(replaceError)
-          }`;
-          await next.close().catch(() => undefined);
-          next = null;
-        }
-      }
-
-      try {
-        await host.session.reload();
-      } catch (reloadError) {
-        const message =
-          reloadError instanceof Error
-            ? reloadError.message
-            : String(reloadError);
-        error =
-          error === null
-            ? `Pi reload failed: ${message}`
-            : `${error}; Pi reload failed: ${message}`;
-        if (applied && next !== null) {
-          try {
-            await host.replaceExtraTools(previousTools);
-          } catch {
-            // The Pi registry may already have been rebuilt. Keep the
-            // original error; the caller is told to restart the process.
-          }
-          applied = false;
-        }
-      }
-
-      if (next === null || !applied) {
-        if (next !== null) {
-          await next.close().catch(() => undefined);
-        }
-        return {
-          skipped: null,
-          servers: [...previous.servers],
-          toolCounts: { ...previous.toolCounts },
-          resourceServers: [...previous.resourceServers],
-          failures: [...previous.failures],
-          warnings,
-          error: error ?? "MCP reload did not apply",
-        };
-      }
-
-      mcp = next;
-      try {
-        await previous.close();
-      } catch (closeError) {
-        warnings.push(
-          `previous MCP servers could not be closed: ${
-            closeError instanceof Error
-              ? closeError.message
-              : String(closeError)
-          }`,
-        );
-      }
-      for (const start of starts) {
-        await host.recordEvent("mcp/server_start", start);
-      }
-      return {
-        skipped,
-        servers: [...next.servers],
-        toolCounts: { ...next.toolCounts },
-        resourceServers: [...next.resourceServers],
-        failures: [...next.failures],
-        warnings,
-        error,
-      };
-    },
+    ...reloaders,
     async dispose() {
       runtimeDisposed = true;
       let hookFailure: unknown = null;
-      const sandboxClosed = closePendingSandbox();
+      const sandboxClosed = sandboxSetup.closePendingSandbox();
       try {
         await hooks.run(
           "session_end",

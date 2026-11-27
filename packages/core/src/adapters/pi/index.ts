@@ -4,70 +4,31 @@ import {
   SettingsManager,
   createAgentSessionFromServices,
   createAgentSessionServices,
-  resolveModelScopeWithDiagnostics,
   type AgentSession,
   type AgentSessionEvent,
   type AgentSessionServices,
-  type AgentSettledEvent,
-  type BeforeAgentStartEvent,
-  type ContextEvent,
-  type ContextWithSystemEvent,
-  type ExtensionFactory,
   type ExtensionError,
-  type ExtensionContext,
   type ExtensionToolContext,
-  type InputEvent,
-  type InlineExtension,
-  type SessionBeforeCompactEvent,
-  type SessionBeforeTreeEvent,
-  type SessionCompactEvent,
-  type SessionCompactFailedEvent,
-  type SessionTreeEvent,
   type ToolDefinition,
-  type UserBashEvent,
-  type UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentState, PlanStep, TodoItem } from "codepunk-protocol";
-import { canonicalJson, createUlid, sha256Text } from "../../platform/hash.ts";
-import { normalizeAbsolute } from "../../platform/path.ts";
 import {
-  expandPromptFileSlices,
   loadContext,
   truncateContextAtTurnBoundary,
 } from "../../context/index.ts";
-import { HookBlockedError } from "../../capabilities/hooks.ts";
-import { outputSha } from "../../evidence/index.ts";
-import { redactMemoryContent } from "../../memory/index.ts";
+import { MCP_RESOURCE_TOOL_NAMES } from "../../mcp/names.ts";
+import { isFallbackModel, modelReference } from "../../model/fallback.ts";
 import {
-  readWorkState,
-  type TodoState,
-  type WorkState,
-} from "../../work/index.ts";
-import {
-  FALLBACK_MODEL_ID,
-  FALLBACK_PROVIDER,
-  fallbackChainReference,
-  fallbackConfigurationErrors,
-  fallbackModelDefinition,
-  type FallbackModel,
-  isFallbackModel,
-  latestBranchModelSelection,
-  modelReference,
-  restoredFallbackChain,
-  resolveFallbackChain,
-} from "../../model/fallback.ts";
-import {
-  modelUsageFromMessage,
   summarizeModelUsage,
   summarizeSessionModelUsage,
 } from "../../model/index.ts";
+import { createUlid } from "../../platform/hash.ts";
+import { normalizeAbsolute } from "../../platform/path.ts";
 import {
   isBenignTailEventKind,
   type SessionStore,
   type SessionWriter,
 } from "../../session/index.ts";
-import { GoalCorruptError, goalModelContext } from "../../session/goal.ts";
-import { normalizeSessionTitle } from "../../session/ops.ts";
 import {
   TOOL_SEARCH_TOOL_NAME,
   createCodepunkToolDefinitions,
@@ -75,13 +36,13 @@ import {
   shouldDeferMcpTools,
   type CodepunkToolName,
 } from "../../tools/index.ts";
-import { MCP_RESOURCE_TOOL_NAMES } from "../../mcp/names.ts";
+import { readWorkState } from "../../work/index.ts";
 import {
   wrapToolDefinition,
   wrapToolDefinitions,
-  wrapUserBashCommand,
   type ToolWrapOptions,
 } from "../../wrap/index.ts";
+import { configureHostModelSelection } from "./fallback-setup.ts";
 import {
   additionalExtensionPaths,
   assertHostResources,
@@ -93,15 +54,13 @@ import {
   restoreSessionLeaf,
   setHostEnvironment,
 } from "./isolation.ts";
+import { createProductExtension } from "./product-extension.ts";
 import {
   PRODUCT_SYSTEM_SECTION,
-  SESSION_SUMMARY_MAX_TOKENS,
-  SESSION_SUMMARY_SYSTEM_PROMPT,
   renderRuntimeEnvironment,
   retryErrorEvidence,
-  summarizeProjection,
-  trimSummaryBytes,
 } from "./prompt.ts";
+import { createSessionSummarizer } from "./summary.ts";
 import {
   HostIsolationError,
   type CreatePiHostOptions,
@@ -278,6 +237,7 @@ export async function createPiHost(
       });
     }
   };
+
   const syncSessionUsage = (): void => {
     if (session === null) {
       return;
@@ -295,18 +255,13 @@ export async function createPiHost(
     usedTokens = combined.total_tokens;
     usedCostUsd = combined.cost_total;
   };
+
   let lastAssistantStopReason: string | null = null;
   let beforeStopAttempt = 0;
   let beforeStopBlockedReason: string | null = null;
   let lastMemoryDigestSha: string | null = null;
-  let lastWorkState: { plan: WorkState | null; todos: TodoState | null } = {
-    plan: null,
-    todos: null,
-  };
-  let pendingCompactionMessages: number | null = null;
   let lastRoutedModel: string | null = null;
   let lastDirectModel: string | null = null;
-  let sessionTitleSet = false;
   let wallTimer: NodeJS.Timeout | undefined;
   let wallBudgetExceeded = false;
   const extensionFailures: ExtensionError[] = [];
@@ -319,6 +274,7 @@ export async function createPiHost(
       `product extension handler ${first.event} failed: ${first.error}`,
     );
   };
+
   const beginRun = async (): Promise<void> => {
     assertNoExtensionFailures();
     if (runEnded) {
@@ -368,6 +324,7 @@ export async function createPiHost(
       wallTimer.unref();
     }
   };
+
   const endRun = async (
     state: "settled" | "failed" | "aborted" | "cancelled" = "settled",
     termination: string | null = null,
@@ -389,172 +346,18 @@ export async function createPiHost(
     await options.onRunEnd?.(currentRunId);
     runEnded = true;
   };
-  const summaryAttempts = new Set<string>();
-  let summarizedRunId: string | null = null;
-  const maybeSummarizeSession = async (
-    trigger: "settled" | "compact",
-    compactCheckpoint?: { summary: string; entryId: string },
-  ): Promise<void> => {
-    const memory = options.memory ?? null;
-    if (
-      options.autoMemorySummary !== true ||
-      memory === null ||
-      !memory.enabled ||
-      options.mode === "worker" ||
-      session === null ||
-      store === null
-    ) {
-      return;
-    }
-    if (summarizedRunId === currentRunId) {
-      return;
-    }
-    const source =
-      compactCheckpoint === undefined
-        ? summarizeProjection(session.sessionManager.buildSessionProjection())
-        : {
-            transcript: `[compactionSummary]\n${compactCheckpoint.summary}`,
-            entryIds: [compactCheckpoint.entryId],
-          };
-    if (source === null) {
-      return;
-    }
-    const routedReference = lastDirectModel ?? lastRoutedModel;
-    const routedModel = (() => {
-      if (routedReference === null) {
-        return undefined;
-      }
-      const separator = routedReference.indexOf("/");
-      if (separator <= 0) {
-        return undefined;
-      }
-      return session.modelRuntime.getModel(
-        routedReference.slice(0, separator),
-        routedReference.slice(separator + 1),
-      );
-    })();
-    const model =
-      routedModel ??
-      (options.model !== undefined && !isFallbackModel(options.model)
-        ? options.model
-        : undefined) ??
-      (session.model !== undefined && !isFallbackModel(session.model)
-        ? session.model
-        : undefined);
-    if (model === undefined) {
-      return;
-    }
-    const firstEntry = source.entryIds[0]!;
-    const lastEntry = source.entryIds.at(-1)!;
-    const attemptSha = sha256Text(
-      `${firstEntry}\0${lastEntry}\0${source.transcript}`,
-    );
-    if (summaryAttempts.has(attemptSha)) {
-      return;
-    }
-    summarizedRunId = currentRunId;
-    summaryAttempts.add(attemptSha);
-    const sourceRefs = [
-      `session:${store.sessionId}`,
-      `session:${store.sessionId}:entries:${firstEntry}..${lastEntry}`,
-      `run:${currentRunId}`,
-    ];
-    try {
-      const response = await session.modelRuntime.completeSimple(
-        model,
-        {
-          systemPrompt: SESSION_SUMMARY_SYSTEM_PROMPT,
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: [
-                    `Summarize the ${trigger === "compact" ? "compacted" : "settled"} session for durable project memory.`,
-                    "<session_transcript>",
-                    source.transcript.replaceAll(
-                      "</session_transcript>",
-                      "&lt;/session_transcript>",
-                    ),
-                    "</session_transcript>",
-                  ].join("\n"),
-                },
-              ],
-              timestamp: Date.now(),
-            },
-          ],
-        },
-        {
-          maxTokens: SESSION_SUMMARY_MAX_TOKENS,
-          temperature: 0,
-          cacheRetention: "none",
-          disableContinuation: true,
-          sessionId: store.sessionId,
-        },
-      );
-      const summaryUsage = {
-        provider: model.provider,
-        model: model.id,
-        input_tokens: Math.max(0, Math.trunc(response.usage.input)),
-        output_tokens: Math.max(0, Math.trunc(response.usage.output)),
-        cache_read_tokens: Math.max(0, Math.trunc(response.usage.cacheRead)),
-        cache_write_tokens: Math.max(0, Math.trunc(response.usage.cacheWrite)),
-        total_tokens: Math.max(0, Math.trunc(response.usage.totalTokens)),
-        cost_total: Math.max(0, response.usage.cost?.total ?? 0),
-        stop_reason: response.stopReason,
-      };
-      await appendEvent("model/usage", {
-        run_id: currentRunId,
-        ...summaryUsage,
-        source: "summary",
-      });
-      syncSessionUsage();
-      await maybeExceedBudget(currentRunId);
-      if (response.stopReason !== "stop") {
-        throw new Error("summary model did not complete");
-      }
-      const summary = trimSummaryBytes(
-        redactMemoryContent(
-          response.content
-            .filter((part) => part.type === "text")
-            .map((part) => part.text)
-            .join("\n"),
-        ),
-      );
-      if (summary.length === 0) {
-        return;
-      }
-      const added = await memory.add({
-        scope: "project",
-        content: summary,
-        kind: "session_summary",
-        source: "session_summary",
-        source_refs: sourceRefs,
-        tags: ["session-summary"],
-        importance: 0.4,
-        durability: "project",
-        status: "active",
-      });
-      await appendEvent("memory/write", {
-        scope: "project",
-        action: added.ok ? "add" : "reject",
-        memory_id: added.record?.id ?? null,
-        content_sha256: added.record?.content_sha256 ?? null,
-        source_refs: sourceRefs,
-        reason: added.reason,
-      });
-    } catch {
-      await appendEvent("memory/write", {
-        scope: "project",
-        action: "reject",
-        memory_id: null,
-        content_sha256: null,
-        source_refs: sourceRefs,
-        reason: "summary_failed",
-      }).catch(() => undefined);
-    }
-  };
+
+  const maybeSummarizeSession = createSessionSummarizer({
+    options,
+    store,
+    getSession: () => session,
+    getCurrentRunId: () => currentRunId,
+    getLastDirectModel: () => lastDirectModel,
+    getLastRoutedModel: () => lastRoutedModel,
+    appendEvent,
+    syncSessionUsage,
+    maybeExceedBudget,
+  });
 
   const context =
     options.context ??
@@ -562,9 +365,6 @@ export async function createPiHost(
       cwd,
       deliveryRoot: options.deliveryRoot,
       codepunkHome,
-      // This fallback is a public adapter entry. Without an explicit trust
-      // decision it must not load project instructions; the product runtime
-      // passes the resolved workspace decision in `options.context`.
       projectTrusted: false,
     }));
   const warnings = context.warnings.map(
@@ -584,595 +384,6 @@ export async function createPiHost(
   const productHookState: ProductHookState = {
     session: null,
     assertRegistry: () => {},
-  };
-  let pendingTreeTarget: string | null = null;
-
-  const productExtension: InlineExtension = {
-    name: "codepunk-product",
-    hidden: true,
-    factory: ((pi) => {
-      const refreshWorkState = async (): Promise<void> => {
-        if (store === null) {
-          return;
-        }
-        await eventAppendTail;
-        lastWorkState = readWorkState(store.allEvents);
-      };
-      const renderWorkState = (): string | null => {
-        const sections: string[] = [];
-        if (
-          lastWorkState.plan !== null &&
-          lastWorkState.plan.steps.length > 0
-        ) {
-          sections.push(
-            [
-              `<codepunk_plan sha256="${lastWorkState.plan.sha256}">`,
-              ...lastWorkState.plan.steps.map(
-                (step) => `${step.status}: ${step.step}`,
-              ),
-              ...(lastWorkState.plan.explanation === null
-                ? []
-                : [`note: ${lastWorkState.plan.explanation}`]),
-              "</codepunk_plan>",
-            ].join("\n"),
-          );
-        }
-        if (
-          lastWorkState.todos !== null &&
-          lastWorkState.todos.items.length > 0
-        ) {
-          sections.push(
-            [
-              `<codepunk_todos sha256="${lastWorkState.todos.sha256}">`,
-              ...lastWorkState.todos.items.map(
-                (item) => `${item.status}: ${item.content}`,
-              ),
-              "</codepunk_todos>",
-            ].join("\n"),
-          );
-        }
-        return sections.length === 0 ? null : sections.join("\n\n");
-      };
-      const recordContextRequest = async (
-        messages: ContextEvent["messages"],
-        extensionContext: ExtensionContext,
-      ): Promise<void> => {
-        if (store === null || session === null) {
-          return;
-        }
-        const entries = session.sessionManager.getEntries();
-        const messageEntries: {
-          id: string;
-          message: ContextEvent["messages"][number];
-        }[] = [];
-        let compactionId: string | null = null;
-        for (const entry of entries) {
-          if (entry.type === "message") {
-            const role = (entry.message as { role?: unknown }).role;
-            if (
-              role !== "user" &&
-              role !== "assistant" &&
-              role !== "toolResult"
-            ) {
-              continue;
-            }
-            messageEntries.push(
-              // SAFETY: the role was narrowed to user/assistant/toolResult
-              // above, so the entry carries a matching message shape.
-              entry as unknown as {
-                id: string;
-                message: ContextEvent["messages"][number];
-              },
-            );
-          } else if (entry.type === "compaction") {
-            compactionId = entry.id;
-          }
-        }
-        const usedEntryIds = new Set<string>();
-        const messageIds: string[] = [];
-        for (const message of messages) {
-          const byObject = messageEntries.find(
-            (entry) => entry.message === message && !usedEntryIds.has(entry.id),
-          );
-          const byTimestamp =
-            byObject ??
-            messageEntries.find(
-              (entry) =>
-                !usedEntryIds.has(entry.id) &&
-                entry.message.role === message.role &&
-                entry.message.timestamp === message.timestamp,
-            );
-          if (byTimestamp !== undefined) {
-            usedEntryIds.add(byTimestamp.id);
-            messageIds.push(byTimestamp.id);
-            continue;
-          }
-          messageIds.push(
-            `msg-${sha256Text(canonicalJson(message)).slice(7, 23)}`,
-          );
-        }
-        const omittedIds: string[] = [];
-        const ranges: { start: number; end: number }[] = [];
-        let rangeStart: number | null = null;
-        messageEntries.forEach((entry, index) => {
-          if (usedEntryIds.has(entry.id)) {
-            if (rangeStart !== null) {
-              ranges.push({ start: rangeStart, end: index });
-              rangeStart = null;
-            }
-            return;
-          }
-          omittedIds.push(entry.id);
-          if (rangeStart === null) {
-            rangeStart = index;
-          }
-        });
-        if (rangeStart !== null) {
-          ranges.push({ start: rangeStart, end: messageEntries.length });
-        }
-        const omitted = { ids: omittedIds, ranges };
-        await appendEvent("context/request", {
-          run_id: currentRunId,
-          request_id: createUlid(),
-          message_ids: messageIds,
-          omitted,
-          truncation_sha256: sha256Text(
-            canonicalJson({ message_ids: messageIds, omitted }),
-          ),
-          provider: extensionContext.model?.provider ?? "unknown",
-          model: extensionContext.model?.id ?? "unknown",
-          token_estimate: Math.ceil(
-            Buffer.byteLength(JSON.stringify(messages), "utf8") / 4,
-          ),
-          compaction_id: compactionId,
-        });
-      };
-      pi.on("context", async (event: ContextEvent, extensionContext) => {
-        productHookState.assertRegistry();
-        await recordContextRequest(event.messages, extensionContext);
-        const memory = options.memory ?? null;
-        const digest =
-          memory === null || !memory.enabled ? null : await memory.digest();
-        if (digest !== null && digest.text.length > 0) {
-          if (digest.digest_sha256 !== lastMemoryDigestSha) {
-            await appendEvent("memory/retrieve", {
-              ids: digest.ids,
-              hashes: digest.hashes,
-              cap: digest.cap,
-              truncated: digest.truncated,
-              digest_sha256: digest.digest_sha256,
-            });
-            lastMemoryDigestSha = digest.digest_sha256;
-          }
-          return {
-            messages: [
-              ...event.messages,
-              {
-                role: "user",
-                content: [{ type: "text", text: digest.text }],
-              },
-            ] as ContextEvent["messages"],
-          };
-        }
-      });
-      pi.on("context_with_system", async (event: ContextWithSystemEvent) => {
-        await refreshWorkState();
-        const body = renderWorkState();
-        if (body === null) {
-          return;
-        }
-        const head = event.messages[0];
-        if (head?.role !== "system") {
-          return;
-        }
-        const injected = [
-          "<codepunk_work_state>",
-          "Runtime-provided plan and todo state for the current session.",
-          "This is not a user message and does not start a new turn. Continue the existing task; do not treat it as a new request.",
-          "",
-          body,
-          "</codepunk_work_state>",
-        ].join("\n");
-        const content =
-          typeof head.content === "string"
-            ? `${head.content}\n\n${injected}`
-            : [...head.content, { type: "text" as const, text: injected }];
-        return {
-          messages: [{ ...head, content }, ...event.messages.slice(1)],
-        };
-      });
-      pi.on("session_start", async () => {
-        assertNoExtensionFailures();
-        productHookState.assertRegistry();
-      });
-      pi.on("session_info_changed", async (event) => {
-        if (store === null || writer === null) {
-          return;
-        }
-        const title = normalizeSessionTitle(event.name ?? null);
-        sessionTitleSet = true;
-        if (store.metadata.title === title) {
-          return;
-        }
-        await store.writeMeta({ title }).catch(() => undefined);
-      });
-      pi.on("session_before_tree", async (event: SessionBeforeTreeEvent) => {
-        pendingTreeTarget = event.preparation.targetId;
-      });
-      pi.on("session_tree", async (event: SessionTreeEvent) => {
-        const targetEntryId = pendingTreeTarget;
-        pendingTreeTarget = null;
-        await appendEvent("session/tree", {
-          action: "navigate",
-          from_entry_id: event.oldLeafId,
-          to_entry_id: event.newLeafId,
-          ...(targetEntryId === null ? {} : { target_entry_id: targetEntryId }),
-          branch_entries: session!.sessionManager.getBranch().length,
-        });
-        await saveHostAgentState();
-      });
-      pi.on("model_select", async (event) => {
-        await appendEvent("model/change", {
-          previous:
-            event.previousModel === undefined
-              ? null
-              : `${event.previousModel.provider}/${event.previousModel.id}`,
-          model: `${event.model.provider}/${event.model.id}`,
-          thinking: productHookState.session?.thinkingLevel ?? null,
-        });
-      });
-      pi.on("message_end", async (event) => {
-        if (event.message.role === "assistant") {
-          lastAssistantStopReason = event.message.stopReason;
-          const usage = modelUsageFromMessage(event);
-          if (usage !== null) {
-            await appendEvent("model/usage", {
-              run_id: currentRunId,
-              ...usage,
-              source: "assistant",
-            });
-          }
-        }
-        syncSessionUsage();
-        await maybeExceedBudget(currentRunId);
-      });
-      pi.on("session_compact", async () => {
-        syncSessionUsage();
-        await maybeExceedBudget(currentRunId);
-      });
-      pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {
-        assertNoExtensionFailures();
-        productHookState.assertRegistry();
-        event.systemPromptOptions.sections["product"] = PRODUCT_SYSTEM_SECTION;
-        let goalContext: string | null = null;
-        if (store !== null) {
-          try {
-            goalContext = goalModelContext(store.allEvents);
-          } catch (error) {
-            const reason =
-              error instanceof Error ? error.message : String(error);
-            await store
-              .append("goal/error", {
-                version: 1,
-                code: "goal.corrupt",
-                reason: reason.slice(0, 2_000),
-                created_at: new Date().toISOString(),
-              })
-              .catch(() => undefined);
-            throw new GoalCorruptError(
-              `goal state could not be injected; the prompt was blocked: ${reason}`,
-              { cause: error },
-            );
-          }
-        }
-        if (goalContext === null) {
-          delete event.systemPromptOptions.sections["goal"];
-        } else {
-          event.systemPromptOptions.sections["goal"] = goalContext;
-        }
-        if (currentRuntimeEnvironment !== null) {
-          event.systemPromptOptions.sections["environment"] =
-            currentRuntimeEnvironment();
-        }
-        await beginRun();
-        if (event.messageType === "user" && !inputRecorded) {
-          await appendEvent("user/input", {
-            run_id: currentRunId,
-            text: event.prompt,
-          });
-          inputRecorded = true;
-        }
-      });
-      pi.on("input", async (event: InputEvent, context) => {
-        if (extensionFailures.length > 0) {
-          const first = extensionFailures[0]!;
-          context.ui.notify(
-            `codepunk blocked the prompt: product extension handler ${first.event} failed: ${first.error}`,
-            "error",
-          );
-          return { action: "handled" as const };
-        }
-        if (store !== null) {
-          try {
-            goalModelContext(store.allEvents);
-          } catch (error) {
-            const reason =
-              error instanceof Error ? error.message : String(error);
-            await appendEvent("goal/error", {
-              version: 1,
-              code: "goal.corrupt",
-              reason: reason.slice(0, 2_000),
-              created_at: new Date().toISOString(),
-            });
-            context.ui.notify(
-              `codepunk blocked the prompt: goal state is corrupt: ${reason}`,
-              "error",
-            );
-            return { action: "handled" as const };
-          }
-        }
-        if (budgetExceeded) {
-          context.ui.notify(budgetExceededMessage(), "error");
-          return { action: "handled" as const };
-        }
-        await beginRun();
-        await appendEvent("user/input", {
-          run_id: currentRunId,
-          text: event.text,
-        });
-        if (
-          !sessionTitleSet &&
-          store !== null &&
-          store.metadata.title === null
-        ) {
-          const title = normalizeSessionTitle(event.text);
-          if (title !== null) {
-            await store.writeMeta({ title }).catch(() => undefined);
-          }
-        }
-        sessionTitleSet = true;
-        inputRecorded = true;
-        const expanded = await expandPromptFileSlices(event.text, {
-          cwd,
-          workspaceRoot: options.workspaceRoot,
-          deliveryRoot: options.deliveryRoot,
-          ...(options.additionalRoots !== undefined
-            ? { additionalRoots: options.additionalRoots }
-            : {}),
-          codepunkHome,
-          ...(options.filesystem !== undefined
-            ? { filesystem: options.filesystem }
-            : {}),
-        });
-        for (const warning of expanded.warnings) {
-          context.ui.notify(warning, "warning");
-        }
-        if (expanded.slices.length > 0) {
-          return { action: "transform" as const, text: expanded.text };
-        }
-        return { action: "continue" as const };
-      });
-      pi.on("tool_call", async () => {
-        productHookState.assertRegistry();
-        if (budgetExceeded) {
-          return {
-            block: true,
-            terminate: true,
-            reason: budgetExceededMessage(),
-          };
-        }
-        return undefined;
-      });
-      pi.on("agent_start", async () => {
-        await beginRun();
-      });
-      pi.on("agent_before_settle", async (event) => {
-        if (
-          options.beforeStopHook === undefined ||
-          event.outcome !== "completed" ||
-          budgetExceeded
-        ) {
-          return undefined;
-        }
-        try {
-          await options.beforeStopHook({
-            run_id: currentRunId,
-            session_id: options.sessionId,
-            cwd,
-            attempt: beforeStopAttempt + 1,
-          });
-          beforeStopBlockedReason = null;
-          return undefined;
-        } catch (error) {
-          beforeStopAttempt += 1;
-          const maxRetries = options.maxBeforeStopRetries ?? 2;
-          const reason = error instanceof Error ? error.message : String(error);
-          const preview =
-            error instanceof HookBlockedError ? error.preview : null;
-          if (beforeStopAttempt <= maxRetries) {
-            const feedback = [
-              `[before_stop hook blocked completion (attempt ${beforeStopAttempt}/${maxRetries})]: ${reason}`,
-              ...(preview !== null ? [preview] : []),
-              "Resolve the verification failure before finishing.",
-            ].join("\n");
-            return {
-              entries: [
-                ...event.entries,
-                {
-                  type: "custom_message" as const,
-                  customType: "codepunk:before_stop",
-                  content: [{ type: "text" as const, text: feedback }],
-                  display: true,
-                },
-              ],
-              continue: true,
-            };
-          }
-          beforeStopBlockedReason = reason;
-          return undefined;
-        }
-      });
-      pi.on("agent_settled", async (event: AgentSettledEvent) => {
-        await retryEventTail;
-        const retryFailure = retryEventFailure;
-        const state = event.aborted
-          ? "aborted"
-          : lastAssistantStopReason === "error" ||
-              beforeStopBlockedReason !== null
-            ? "failed"
-            : "settled";
-        await endRun(
-          state,
-          beforeStopBlockedReason !== null ? "before_stop_blocked" : null,
-        );
-        if (state === "settled") {
-          await maybeSummarizeSession("settled");
-        }
-        await saveHostAgentState();
-        if (retryFailure !== null) {
-          throw new Error(
-            `cannot record automatic retry evidence: ${
-              retryFailure instanceof Error
-                ? retryFailure.message
-                : String(retryFailure)
-            }`,
-          );
-        }
-      });
-      pi.on("user_bash", async (event: UserBashEvent) => {
-        await beginRun();
-        const userBashRunId = currentRunId;
-        const toolCallId = `user-bash-${createUlid()}`;
-        const result = await wrapUserBashCommand(event.command, toolCallId, {
-          ...wrapOptions,
-          cwd: event.cwd,
-          mode: "interactive",
-          onUserBashResult: async (completed) => {
-            await appendEvent("bash/result", {
-              run_id: userBashRunId,
-              command: completed.command,
-              exit_code: completed.exitCode,
-              output_sha256: outputSha(completed.output),
-              cancelled: completed.cancelled,
-            });
-            await endRun(
-              completed.cancelled
-                ? "cancelled"
-                : completed.exitCode === 0
-                  ? "settled"
-                  : "failed",
-              completed.timedOut ? "user_bash_timed_out" : null,
-            );
-          },
-          onUserBashFailure: async () => {
-            await endRun("failed", "user_bash_execution_error");
-          },
-        });
-        if ("result" in result && result.result !== undefined) {
-          await endRun("failed", "user_bash_denied");
-        }
-        return result satisfies UserBashEventResult;
-      });
-      pi.on(
-        "session_before_compact",
-        async (event: SessionBeforeCompactEvent) => {
-          pendingCompactionMessages =
-            event.preparation.messagesToSummarize.length +
-            event.preparation.turnPrefixMessages.length;
-        },
-      );
-      pi.on("session_compact", async (event: SessionCompactEvent) => {
-        const checkpointEntry = event.compactionEntry;
-        const checkpointSource = session!.sessionManager.getBranch();
-        const firstSummarizedIndex = checkpointSource.findIndex(
-          (entry) => entry.id === checkpointEntry.firstKeptEntryId,
-        );
-        const messagesAfter =
-          session!.sessionManager.buildSessionProjection().messages.length;
-        const messagesBefore =
-          pendingCompactionMessages ??
-          checkpointSource
-            .slice(
-              0,
-              firstSummarizedIndex < 0
-                ? checkpointSource.length
-                : firstSummarizedIndex,
-            )
-            .filter((entry) => entry.type === "message").length;
-        const activeModel = session!.model;
-        const activeReference =
-          activeModel === undefined
-            ? null
-            : `${activeModel.provider}/${activeModel.id}`;
-        const checkpointModel =
-          activeModel !== undefined && !isFallbackModel(activeModel)
-            ? activeReference
-            : (lastDirectModel ?? lastRoutedModel ?? activeReference);
-        const checkpointUsage =
-          checkpointEntry.usage === undefined
-            ? null
-            : {
-                input_tokens: checkpointEntry.usage.input,
-                output_tokens: checkpointEntry.usage.output,
-                cache_read_tokens: checkpointEntry.usage.cacheRead,
-                cache_write_tokens: checkpointEntry.usage.cacheWrite,
-                total_tokens: checkpointEntry.usage.totalTokens,
-                cost_total:
-                  Math.round(checkpointEntry.usage.cost.total * 1_000_000) /
-                  1_000_000,
-              };
-        await appendEvent("compaction/decision", {
-          run_id: currentRunId,
-          reason: event.reason,
-          cancelled: false,
-          entries: 1,
-          keep_recent_tokens:
-            options.settings?.compaction?.keepRecentTokens ?? 0,
-          evidence_head: options.ledger.head,
-          checkpoint: {
-            compaction_entry_id: checkpointEntry.id,
-            first_kept_entry_id: checkpointEntry.firstKeptEntryId,
-            summary_sha256: sha256Text(checkpointEntry.summary),
-            summary_bytes: Buffer.byteLength(checkpointEntry.summary, "utf8"),
-            tokens_before: checkpointEntry.tokensBefore,
-            messages_before: messagesBefore,
-            messages_after: messagesAfter,
-            model: checkpointModel,
-            loadout_sha256:
-              checkpointEntry.systemMessage === undefined
-                ? null
-                : sha256Text(JSON.stringify(checkpointEntry.systemMessage)),
-            tool_names: [...session!.getActiveToolNames()].sort(),
-            ...(checkpointUsage === null ? {} : { usage: checkpointUsage }),
-          },
-        });
-        pendingCompactionMessages = null;
-        lastDirectModel = null;
-        await saveHostAgentState();
-        await maybeSummarizeSession("compact", {
-          summary: checkpointEntry.summary,
-          entryId: checkpointEntry.id,
-        });
-      });
-      pi.on(
-        "session_compact_failed",
-        async (event: SessionCompactFailedEvent) => {
-          await appendEvent("compaction/decision", {
-            run_id: currentRunId,
-            reason: event.reason,
-            cancelled: true,
-            entries: 0,
-            keep_recent_tokens:
-              options.settings?.compaction?.keepRecentTokens ?? 0,
-            evidence_head: options.ledger.head,
-            ...(event.errorMessage === undefined
-              ? {}
-              : { failure: event.errorMessage }),
-          });
-          pendingCompactionMessages = null;
-        },
-      );
-    }) as ExtensionFactory,
   };
 
   const wrapOptions: ToolWrapOptions = {
@@ -1220,6 +431,58 @@ export async function createPiHost(
       leafId: session.sessionManager.getLeafId(),
     });
   };
+
+  const productExtension = createProductExtension({
+    options,
+    cwd,
+    codepunkHome,
+    store,
+    productHookState,
+    currentRuntimeEnvironment,
+    extensionFailures,
+    assertNoExtensionFailures,
+    getSession: () => session,
+    getWriter: () => writer,
+    getWrapOptions: () => wrapOptions,
+    getEventAppendTail: () => eventAppendTail,
+    getRetryEventTail: () => retryEventTail,
+    getRetryEventFailure: () => retryEventFailure,
+    appendEvent,
+    beginRun,
+    endRun,
+    saveHostAgentState,
+    maybeSummarizeSession,
+    syncSessionUsage,
+    maybeExceedBudget,
+    isBudgetExceeded: () => budgetExceeded,
+    budgetExceededMessage,
+    getCurrentRunId: () => currentRunId,
+    getInputRecorded: () => inputRecorded,
+    setInputRecorded: (value) => {
+      inputRecorded = value;
+    },
+    getLastMemoryDigestSha: () => lastMemoryDigestSha,
+    setLastMemoryDigestSha: (value) => {
+      lastMemoryDigestSha = value;
+    },
+    getLastAssistantStopReason: () => lastAssistantStopReason,
+    setLastAssistantStopReason: (value) => {
+      lastAssistantStopReason = value;
+    },
+    getBeforeStopAttempt: () => beforeStopAttempt,
+    setBeforeStopAttempt: (value) => {
+      beforeStopAttempt = value;
+    },
+    getBeforeStopBlockedReason: () => beforeStopBlockedReason,
+    setBeforeStopBlockedReason: (value) => {
+      beforeStopBlockedReason = value;
+    },
+    getLastDirectModel: () => lastDirectModel,
+    setLastDirectModel: (value) => {
+      lastDirectModel = value;
+    },
+    getLastRoutedModel: () => lastRoutedModel,
+  });
 
   try {
     if (store !== null) {
@@ -1305,133 +568,18 @@ export async function createPiHost(
       },
     });
 
-    let sessionModel = options.model;
-    const fallbackModels: string[] = [];
-    let selectableFallbackModels: FallbackModel[] = [];
-    const restoredChain =
-      options.restore === undefined || options.restore === null
-        ? undefined
-        : restoredFallbackChain(options.restore.branch);
-    const restoredSelection =
-      options.restore === undefined || options.restore === null
-        ? undefined
-        : latestBranchModelSelection(options.restore.branch);
-    const selectionIsFallback =
-      restoredSelection !== undefined &&
-      restoredSelection.provider === FALLBACK_PROVIDER &&
-      restoredSelection.id === FALLBACK_MODEL_ID;
-    const keepRestoredSelection =
-      restoredSelection !== undefined && !selectionIsFallback;
-    const configuredFallbackModels = options.fallbackModels ?? [];
-    const wantsFallback =
-      configuredFallbackModels.length > 0 && !keepRestoredSelection;
-    if (selectionIsFallback && configuredFallbackModels.length === 0) {
-      throw new HostIsolationError(
-        "this session used a model fallback chain but model.fallback is no longer configured; restore the chain or start a new session",
-      );
-    }
-    if (wantsFallback) {
-      if (options.model === undefined) {
-        throw new HostIsolationError(
-          "model fallback requires a selected primary model",
-        );
-      }
-      const chain = resolveFallbackChain(services.modelRuntime, [
-        `${options.model.provider}/${options.model.id}`,
-        ...configuredFallbackModels,
-      ]);
-      if (chain.missing.length > 0) {
-        throw new HostIsolationError(
-          `model fallback references unknown models: ${chain.missing.join(", ")}`,
-        );
-      }
-      const enabledPatterns = services.settingsManager.getEnabledModels() ?? [];
-      const scoped =
-        enabledPatterns.length === 0
-          ? null
-          : await resolveModelScopeWithDiagnostics(
-              enabledPatterns,
-              services.modelRuntime,
-            );
-      const enabledModels =
-        scoped === null
-          ? undefined
-          : new Set(
-              scoped.scopedModels.map((entry) => modelReference(entry.model)),
-            );
-      const errors = await fallbackConfigurationErrors(options.model, chain, {
-        allowCrossProvider: options.fallbackAllowCrossProvider === true,
-        authenticated: async (provider) =>
-          (await services!.modelRuntime.checkAuth(provider)) !== undefined,
-        ...(enabledModels === undefined ? {} : { enabledModels }),
+    const { sessionModel, fallbackModels, selectableFallbackModels } =
+      await configureHostModelSelection({
+        options,
+        services,
+        appendEvent,
+        onObservation: (observation) => {
+          lastRoutedModel = observation.model;
+          if (observation.reason === "direct") {
+            lastDirectModel = observation.model;
+          }
+        },
       });
-      if (errors.length > 0) {
-        throw new HostIsolationError(
-          `invalid model fallback: ${errors.join("; ")}`,
-        );
-      }
-      if (
-        restoredChain !== undefined &&
-        restoredChain.join("\n") !==
-          fallbackChainReference(chain.models).join("\n")
-      ) {
-        throw new HostIsolationError(
-          "model fallback chain changed since this session started; restore the previous chain or start a new session",
-        );
-      }
-      if (chain.models.length > 1) {
-        selectableFallbackModels = [...chain.models];
-        const fallbackChainSha = sha256Text(
-          fallbackChainReference(chain.models).join("\n"),
-        );
-        services.modelRuntime.registerVirtualModel(
-          fallbackModelDefinition(
-            chain.models,
-            (provider) => services!.modelRuntime.hasConfiguredAuth(provider),
-            undefined,
-            async (attempt) => {
-              await appendEvent("model/fallback", {
-                from: attempt.from,
-                to: attempt.to,
-                reason: attempt.reason,
-                stop_reason: attempt.stopReason,
-                attempted: attempt.attempted,
-                exhausted: attempt.exhausted,
-                chain_sha256: fallbackChainSha,
-              });
-            },
-            (observation) => {
-              lastRoutedModel = observation.model;
-              if (observation.reason === "direct") {
-                lastDirectModel = observation.model;
-              }
-            },
-          ),
-        );
-        sessionModel = services.modelRuntime.getModel(
-          FALLBACK_PROVIDER,
-          FALLBACK_MODEL_ID,
-        );
-        if (sessionModel === undefined) {
-          throw new HostIsolationError(
-            "model fallback virtual model was not registered",
-          );
-        }
-        fallbackModels.push(...chain.models.map(modelReference));
-      }
-    }
-    if (keepRestoredSelection) {
-      const selected = services.modelRuntime.getPhysicalModel(
-        restoredSelection.provider,
-        restoredSelection.id,
-      );
-      if (selected === undefined) {
-        throw new HostIsolationError(
-          `restored model ${restoredSelection.provider}/${restoredSelection.id} is not in the current catalog`,
-        );
-      }
-      sessionModel = selected;
-    }
 
     const restored =
       options.restore === undefined || options.restore === null
@@ -1521,10 +669,6 @@ export async function createPiHost(
       ...buildExtraDefinitions(options.extraTools ?? []),
     ];
     const wrapped = await wrapToolDefinitions(definitions, wrapOptions);
-    // MCP servers can be added or removed while this session is running. Keep
-    // their name patterns in Pi's allowlist so tools from a reloaded server are
-    // not filtered out as "unknown" before activation. Codepunk still wraps
-    // every registered MCP tool through the normal policy/approval path.
     const mcpToolPatterns = [
       "mcp__*",
       "plugin__*",
@@ -1581,9 +725,6 @@ export async function createPiHost(
     };
     const transformContext = session.agent.transformContext;
     session.agent.transformContext = async (messages, signal) => {
-      // Pi records extension-handler failures and keeps running. This guard is
-      // deliberately outside the extension runner so a tool registered after
-      // startup still fails closed before the next model request.
       validate();
       const transformed = transformContext
         ? await transformContext(messages, signal)
@@ -1676,6 +817,7 @@ export async function createPiHost(
       );
       loaderPaths.splice(0, loaderPaths.length, ...normalized);
     };
+
     return {
       session,
       services,

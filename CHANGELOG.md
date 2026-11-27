@@ -68,17 +68,36 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Enhanced `edit` tool with unique indentation-preserving fallback and unified
   diff preview/anchor hints across `edits[]`, enhanced `read` tool with
   zero-dependency top-level symbol outlines (`[file outline]`) on large code
-  files read without `offset`/`limit`, and 5 deterministic coding-loop cases in
-  `eval/` (17/17 passing).
+  files read without `offset`/`limit`, and 20 deterministic coding-loop cases in
+  `eval/` (20/20 passing).
+- Single-call human-approved `unsandboxed_once` shell escape in trusted
+  interactive workspaces (enforced in both `TuiApprovalChannel` and
+  `ApprovalBroker` with `[policy, unsandboxed-once]` evidence), `sandbox.user_bash`
+  host-direct option, TUI `/stash` (`Alt+S`) draft stashing, and `/learn`
+  session rule distillation.
+- Shadow Git atomic worktree snapshots (`ShadowGitStore` + `/rewind shadow`)
+  covering `write`, `edit`, and `bash` worktree mutations without touching the
+  project `.git` history, plus zero-dependency read-only `lsp_query`
+  (`definitions`, `references`, `diagnostics`, `outline`).
+- Standard Agent Client Protocol (`codepunk acp`) wire support (`initialize`,
+  `session/new`, `session/load`, content-block `session/prompt`,
+  `session/update`, `session/cancel`), `codepunk --worktree [name]` (`-w`)
+  isolated branch/worktree launch, OS keychain credential store
+  (`model.credential_store = "file" | "keychain" | "auto"`, `codepunk models
+auth`), `codepunk doctor` `policy` v1/v2 self-check diagnostics, and
+  isolated subprocess `PluginHost` (`plugin.toml`) bidirectional product-tool
+  bridging with `plugin/started`, `plugin/tool_call`, and `plugin/stopped`
+  session events.
 
 ### Changed
 
 - Expanded read-only shell pipeline auto-allow filters (`sort`, `uniq`, `cut`,
   `tr`, `nl`, `fd`, `basename`, `dirname`) with strict mutation-flag and
   workspace read-target guards.
-- Split the 6 largest `packages/core/src/` monoliths (`model`, `policy`,
-  `config`, `wrap`, `adapters/pi`, `runtime`) into cohesive internal submodules
-  behind each module's `index.ts` barrel with zero public API changes.
+- Split all 8 oversized `packages/core/src/` monoliths (`model`, `policy`,
+  `config`, `wrap`, `sandbox`, `mcp`, `adapters/pi`, `runtime`) into cohesive
+  internal submodules behind each module's `index.ts` barrel and added a
+  `1,500`-line `[core.size]` repository check gate with zero public API changes.
 
 - Non-blocking async MCP startup in TUI (`deferMcp`) so the first interactive
   frame renders immediately while MCP connects in the background and hot-reloads

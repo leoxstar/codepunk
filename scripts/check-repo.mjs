@@ -242,6 +242,7 @@ const REVIEWED_COMPUTED_IMPORTS = new Map([
 
 const CLI_SOURCE_FILE_LIMIT = 600;
 const CLI_FUNCTION_LIMIT = 150;
+const CORE_SOURCE_FILE_LIMIT = 1500;
 // Exemptions are path + reviewed reason only; source comments are not an
 // escape hatch. Keep this empty unless a spec records why a file must exceed
 // the limit.
@@ -2183,6 +2184,21 @@ async function checkCliSize(root, files, add) {
   }
 }
 
+async function checkCoreSize(root, files, add) {
+  const coreRoot = "packages/core/src";
+  for (const relativePath of sourceFilesForPackage(files, coreRoot)) {
+    const content = await readFile(path.join(root, relativePath), "utf8");
+    const lines = physicalLineCount(content);
+    if (lines > CORE_SOURCE_FILE_LIMIT) {
+      add(
+        "core.size",
+        relativePath,
+        `file has ${lines} lines; limit is ${CORE_SOURCE_FILE_LIMIT}`,
+      );
+    }
+  }
+}
+
 async function checkSourceImports(root, files, add) {
   for (const spec of PACKAGE_SPECS) {
     const packageRoot = path.join(root, spec.dir);
@@ -3145,6 +3161,7 @@ export async function checkRepository({
 
   await checkSourceImports(normalizedRoot, scanned, add);
   await checkCliSize(normalizedRoot, scanned, add);
+  await checkCoreSize(normalizedRoot, scanned, add);
 
   if (requireBuilt) {
     await checkBuiltEntries(normalizedRoot, scanned, add);
