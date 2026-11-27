@@ -178,8 +178,10 @@ async function inspectSkillRoot(
       `skill root must be a real directory: ${root}`,
     );
   }
+  const baseDir = scope === "project" ? paths.projectConfigDir : paths.home;
+  const realBase = normalizeAbsolute(await fs.realpath(baseDir));
   const real = normalizeAbsolute(await fs.realpath(root));
-  if (real !== normalizeAbsolute(root)) {
+  if (real !== normalizeAbsolute(path.join(realBase, "skills"))) {
     throw new SkillError(
       "skill.root_symlink",
       "skill root must not be a symlink",
@@ -223,8 +225,18 @@ async function copySkillTree(
   target: string,
   state: CopyState,
 ): Promise<void> {
+  const sourceStat = await fs.lstat(source);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new SkillError(
+      "skill.source_symlink",
+      "skill source must not use symlinked paths",
+    );
+  }
+  const realParent = normalizeAbsolute(await fs.realpath(path.dirname(source)));
   const real = normalizeAbsolute(await fs.realpath(source));
-  if (real !== normalizeAbsolute(source)) {
+  if (
+    real !== normalizeAbsolute(path.join(realParent, path.basename(source)))
+  ) {
     throw new SkillError(
       "skill.source_symlink",
       "skill source must not use symlinked paths",

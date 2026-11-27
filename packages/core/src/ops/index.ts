@@ -451,7 +451,10 @@ async function inspectPolicyDoctorCheck(
     };
   } catch (error) {
     const rawMessage =
-      error instanceof ConfigError && error.key !== undefined
+      error instanceof ConfigError &&
+      error.key !== undefined &&
+      error.key !== null &&
+      error.key.length > 0
         ? `[${error.key}] ${error.message}`
         : error instanceof Error
           ? error.message

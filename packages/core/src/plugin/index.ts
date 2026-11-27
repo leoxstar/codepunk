@@ -174,6 +174,24 @@ export async function removeUserPlugin(options: {
     throw new PluginError("plugin name is invalid", "plugin.invalid_name");
   }
   const extensionDir = normalizeAbsolute(options.extensionDir);
+  let dirStat;
+  try {
+    dirStat = await fs.lstat(extensionDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new PluginError(
+        `plugin ${options.name} is not installed`,
+        "plugin.not_found",
+      );
+    }
+    throw error;
+  }
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) {
+    throw new PluginError(
+      "plugin target must not use a symlinked path",
+      "plugin.target_escape",
+    );
+  }
   const target = path.join(extensionDir, options.name);
   let stat;
   try {
@@ -193,8 +211,9 @@ export async function removeUserPlugin(options: {
       "plugin.target_type",
     );
   }
+  const realDir = normalizeAbsolute(await fs.realpath(extensionDir));
   const real = normalizeAbsolute(await fs.realpath(target));
-  if (real !== normalizeAbsolute(target)) {
+  if (real !== normalizeAbsolute(path.join(realDir, options.name))) {
     throw new PluginError(
       "plugin target must not use a symlinked path",
       "plugin.target_escape",
