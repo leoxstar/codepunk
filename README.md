@@ -13,11 +13,14 @@ explicit policy boundary around file and shell actions.
 - One-command and guided onboarding via `codepunk setup` (Anthropic, OpenAI,
   Google, DeepSeek, OpenRouter, custom OpenAI-compatible endpoints, or ambient
   API-key detection) plus in-TUI API-key entry and OAuth `/login`.
-- Fast keyboard workflow: `Alt+M` cycles work mode (`plan` → `standard` →
-  `auto` → `auto-approve`), `Alt+T` opens the unified `/tasks` center, `Alt+R`
-  opens the `/rewind` checkpoint/branch picker, `F1` opens the searchable
-  command help browser, `F2` cycles recent models, and `Shift+Tab` cycles
-  reasoning level.
+- Fast keyboard workflow: `Alt+K` opens the non-blocking fuzzy command palette,
+  `Alt+M` cycles work mode (`plan` → `standard` → `auto` → `auto-approve`),
+  `Alt+T` opens the unified `/tasks` center, `Alt+R` opens the `/rewind`
+  checkpoint/branch picker, `Alt+G` (`/editor [--reply]`) composes prompts in
+  `$VISUAL`/`$EDITOR`, `/copy [last|<n>|code [n]]` copies assistant replies or
+  code blocks (with OSC 52 SSH fallback), `F1` opens the searchable command
+  help browser, `F2` cycles recent models, and `Shift+Tab` cycles reasoning
+  level.
 - Built-in agent loop tools with unified TUI renderers: `ask_user` structured
   clarification cards, controlled depth-1 read-only `subagent` delegation,
   `web_fetch` and `web_search` (supporting `TAVILY_API_KEY`, `BRAVE_API_KEY`,
@@ -39,7 +42,16 @@ explicit policy boundary around file and shell actions.
   only that call. The tool refuses private, loopback, and link-local hosts
   and applies the operator's `sandbox.network_deny` list to every hop,
   including redirects.
-- Append-only evidence with a hash chain and human sign-off.
+- Append-only evidence with a hash chain, human sign-off, PR-ready Markdown/JSON
+  verification summaries (`codepunk attest [session-id] [--output path] [--json]`
+  and `/attest [copy]`), local approval-friction diagnostics (`codepunk
+permissions insights [--json]` and `/permissions insights`), and headless
+  output schema enforcement (`codepunk -p --json-schema <schema|file>`).
+- Session-level taint escalation after untrusted `web_fetch`/`web_search`
+  ingestion (skipping model auto-review and requiring human approval for
+  non-read-only shell/MCP calls), exact `(cwd, command)` session reuse for
+  approved shell pipelines, and automatic test-runner passing-line folding that
+  preserves raw evidence SHA-256 hashes.
 - Codepunk-owned sessions with live `/resume`, `/new`, `/fork`, `/clone`, and
   `/tree` in the TUI, where the bare command opens Pi's searchable branch
   selector and `/tree list` prints the full tree, plus CLI listing, export,

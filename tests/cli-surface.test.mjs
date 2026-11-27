@@ -42,6 +42,7 @@ const SUBCOMMANDS = [
   "migrate",
   "backup",
   "export",
+  "attest",
   "pin",
   "sign",
   "daemon",

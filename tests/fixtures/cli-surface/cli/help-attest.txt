@@ -1,0 +1,3 @@
+usage:
+  codepunk attest [session-id] [--output path] [--json]
+      summarize verified evidence chain, modified files, shell exits, and sign-offs

@@ -20,6 +20,7 @@ export function permissionUsage(): string {
     "  /permissions sandbox network [allow|deny <domain>...|clear]",
     "  /permissions filesystem workspace|full",
     "  /permissions rules",
+    "  /permissions insights",
     "  /permissions why -- <shell command>",
     "  /trust [status|grant|revoke] [config,policy,skills,instructions]",
   ].join("\n");

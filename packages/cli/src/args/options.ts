@@ -8,6 +8,7 @@ import type {
 export interface CliOptions {
   print: boolean;
   mode: "text" | "json";
+  jsonSchema: string | undefined;
   continueSession: boolean;
   session: string | undefined;
   fork: string | undefined;

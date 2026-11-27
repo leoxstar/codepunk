@@ -32,6 +32,10 @@ import {
 } from "codepunk-core";
 import type { CliOptions } from "../args/options.ts";
 import { resolveProject } from "../run/project.ts";
+import {
+  permissionsInsights,
+  permissionsRules,
+} from "./permission-insights.ts";
 
 type ProjectPaths = Awaited<ReturnType<typeof resolveProject>>["paths"];
 
@@ -105,6 +109,7 @@ function formatPermissions(
     "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
     "  codepunk permissions filesystem workspace|full",
     "  codepunk permissions rules",
+    "  codepunk permissions insights",
     "  codepunk permissions why -- <shell command>",
     "  codepunk trust [status|grant|revoke] [path] [--resources <kinds>]",
   ].join("\n");
@@ -181,6 +186,9 @@ export async function commandPermissions(options: CliOptions): Promise<number> {
   if (group === "rules") {
     return permissionsRules(options);
   }
+  if (group === "insights") {
+    return permissionsInsights(options);
+  }
   if (group === "why") {
     return permissionsWhy(options);
   }
@@ -197,7 +205,7 @@ export async function commandPermissions(options: CliOptions): Promise<number> {
     group !== "filesystem"
   ) {
     throw new Error(
-      "permissions requires profile, approval, reviewer, autonomy, sandbox, filesystem, or why",
+      "permissions requires profile, approval, reviewer, autonomy, sandbox, filesystem, rules, insights, or why",
     );
   }
   if (value === undefined) {
@@ -226,35 +234,6 @@ async function permissionsShow(options: CliOptions): Promise<number> {
           additional_roots: paths.additionalRoots,
         })}\n`
       : `${text}\n`,
-  );
-  return 0;
-}
-
-async function permissionsRules(options: CliOptions): Promise<number> {
-  const { paths, config } = await resolveProject(options);
-  if (config.autonomy.scoped_rules === null) {
-    if (options.json) {
-      process.stdout.write("[]\n");
-      return 0;
-    }
-    process.stdout.write(
-      'scoped rules: none; choose "Always allow exact" in an approval, or pass --scoped-rules <path>\n',
-    );
-    return 0;
-  }
-  const loaded = await loadScopedRules(config.autonomy.scoped_rules, paths);
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(loaded.rules)}\n`);
-    return 0;
-  }
-  process.stdout.write(
-    [
-      `scoped rules: ${loaded.rules.length}`,
-      `file: ${loaded.path}`,
-      ...loaded.rules.map(
-        (rule) => `  ${rule.id}: ${rule.argv.join(" ")} (cwd ${rule.cwd})`,
-      ),
-    ].join("\n") + "\n",
   );
   return 0;
 }

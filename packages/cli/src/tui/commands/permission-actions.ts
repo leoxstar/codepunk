@@ -1,9 +1,11 @@
 import {
   APPROVAL_MODE_NAMES,
   PERMISSION_PROFILES,
+  analyzePermissionInsights,
   decidePolicy,
   explainPermission,
   formatPermissionExplanation,
+  formatPermissionInsights,
   isPermissionProfile,
   loadScopedRules,
   writeUserPermissionProfile,
@@ -410,6 +412,11 @@ export async function configurePermissions(
     }
     return;
   }
+  if (trimmed === "insights") {
+    const insights = await analyzePermissionInsights(runtime.paths);
+    context.ui.notify(formatPermissionInsights(insights), "info");
+    return;
+  }
   if (trimmed === "why" || trimmed.startsWith("why ")) {
     const command = parsePermissionWhyCommand(trimmed);
     if (command === null) {
@@ -486,7 +493,7 @@ function permissionMenuRows(runtime: CodepunkRuntime): {
     return `${group.padEnd(12)} ${picker?.current ?? ""}`.trimEnd();
   });
   return {
-    labels: [...labels, "Scoped rules", "Close"],
+    labels: [...labels, "Scoped rules", "Permission insights", "Close"],
     groups: [...PERMISSION_GROUPS],
   };
 }
@@ -546,6 +553,11 @@ export async function showPermissionsMenu(
     }
     if (selected === "Scoped rules") {
       await pickPermissionGroup(state, context, "rules");
+      continue;
+    }
+    if (selected === "Permission insights") {
+      const insights = await analyzePermissionInsights(runtime.paths);
+      context.ui.notify(formatPermissionInsights(insights), "info");
       continue;
     }
     const index = labels.indexOf(selected);

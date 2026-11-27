@@ -10,6 +10,7 @@ const COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["resume", "reopen a saved session"],
   ["sessions", "list, graph, inspect, or prune sessions"],
   ["export", "export a session transcript"],
+  ["attest", "generate a verification summary from evidence"],
   ["pin", "pin or unpin a session"],
   ["sign", "sign a run verdict"],
   ["memory", "manage user and project memory"],
@@ -34,6 +35,7 @@ const COMMANDS: ReadonlyArray<readonly [string, string]> = [
 const OPTIONS: ReadonlyArray<readonly [string, string]> = [
   ["--print", "single-shot print mode"],
   ["--mode", "text or json print output"],
+  ["--json-schema", "validate print output against JSON Schema"],
   ["--continue", "resume the latest session"],
   ["--session", "resume a session by id"],
   ["--fork", "clone a session into a child"],
@@ -74,6 +76,7 @@ const OPTIONS: ReadonlyArray<readonly [string, string]> = [
 
 const VALUE_OPTIONS = new Set([
   "--mode",
+  "--json-schema",
   "--session",
   "--fork",
   "--new-session-id",
@@ -115,6 +118,7 @@ const VALUE_OPTIONS = new Set([
 
 const FILE_OPTIONS = new Set([
   "--add-dir",
+  "--json-schema",
   "--scoped-rules",
   "--headless-policy",
   "--output",
@@ -148,7 +152,7 @@ _codepunk_completion() {
       return 0
       ;;
     permissions)
-      COMPREPLY=( $(compgen -W "profile approval reviewer autonomy sandbox filesystem rules why" -- "$cur") )
+      COMPREPLY=( $(compgen -W "profile approval reviewer autonomy sandbox filesystem rules insights why" -- "$cur") )
       return 0
       ;;
     mcp)
@@ -259,7 +263,7 @@ _codepunk() {
         completion) _values 'shell' bash zsh fish ;;
         sessions) _values 'session command' tree graph prune search ;;
         trust) _values 'trust command' status grant revoke ;;
-        permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules why ;;
+        permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules insights why ;;
         mcp) _values 'mcp command' list add remove test login logout status ;;
         skills) _values 'skills command' list add remove ;;
         plugins) _values 'plugins command' list add remove enable disable ;;
@@ -287,7 +291,7 @@ function fishScript(): string {
     ["trust", "status grant revoke"],
     [
       "permissions",
-      "profile approval reviewer autonomy sandbox filesystem rules why",
+      "profile approval reviewer autonomy sandbox filesystem rules insights why",
     ],
     ["mcp", "list add remove test login logout status"],
     ["skills", "list add remove"],

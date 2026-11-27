@@ -16,6 +16,7 @@ import { subcommandUsage, usage } from "./args/usage.ts";
 import { formatBuildIdentity, inspectCliBuild } from "./build-info.ts";
 import { installCrashGuards } from "./crash-guard.ts";
 import { commandAcp } from "./commands/acp.ts";
+import { commandAttest } from "./commands/attest.ts";
 import { commandCapabilities } from "./commands/capabilities.ts";
 import { commandCompletion } from "./commands/completion.ts";
 import { commandConfig } from "./commands/config.ts";
@@ -54,6 +55,7 @@ const commandRunners: Record<string, (options: CliOptions) => Promise<number>> =
     sessions: commandSessions,
     prune: commandSessions,
     export: commandExport,
+    attest: commandAttest,
     pin: commandPin,
     sign: commandSign,
     memory: commandMemory,
@@ -101,6 +103,11 @@ async function main(argv: string[]): Promise<number> {
   }
   const prompt = await readPrompt(options.positionals);
   const usePrint = options.print || process.stdin.isTTY !== true;
+  if (options.jsonSchema !== undefined && !usePrint) {
+    throw new ConfigError(
+      "--json-schema requires print mode (-p) or piped stdin",
+    );
+  }
   if (usePrint) {
     if (prompt === null) {
       throw new Error("print mode requires a prompt or piped stdin");

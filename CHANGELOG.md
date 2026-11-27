@@ -9,6 +9,23 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Headless `--json-schema <schema-or-file>` output contract gate for print mode
+  (validating assistant JSON before emitting canonical `stdout` and exiting `1`
+  with JSON-Path diagnostics on `stderr` when violated), `codepunk attest
+[session-id] [--output path] [--json]` and TUI `/attest [copy]` PR-ready
+  verification summaries, and local zero-LLM `codepunk permissions insights
+[--json]` / `/permissions insights` diagnostics.
+- Dynamic session-level taint escalation after `web_fetch`/`web_search`
+  ingestion (skipping model auto-review and requiring human approval for
+  non-read-only shell and MCP calls), exact `(cwd, command)` session-grant reuse
+  for complex shell pipelines, and test-runner passing-line output folding that
+  preserves bottom failures and raw evidence SHA-256 digests.
+- TUI daily-ergonomics upgrades: non-blocking direct overlay dispatch in the
+  `Alt+K` command palette, `/copy [last|<n>|code [n]]` (native clipboard plus
+  SSH OSC 52 fallback), `/editor [--reply]` (`Alt+G`) external prompt composition
+  with `$VISUAL`/`$EDITOR` validation, unified `/plan [status|on|approve|off]`
+  lifecycle actions, and a delayed terminal attention bell (`CODEPUNK_NO_BELL=1`
+  opt-out) for pending approvals and user questions.
 - `codepunk setup` guided provider/API-key/model onboarding wizard (interactive
   TTY picker with masked key entry, ambient credential detection, and
   one-command `--provider` / `--base-url` non-interactive mode), plus direct
@@ -74,6 +91,15 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `srt` sandbox profiles now permit normal `git add` and `git commit` inside
+  writable workspaces while continuing to deny `.git/config`, `.git/hooks`,
+  `.git/info`, and `.git/objects/info|pack`, and now add POSIX user home secret
+  directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`) to
+  `denyRead` when outside workspace roots.
+- `/agents merge` now supports three-way merges (`allowTargetAdvance`) when the
+  parent `HEAD` advanced cleanly on non-conflicting files while a worktree
+  subagent ran in parallel, re-checking `write_set` and `protected_paths`
+  against the merged diff.
 - Default read-only headless print mode excludes `web_search` unless granted via
   `--headless-policy`, keeping the headless read-only tool surface minimal.
 

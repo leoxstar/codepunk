@@ -17,6 +17,7 @@ import type { TuiState } from "../state.ts";
 import { runCopyAction } from "./copy.ts";
 import { openExternalPromptEditor } from "./editor.ts";
 import {
+  openAttestOverlay,
   openContextOverlay,
   openDoctorOverlay,
   openEvidenceOverlay,
@@ -73,6 +74,14 @@ const STATIC_PALETTE_ITEMS: readonly CommandPaletteItem[] = [
     hint: "check sandbox, build, auth, and config health",
     shortcut: "/doctor",
     keywords: "health check srt",
+  },
+  {
+    id: "inspect:attest",
+    category: "Inspect",
+    label: "Verification summary",
+    hint: "generate PR-ready Markdown summary from evidence chain",
+    shortcut: "/attest",
+    keywords: "pr summary audit sign verification",
   },
   {
     id: "work:tasks",
@@ -356,6 +365,9 @@ export async function openCommandPalette(
       return;
     case "inspect:doctor":
       await openDoctorOverlay(runtime, context);
+      return;
+    case "inspect:attest":
+      await openAttestOverlay(runtime, context);
       return;
     case "caps:mcp":
       await openInteractiveMcpPanel(state, runtime, context);

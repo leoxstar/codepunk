@@ -5,6 +5,7 @@ _codepunk() {
     'resume:reopen a saved session'
     'sessions:list, graph, inspect, or prune sessions'
     'export:export a session transcript'
+    'attest:generate a verification summary from evidence'
     'pin:pin or unpin a session'
     'sign:sign a run verdict'
     'memory:manage user and project memory'
@@ -28,6 +29,7 @@ _codepunk() {
   _arguments -s -C \
     '--print[single-shot print mode]'
     '--mode[text or json print output]:value:'
+    '--json-schema[validate print output against JSON Schema]:file:_files'
     '--continue[resume the latest session]'
     '--session[resume a session by id]:value:'
     '--fork[clone a session into a child]:value:'
@@ -75,7 +77,7 @@ _codepunk() {
         completion) _values 'shell' bash zsh fish ;;
         sessions) _values 'session command' tree graph prune search ;;
         trust) _values 'trust command' status grant revoke ;;
-        permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules why ;;
+        permissions) _values 'permission command' profile approval reviewer autonomy sandbox filesystem rules insights why ;;
         mcp) _values 'mcp command' list add remove test login logout status ;;
         skills) _values 'skills command' list add remove ;;
         plugins) _values 'plugins command' list add remove enable disable ;;

@@ -160,6 +160,13 @@ export {
   type PermissionGate,
 } from "./permissions/index.ts";
 export {
+  analyzePermissionInsights,
+  formatPermissionInsights,
+  type PermissionInsights,
+  type PolicyDenialHotspot,
+  type RepeatedApprovalCandidate,
+} from "./permissions/insights.ts";
+export {
   DIRECT_EXECUTOR,
   SANDBOX_EXECUTOR,
   SRT_VERSION,
@@ -555,6 +562,25 @@ export {
   type DoctorReport,
   type DoctorStatus,
 } from "./ops/index.ts";
+export {
+  attestSession,
+  formatSessionAttestationMarkdown,
+  type AttestedCommand,
+  type AttestedDenial,
+  type AttestedFileChange,
+  type AttestedRun,
+  type SessionAttestation,
+} from "./ops/attest.ts";
+export {
+  JsonSchemaValidationError,
+  buildJsonSchemaPromptSuffix,
+  extractJsonPayload,
+  loadJsonOutputSchema,
+  validateAssistantTextAgainstSchema,
+  validateJsonOutputSchema,
+  type JsonSchemaIssue,
+  type JsonSchemaValidationResult,
+} from "./ops/json-schema.ts";
 export {
   NotAGitWorktreeError,
   readWorkspaceDiff,

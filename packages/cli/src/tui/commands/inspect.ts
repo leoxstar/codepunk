@@ -1,15 +1,18 @@
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  attestSession,
   collectCapabilities,
   configSummary,
   formatCapabilities,
   formatDoctor,
+  formatSessionAttestationMarkdown,
   listUserPluginFiles,
   runDoctor,
   writeUserPluginsEnabled,
   type CodepunkRuntime,
 } from "codepunk-core";
+import { copyTextToClipboard } from "./copy.ts";
 import { appendBuildDoctorCheck, inspectCliBuild } from "../../build-info.ts";
 import { commandContext } from "../command-context.ts";
 import {
@@ -180,6 +183,49 @@ export function evidenceCommand(state: TuiState): TuiCommand {
     description: "Inspect current run evidence ledger",
     handler: commandContext(state, async (runtime, context) => {
       await openEvidenceOverlay(runtime, context);
+    }),
+  });
+}
+
+export async function openAttestOverlay(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+  rawArgs = "",
+): Promise<void> {
+  const mode = rawArgs.trim();
+  if (mode !== "" && mode !== "copy") {
+    context.ui.notify("usage: /attest [copy]", "warning");
+    return;
+  }
+  const attestation = await attestSession({
+    paths: runtime.paths,
+    session: runtime.session,
+  });
+  const markdown = formatSessionAttestationMarkdown(attestation).trimEnd();
+  if (mode === "copy") {
+    const copied = copyTextToClipboard(markdown);
+    context.ui.notify(
+      copied.ok
+        ? `Copied verification summary (${markdown.length} chars) to clipboard.`
+        : "Clipboard unavailable; run `codepunk attest --output summary.md`.",
+      copied.ok ? "info" : "warning",
+    );
+    return;
+  }
+  await showStructuredOrNotify(
+    context,
+    "codepunk attest",
+    [{ label: "Verification summary (Markdown)", lines: markdown.split("\n") }],
+    markdown,
+  );
+}
+
+export function attestCommand(state: TuiState): TuiCommand {
+  return defineCommand({
+    name: "attest",
+    description: "Generate a PR-ready Markdown verification summary",
+    handler: commandContext(state, async (runtime, context, args) => {
+      await openAttestOverlay(runtime, context, args);
     }),
   });
 }

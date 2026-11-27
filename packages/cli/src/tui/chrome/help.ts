@@ -20,6 +20,7 @@ export function permissionUsage(): string {
     "  /permissions sandbox network [allow|deny <domain>...|clear]",
     "  /permissions filesystem workspace|full",
     "  /permissions rules",
+    "  /permissions insights",
     "  /permissions why -- <shell command>",
     "  /trust [status|grant|revoke] [config,policy,skills,instructions]",
   ].join("\n");
@@ -114,6 +115,7 @@ export function codepunkHelp(): string {
     "  /permissions reviewer [off|model [provider/model]|timeout <ms>]  configure auto-mode review",
     "  /permissions sandbox network [allow|deny <domain>...|clear]  set the sandbox egress lists",
     "  /permissions rules         list persisted exact-command rules",
+    "  /permissions insights      summarize repeated once-approvals and top denials",
     "  /permissions why -- <cmd>  explain a policy decision without running it",
     "  /trust [status|grant|revoke] [kinds]  show or save per-resource workspace trust",
     "  !<command>                 run a shell command through the same policy gate",
@@ -161,6 +163,7 @@ export function codepunkHelp(): string {
     "  /tree                      open the session branch selector",
     "  /tree list|<entry-id>      print the tree or move directly to an entry",
     "  /evidence, /budget         inspect run evidence and model usage",
+    "  /attest [copy]             generate or copy a PR-ready verification summary",
     "  /context                   visualize context window token breakdown",
     "  /cp-export, /export        write a redacted transcript and manifest",
     "  /sign                      sign the current settled run",

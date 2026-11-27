@@ -38,25 +38,30 @@ Or run a single-shot read-only print query:
 
 ```bash
 codepunk -p "Summarize the architecture of this repository"
+codepunk -p --json-schema '{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}' "Summarize this repo as JSON"
 ```
 
 ## Everyday Shortcuts & Commands
 
-| Shortcut / Command     | What it does                                                          |
-| ---------------------- | --------------------------------------------------------------------- |
-| `Alt+M`                | Cycle work mode (`plan` → `standard` → `auto` → `auto-approve`)       |
-| `Alt+T` / `/tasks`     | Open the unified interactive task & subagent center                   |
-| `Alt+R` / `/rewind`    | Rewind file checkpoints or switch session branches                    |
-| `F1` / `/help [query]` | Open the searchable, scrollable command browser                       |
-| `F2` / `/models`       | Cycle recent models or pick from favorites                            |
-| `Shift+Tab`            | Cycle model reasoning/thinking level                                  |
-| `/permissions`         | Interactive permission, approval, and sandbox menu                    |
-| `/settings`            | Interactive TUI & compaction preferences (persisted to `config.toml`) |
-| `/diff` / `/commit`    | Scrollable colored diff viewer and human-gated Git commit             |
-| `/resume`              | Live fuzzy-searchable session picker                                  |
-| `/plan [request]`      | Read-only planning mode with interactive approval                     |
-| `/review`              | Structured diff-bound code review findings                            |
-| `/image --clipboard`   | Attach clipboard screenshots (or drag-and-drop workspace image paths) |
+| Shortcut / Command         | What it does                                                          |
+| -------------------------- | --------------------------------------------------------------------- |
+| `Alt+K`                    | Open the non-blocking fuzzy command palette                           |
+| `Alt+M`                    | Cycle work mode (`plan` → `standard` → `auto` → `auto-approve`)       |
+| `Alt+T` / `/tasks`         | Open the unified interactive task & subagent center                   |
+| `Alt+R` / `/rewind`        | Rewind file checkpoints or switch session branches                    |
+| `Alt+G` / `/editor`        | Compose or edit the prompt in `$VISUAL` / `$EDITOR`                   |
+| `/copy [last\|<n>\|code]`  | Copy latest assistant reply or fenced code block (native + OSC 52)    |
+| `F1` / `/help [query]`     | Open the searchable, scrollable command browser                       |
+| `F2` / `/models`           | Cycle recent models or pick from favorites                            |
+| `Shift+Tab`                | Cycle model reasoning/thinking level                                  |
+| `/permissions [insights]`  | Interactive permission menu and local approval/denial insights        |
+| `/settings`                | Interactive TUI & compaction preferences (persisted to `config.toml`) |
+| `/diff` / `/commit`        | Scrollable colored diff viewer and human-gated Git commit             |
+| `/attest [copy]`           | Generate or copy a PR-ready Markdown verification summary             |
+| `/resume`                  | Live fuzzy-searchable session picker                                  |
+| `/plan [request\|approve]` | Read-only planning mode and unified plan lifecycle controls           |
+| `/review`                  | Structured diff-bound code review findings                            |
+| `/image --clipboard`       | Attach clipboard screenshots (or drag-and-drop workspace image paths) |
 
 ## Security & Supervision Model
 

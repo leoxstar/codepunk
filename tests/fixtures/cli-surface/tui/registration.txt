@@ -29,6 +29,7 @@ registerCommand review	Review the current diff with structured findings
 registerCommand todos	Show the current todo list
 registerCommand context	Visualize context window token usage and breakdown
 registerCommand evidence	Inspect current run evidence ledger
+registerCommand attest	Generate a PR-ready Markdown verification summary
 registerCommand models	Select a recent or favorite model
 registerCommand favorite	Toggle the current model in favorites
 registerShortcut f2	Cycle through recent models

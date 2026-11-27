@@ -28,6 +28,7 @@ function usageNavigation(): string[] {
     "  codepunk sessions export <session-id> [--output path]",
     "  codepunk sessions import <bundle.json>",
     "  codepunk export [session-id] [--output path]",
+    "  codepunk attest [session-id] [--output path] [--json]",
     "  codepunk pin <session-id>",
     "  codepunk pin <session-id> --unpin",
     "  codepunk sign <run-id> --verdict complete|incomplete",
@@ -83,6 +84,7 @@ function usageCapabilityPermission(): string[] {
     "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
     "  codepunk permissions filesystem workspace|full",
     "  codepunk permissions rules [--json]",
+    "  codepunk permissions insights [--json]",
     "  codepunk permissions why -- <shell command>",
     "  codepunk trust [status|grant|revoke] [path] [--resources config,policy,skills,instructions] [--json]",
     "",
@@ -125,6 +127,7 @@ function usageOptions(): string[] {
     "Options:",
     "  -p, --print              single-shot print mode",
     "      --mode text|json     print output mode",
+    "      --json-schema <spec> validate print output against inline JSON Schema or file",
     "      --continue           resume the latest project session",
     "      --session <id>       resume a session by id",
     "      --fork <id>          clone a session into a new child session",
@@ -248,6 +251,12 @@ function sessionSubcommandUsage(
       ];
     case "export":
       return ["usage:", "  codepunk export [session-id] [--output path]"];
+    case "attest":
+      return [
+        "usage:",
+        "  codepunk attest [session-id] [--output path] [--json]",
+        "      summarize verified evidence chain, modified files, shell exits, and sign-offs",
+      ];
     case "pin":
       return ["usage:", "  codepunk pin <session-id> [--unpin]"];
     case "sign":
@@ -332,6 +341,7 @@ function configurationSubcommandUsage(
         "  codepunk permissions sandbox network [allow|deny <domain>...|clear]",
         "  codepunk permissions filesystem workspace|full",
         "  codepunk permissions rules [--json]",
+        "  codepunk permissions insights [--json]",
         "  codepunk permissions why -- <shell command>",
       ];
     case "trust":

@@ -38,6 +38,7 @@ import type { TuiState } from "../state.ts";
 import { defineCommand } from "../define-command.ts";
 
 export {
+  attestCommand,
   budgetCommand,
   capabilitiesCommand,
   contextCommand,
