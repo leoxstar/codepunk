@@ -115,6 +115,7 @@ const PACKAGE_SPECS = [
     dir: "packages/protocol",
     name: "codepunk-protocol",
     layer: 0,
+    publishable: false,
     typecheckPaths: {},
     external: {
       typebox: "1.3.27",
@@ -125,6 +126,7 @@ const PACKAGE_SPECS = [
     dir: "packages/core",
     name: "codepunk-core",
     layer: 1,
+    publishable: false,
     typecheckPaths: {
       "codepunk-protocol": ["../protocol/src/index.ts"],
     },
@@ -140,6 +142,13 @@ const PACKAGE_SPECS = [
     dir: "packages/cli",
     name: "codepunk-cli",
     layer: 2,
+    publishable: true,
+    bundledExtras: [
+      {
+        output: "dist/host-child.js",
+        source: "packages/core/src/plugin/host-child.ts",
+      },
+    ],
     typecheckPaths: {
       "codepunk-protocol": ["../protocol/src/index.ts"],
       "codepunk-core": ["../core/src/index.ts"],
@@ -254,7 +263,7 @@ const CLI_SIZE_EXEMPTIONS = new Map([
 ]);
 
 const EXPECTED_LOCKFILE_SHA256 =
-  "19720cd67c3e2d0a3335cf7b9f5095044f1d60d3433ae81578acd3862b173abd";
+  "a65e815856613a61a5245556449ff39a1914cf9497653a3a058ebfa974a64db3";
 
 const EXPECTED_CI_SHA256 =
   "420329995c24a3b1e196f5d81a2c601adc674fefcfe659be7b8cfd600703cf98";
@@ -286,7 +295,7 @@ const EXPECTED_RELEASE_SMOKE_RUNNERS = EXPECTED_FULL_CI_RUNNERS.filter(
 );
 
 const EXPECTED_CONTROL_CORPUS_SHA256 =
-  "ea34ea51f5bc6b8579b5a6164a6e7097e9579351c1b14858a0d09f63dfaa6896";
+  "81fb31eb02939cb7fb1974376d3130fabdb827ba7c79be555ab5733440b96f46";
 
 const EVAL_REQUIRED_FILES = [
   "eval/cases.jsonl",
@@ -1623,11 +1632,11 @@ function checkExports(root, spec, manifest, add) {
   }
 }
 
-// The CLI is bundled: its build compiles with tsc and then bundles the entry
-// with esbuild, because the published CLI ships as one file. Every other
-// product package builds with the compiler alone. Both are pinned here so a
-// package cannot quietly change how it builds without this list changing too.
-const CLI_BUILD_SCRIPT = `tsc -p tsconfig.json && esbuild dist/index.js --bundle --platform=node --format=esm --target=node22 --sourcemap --banner:js="import { createRequire as __nodeCreateRequire } from 'node:module'; const require = __nodeCreateRequire(import.meta.url);" --outfile=dist/index.js --allow-overwrite --external:node-pty --external:@anthropic-ai/sandbox-runtime --external:@anthropic-ai/sandbox-runtime/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-codemode --external:@earendil-works/pi-codemode/* --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-coding-agent/* --external:@earendil-works/pi-mcp --external:@earendil-works/pi-mcp/* --external:@earendil-works/pi-schema --external:@earendil-works/pi-schema/* --external:@earendil-works/pi-telemetry --external:@earendil-works/pi-telemetry/* --external:@earendil-works/pi-tui --external:@earendil-works/pi-tui/*`;
+// The CLI is bundled: its build compiles with tsc and then bundles the CLI
+// entry and isolated plugin child entry with esbuild, because codepunk-cli is
+// the single published npm package. Every internal workspace package builds
+// with the compiler alone.
+const CLI_BUILD_SCRIPT = `tsc -p tsconfig.json && esbuild dist/index.js --bundle --platform=node --format=esm --target=node22 --sourcemap --banner:js="import { createRequire as __nodeCreateRequire } from 'node:module'; const require = __nodeCreateRequire(import.meta.url);" --outfile=dist/index.js --allow-overwrite --external:node-pty --external:@anthropic-ai/sandbox-runtime --external:@anthropic-ai/sandbox-runtime/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-codemode --external:@earendil-works/pi-codemode/* --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-coding-agent/* --external:@earendil-works/pi-mcp --external:@earendil-works/pi-mcp/* --external:@earendil-works/pi-schema --external:@earendil-works/pi-schema/* --external:@earendil-works/pi-telemetry --external:@earendil-works/pi-telemetry/* --external:@earendil-works/pi-tui --external:@earendil-works/pi-tui/* && esbuild ../core/src/plugin/host-child.ts --bundle --platform=node --format=esm --target=node22 --sourcemap --outfile=dist/host-child.js`;
 
 function expectedBuildScript(spec) {
   return spec.dir === "packages/cli"
@@ -1668,22 +1677,55 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
       "repository.url must be git+https://github.com/leoxstar/codepunk.git",
     );
   }
-  if (manifest.publishConfig?.access !== "public") {
-    add(
-      "pkg.manifest",
-      relativeManifest,
-      "publishConfig.access must be public",
-    );
-  }
   if (manifest.type !== "module") {
     add("pkg.manifest", relativeManifest, "package must be ESM");
   }
-  if (manifest.private === true) {
-    add(
-      "pkg.manifest",
-      relativeManifest,
-      "product package must be publishable",
-    );
+  if (spec.publishable) {
+    if (manifest.publishConfig?.access !== "public") {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        "publishConfig.access must be public",
+      );
+    }
+    if (manifest.private === true) {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        "product package must be publishable",
+      );
+    }
+    if (
+      JSON.stringify(manifest.files) !== JSON.stringify(["dist", "README.md"])
+    ) {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        'published files must be exactly ["dist", "README.md"]',
+      );
+    }
+  } else {
+    if (manifest.private !== true) {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        "internal workspace package must set private: true",
+      );
+    }
+    if (manifest.publishConfig !== undefined) {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        "private workspace package must not declare publishConfig",
+      );
+    }
+    if (manifest.files !== undefined) {
+      add(
+        "pkg.manifest",
+        relativeManifest,
+        "private workspace package must not declare files",
+      );
+    }
   }
   if (manifest.engines?.node !== NODE_ENGINE) {
     add("pkg.manifest", relativeManifest, `Node engine must be ${NODE_ENGINE}`);
@@ -1705,15 +1747,6 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
       "pkg.manifest",
       relativeManifest,
       "package scripts must be exactly build and typecheck",
-    );
-  }
-  if (
-    JSON.stringify(manifest.files) !== JSON.stringify(["dist", "README.md"])
-  ) {
-    add(
-      "pkg.manifest",
-      relativeManifest,
-      'published files must be exactly ["dist", "README.md"]',
     );
   }
 
@@ -1766,20 +1799,27 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
   checkExports(root, spec, manifest, add);
 
   const dependencies = manifest.dependencies ?? {};
+  const bundledInternalNames = spec.publishable ? spec.internal : [];
+  const runtimeInternalNames = spec.publishable ? [] : spec.internal;
   const expectedDependencies = {
     ...spec.external,
     ...Object.fromEntries(
-      spec.internal.map((name) => [name, workspaceVersion]),
+      runtimeInternalNames.map((name) => [name, workspaceVersion]),
     ),
   };
   const expectedNames = Object.keys(expectedDependencies);
   const actualNames = Object.keys(dependencies);
-  const internalNames = spec.internal;
   const internalPrefix = "codepunk-";
 
   for (const name of actualNames) {
     if (!(name in expectedDependencies)) {
-      if (name.startsWith(internalPrefix)) {
+      if (bundledInternalNames.includes(name)) {
+        add(
+          "deps.direction",
+          relativeManifest,
+          `bundled internal dependency ${name} must be in devDependencies, not runtime dependencies`,
+        );
+      } else if (name.startsWith(internalPrefix)) {
         add(
           "deps.direction",
           relativeManifest,
@@ -1813,7 +1853,7 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
     }
   }
 
-  for (const name of internalNames) {
+  for (const name of runtimeInternalNames) {
     if (!(name in dependencies)) {
       add(
         "deps.direction",
@@ -1833,11 +1873,35 @@ function checkPackageManifest(root, spec, manifest, add, workspaceVersion) {
     }
   }
 
-  // A product package may declare build-only tooling, but only the reviewed
-  // set for that package, and only at an exact version.
+  // A product package may declare build-only tooling (and, for bundled
+  // publishable packages, internal workspace packages that esbuild inlines),
+  // but only the reviewed set and only at exact versions.
   const allowedBuildDevDependencies = spec.buildDevDependencies ?? {};
   const buildDevDependencies = manifest.devDependencies ?? {};
+  for (const name of bundledInternalNames) {
+    if (!(name in buildDevDependencies)) {
+      add(
+        "deps.direction",
+        relativeManifest,
+        `missing bundled internal devDependency ${name}`,
+      );
+      continue;
+    }
+    const actualVersion = buildDevDependencies[name];
+    if (!isExactVersion(actualVersion)) {
+      add("deps.pin", relativeManifest, `${name} must use an exact version`);
+    } else if (actualVersion !== workspaceVersion) {
+      add(
+        "deps.pin",
+        relativeManifest,
+        `${name} must be pinned to ${workspaceVersion}`,
+      );
+    }
+  }
   for (const name of Object.keys(buildDevDependencies)) {
+    if (bundledInternalNames.includes(name)) {
+      continue;
+    }
     if (!(name in allowedBuildDevDependencies)) {
       add(
         "deps.review",
@@ -2622,7 +2686,15 @@ function checkLockfile(lock, lockfileDigest, add, workspaceVersion) {
       if (!internalSpec) {
         continue;
       }
-      const dependency = lockedDependency(lock, spec.dir, "dependencies", name);
+      const internalSection = spec.publishable
+        ? "devDependencies"
+        : "dependencies";
+      const dependency = lockedDependency(
+        lock,
+        spec.dir,
+        internalSection,
+        name,
+      );
       const expectedLink = relativeWorkspaceLink(spec.dir, internalSpec.dir);
       if (!dependency) {
         add(
@@ -2876,6 +2948,10 @@ async function checkPackagePackaging(
     );
   }
 
+  if (!spec.publishable) {
+    return;
+  }
+
   let output;
   try {
     const npm = npmExecutable();
@@ -2956,6 +3032,17 @@ async function checkPackagePackaging(
       "tarball is missing dist output; run pnpm run build",
     );
   }
+  if (requireBuilt && Array.isArray(spec.bundledExtras)) {
+    for (const extra of spec.bundledExtras) {
+      if (!packedPaths.includes(extra.output)) {
+        add(
+          "pkg.pack",
+          spec.dir,
+          `tarball is missing ${extra.output}; run pnpm run build`,
+        );
+      }
+    }
+  }
 }
 
 async function checkBuiltEntries(root, files, add) {
@@ -3007,6 +3094,31 @@ async function checkBuiltEntries(root, files, add) {
           projectPath(root, absoluteTarget),
           `${field} target is older than its source; run pnpm run build`,
         );
+      }
+    }
+    if (Array.isArray(spec.bundledExtras)) {
+      for (const extra of spec.bundledExtras) {
+        const extraTarget = path.resolve(
+          path.dirname(manifestPath),
+          extra.output,
+        );
+        const extraSource = path.join(root, extra.source);
+        if (!existsSync(extraTarget)) {
+          add(
+            "pkg.built",
+            projectPath(root, extraTarget),
+            `bundled entry ${extra.output} is missing; run pnpm run build`,
+          );
+        } else if (
+          existsSync(extraSource) &&
+          (await stat(extraTarget)).mtimeMs < (await stat(extraSource)).mtimeMs
+        ) {
+          add(
+            "pkg.built",
+            projectPath(root, extraTarget),
+            `bundled entry ${extra.output} is older than ${extra.source}; run pnpm run build`,
+          );
+        }
       }
     }
   }

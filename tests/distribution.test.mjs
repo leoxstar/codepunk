@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -20,38 +20,48 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test("packed tarballs exclude runtime state and install cleanly", async () => {
+test("packed CLI tarball excludes runtime state, bundles internal packages and host-child, and installs standalone", async () => {
   await ensureBuilt();
   await withTempDirectory("codepunk-distribution-", async (root) => {
-    const packed = [];
-    for (const workspace of [
-      "codepunk-protocol",
-      "codepunk-core",
-      "codepunk-cli",
-    ]) {
-      const { stdout } = await execFilePortable(
-        "pnpm",
-        ["--filter", workspace, "pack", "--json", "--pack-destination", root],
-        { cwd: REPO_ROOT },
-      );
-      const filename = JSON.parse(stdout).filename;
-      const listing = await execFileAsync("tar", ["-tzf", filename]);
-      const files = listing.stdout.split("\n").filter(Boolean);
-      packed.push(filename);
-      assert.equal(
-        files.some((file) =>
-          /^package\/(?:verify|tests|node_modules|\.codepunk|sessions|evidence|logs|artifacts|cache)\//u.test(
-            file,
-          ),
+    const { stdout } = await execFilePortable(
+      "pnpm",
+      [
+        "--filter",
+        "codepunk-cli",
+        "pack",
+        "--json",
+        "--pack-destination",
+        root,
+      ],
+      { cwd: REPO_ROOT },
+    );
+    const filename = JSON.parse(stdout).filename;
+    const listing = await execFileAsync("tar", ["-tzf", filename]);
+    const files = listing.stdout.split("\n").filter(Boolean);
+    assert.equal(
+      files.some((file) =>
+        /^package\/(?:verify|tests|node_modules|\.codepunk|sessions|evidence|logs|artifacts|cache)\//u.test(
+          file,
         ),
-        false,
-        `${workspace} tarball contains runtime or verification state`,
-      );
-      assert.equal(
-        files.some((file) => file.endsWith(".jsonl")),
-        false,
-      );
-    }
+      ),
+      false,
+      "codepunk-cli tarball contains runtime or verification state",
+    );
+    assert.equal(
+      files.some((file) => file.endsWith(".jsonl")),
+      false,
+    );
+    assert.equal(
+      files.includes("package/dist/index.js"),
+      true,
+      "codepunk-cli tarball must include dist/index.js",
+    );
+    assert.equal(
+      files.includes("package/dist/host-child.js"),
+      true,
+      "codepunk-cli tarball must include bundled dist/host-child.js for isolated plugins",
+    );
+
     const install = path.join(root, "install");
     await fs.mkdir(install);
     await fs.writeFile(
@@ -68,7 +78,7 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
           "--no-audit",
           "--no-fund",
           "--no-package-lock",
-          ...packed,
+          filename,
         ],
         { cwd: install, timeout: installTimeoutMs },
       );
@@ -90,6 +100,96 @@ test("packed tarballs exclude runtime state and install cleanly", async () => {
         "u",
       ),
     );
+    for (const internalPkg of ["codepunk-core", "codepunk-protocol"]) {
+      await assert.rejects(
+        () => fs.access(path.join(install, "node_modules", internalPkg)),
+        /ENOENT/u,
+        `${internalPkg} must not be installed separately alongside codepunk-cli`,
+      );
+    }
+    const hostChildPath = path.join(
+      install,
+      "node_modules",
+      "codepunk-cli",
+      "dist",
+      "host-child.js",
+    );
+    await fs.access(hostChildPath);
+
+    // Negative control: bundled host-child rejects mismatched launch credentials.
+    const pluginDir = path.join(root, "isolated-plugin");
+    await fs.mkdir(pluginDir, { recursive: true });
+    const pluginEntry = path.join(pluginDir, "index.mjs");
+    await fs.writeFile(
+      pluginEntry,
+      [
+        "export default function register(api) {",
+        '  api.registerTool({ name: "hello_tarball", execute: async () => ({ ok: true }) });',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const badChild = spawn(
+      process.execPath,
+      [hostChildPath, pluginDir, pluginEntry, "tarball-plugin"],
+      { stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] },
+    );
+    let badStderr = "";
+    badChild.stderr.on("data", (chunk) => {
+      badStderr += chunk.toString("utf8");
+    });
+    badChild.stdio[3].end("wrong-token\n");
+    badChild.stdio[4].end("expected-token\n");
+    const badCode = await new Promise((resolve) =>
+      badChild.on("close", resolve),
+    );
+    assert.equal(badCode, 2);
+    assert.match(badStderr, /launch credential does not match/u);
+
+    // Positive proof: bundled host-child loads plugin and answers tools/list + shutdown.
+    const goodChild = spawn(
+      process.execPath,
+      [hostChildPath, pluginDir, pluginEntry, "tarball-plugin"],
+      { stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] },
+    );
+    let goodStdout = "";
+    goodChild.stdout.on("data", (chunk) => {
+      goodStdout += chunk.toString("utf8");
+    });
+    goodChild.stdio[3].end("secret-token-123\n");
+    goodChild.stdio[4].end("secret-token-123\n");
+    goodChild.stdin.write(
+      `${JSON.stringify({
+        type: "codepunk/plugin-request",
+        version: 1,
+        call_id: "c1",
+        plugin_id: "tarball-plugin",
+        method: "tools/list",
+        params: {},
+      })}\n`,
+    );
+    goodChild.stdin.write(
+      `${JSON.stringify({
+        type: "codepunk/plugin-request",
+        version: 1,
+        call_id: "c2",
+        plugin_id: "tarball-plugin",
+        method: "shutdown",
+        params: {},
+      })}\n`,
+    );
+    const goodCode = await new Promise((resolve) =>
+      goodChild.on("close", resolve),
+    );
+    assert.equal(goodCode, 0);
+    const responses = goodStdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const listRes = responses.find((frame) => frame.call_id === "c1");
+    assert.deepEqual(listRes?.result, ["hello_tarball"]);
+
     const installed = await fs.readdir(
       path.join(install, "node_modules", "codepunk-cli"),
     );

@@ -282,7 +282,9 @@ async function createPackagingFixture() {
           type: "git",
           url: "git+https://github.com/leoxstar/codepunk.git",
         };
-        manifest.publishConfig = { access: "public" };
+        if (packageName === "cli") {
+          manifest.publishConfig = { access: "public" };
+        }
       },
     );
     await writeFile(
@@ -379,6 +381,9 @@ test("packaging accepts a synthetic release tree with real offline npm packing",
   try {
     const result = await checkRepository({ root: fixture.root });
     assert.deepEqual(result.errors, []);
+    const rootManifest = JSON.parse(
+      await readFile(path.join(fixture.root, "package.json"), "utf8"),
+    );
     for (const packageName of ["protocol", "core", "cli"]) {
       assert.equal(
         existsSync(
@@ -386,7 +391,7 @@ test("packaging accepts a synthetic release tree with real offline npm packing",
             fixture.root,
             "packages",
             packageName,
-            `codepunk-${packageName}-0.1.0.tgz`,
+            `codepunk-${packageName}-${rootManifest.version}.tgz`,
           ),
         ),
         false,
@@ -421,12 +426,55 @@ test("packaging requires the CHANGELOG root allowlist entry", async () => {
   }
 });
 
+const PRIVATE_PACKAGE_NEGATIVE_CASES = [
+  {
+    name: "missing repository URL",
+    mutate(manifest) {
+      delete manifest.repository;
+    },
+  },
+  {
+    name: "incorrect repository URL",
+    mutate(manifest) {
+      manifest.repository.url = "git+https://example.com/other.git";
+    },
+  },
+  {
+    name: "missing private flag",
+    mutate(manifest) {
+      delete manifest.private;
+    },
+  },
+  {
+    name: "explicitly non-private internal package",
+    mutate(manifest) {
+      manifest.private = false;
+    },
+  },
+  {
+    name: "unexpected publishConfig on private package",
+    mutate(manifest) {
+      manifest.publishConfig = { access: "public" };
+    },
+  },
+  {
+    name: "unexpected files array on private package",
+    mutate(manifest) {
+      manifest.files = ["dist", "README.md"];
+    },
+  },
+];
+
 test("packaging rejects each manifest and byte-level license violation", async (t) => {
   const fixture = await createPackagingFixture();
   try {
     for (const packageName of ["protocol", "core", "cli"]) {
       const manifestPath = `packages/${packageName}/package.json`;
-      for (const negativeCase of PACKAGING_NEGATIVE_CASES) {
+      const cases =
+        packageName === "cli"
+          ? PACKAGING_NEGATIVE_CASES
+          : PRIVATE_PACKAGE_NEGATIVE_CASES;
+      for (const negativeCase of cases) {
         await t.test(`${packageName}: ${negativeCase.name}`, async () => {
           const restore = await mutateJson(
             fixture.root,
@@ -482,7 +530,13 @@ test("packaging rejects each manifest and byte-level license violation", async (
 
 test("packaging validates npm tarball evidence and allowed paths", async (t) => {
   const fixture = await createPackagingFixture();
-  const validFiles = ["dist/index.js", "README.md", "LICENSE", "package.json"];
+  const validFiles = [
+    "dist/index.js",
+    "dist/host-child.js",
+    "README.md",
+    "LICENSE",
+    "package.json",
+  ];
   try {
     for (const fixtureCase of [
       { name: "accepted synthetic tarball", files: validFiles, clean: true },
@@ -504,6 +558,11 @@ test("packaging validates npm tarball evidence and allowed paths", async (t) => 
       {
         name: "built tarball without dist output",
         files: ["README.md", "LICENSE", "package.json"],
+        requireBuilt: true,
+      },
+      {
+        name: "built tarball missing bundled host-child",
+        files: ["dist/index.js", "README.md", "LICENSE", "package.json"],
         requireBuilt: true,
       },
       { name: "malformed tarball paths", output: '[{"files":[{}]}]' },
@@ -534,9 +593,7 @@ test("packaging validates npm tarball evidence and allowed paths", async (t) => 
         if (fixtureCase.clean) {
           assertClean(result, fixtureCase.name);
         } else {
-          for (const packageName of ["protocol", "core", "cli"]) {
-            assertRuleFailure(result, "pkg.pack", `packages/${packageName}`);
-          }
+          assertRuleFailure(result, "pkg.pack", "packages/cli");
         }
       });
     }
@@ -557,6 +614,16 @@ const NEGATIVE_CASES = [
     },
   },
   {
+    name: "bundled internal dependency leaked to runtime dependencies",
+    rule: "deps.direction",
+    path: "packages/cli/package.json",
+    async apply(root) {
+      return mutateJson(root, "packages/cli/package.json", (manifest) => {
+        manifest.dependencies["codepunk-core"] = manifest.version;
+      });
+    },
+  },
+  {
     name: "package version drift",
     rule: "pkg.manifest",
     path: "packages/core/package.json",
@@ -572,7 +639,7 @@ const NEGATIVE_CASES = [
     path: "packages/cli/package.json",
     async apply(root) {
       return mutateJson(root, "packages/cli/package.json", (manifest) => {
-        manifest.dependencies["codepunk-protocol"] = "0.0.0";
+        manifest.devDependencies["codepunk-protocol"] = "0.0.0";
       });
     },
   },

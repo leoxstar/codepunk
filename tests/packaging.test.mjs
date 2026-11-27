@@ -131,22 +131,22 @@ test(
   },
 );
 
-test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", async () => {
+test("packed CLI installs standalone, runs, doctors, and uninstalls from a clean prefix", async () => {
   await ensureBuilt();
   await withTempDirectory("codepunk-clean-install-", async (root) => {
-    const packed = [];
-    for (const workspace of [
-      "codepunk-protocol",
-      "codepunk-core",
-      "codepunk-cli",
-    ]) {
-      const { stdout } = await execFilePortable(
-        "pnpm",
-        ["--filter", workspace, "pack", "--json", "--pack-destination", root],
-        { cwd: REPO_ROOT, timeout: 120_000 },
-      );
-      packed.push(JSON.parse(stdout).filename);
-    }
+    const { stdout } = await execFilePortable(
+      "pnpm",
+      [
+        "--filter",
+        "codepunk-cli",
+        "pack",
+        "--json",
+        "--pack-destination",
+        root,
+      ],
+      { cwd: REPO_ROOT, timeout: 120_000 },
+    );
+    const packedCli = JSON.parse(stdout).filename;
     const prefix = path.join(root, "prefix");
     const installTimeoutMs = resolveInstallTimeoutMs();
     try {
@@ -160,7 +160,7 @@ test("packed CLI installs, runs, doctors, and uninstalls from a clean prefix", a
           "--ignore-scripts",
           "--no-audit",
           "--no-fund",
-          ...packed,
+          packedCli,
         ],
         { timeout: installTimeoutMs },
       );

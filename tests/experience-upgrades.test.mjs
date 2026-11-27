@@ -859,7 +859,8 @@ test("Track 1: piped stdin combines with positional print prompt via CLI", async
   const code = await new Promise((resolve) => child.on("close", resolve));
   assert.equal(code, 0);
   const parsed = JSON.parse(stdout);
-  assert.equal(parsed.currentVersion, "0.1.0");
+  const { PRODUCT_VERSION } = await import("./support/helpers.mjs");
+  assert.equal(parsed.currentVersion, PRODUCT_VERSION);
   assert.equal(parsed.status, "offline");
   assert.equal(parsed.updateAvailable, false);
 });

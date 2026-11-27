@@ -244,13 +244,13 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 1.6.0
         version: 1.6.0
+    devDependencies:
       codepunk-core:
-        specifier: 0.1.0
+        specifier: 0.1.1
         version: link:../core
       codepunk-protocol:
-        specifier: 0.1.0
+        specifier: 0.1.1
         version: link:../protocol
-    devDependencies:
       esbuild:
         specifier: 0.25.11
         version: 0.25.11
@@ -270,7 +270,7 @@ importers:
         specifier: 1.6.0
         version: 1.6.0
       codepunk-protocol:
-        specifier: 0.1.0
+        specifier: 0.1.1
         version: link:../protocol
 
   packages/protocol:
