@@ -12,6 +12,7 @@ import {
   decisionForPath,
   effectsForTool,
   isMcpProductTool,
+  isPluginProductTool,
   type PathDecision,
 } from "./path-rules.ts";
 import {
@@ -33,7 +34,7 @@ export type {
   PolicyRuleFixture,
 } from "./match.ts";
 export { policyRequestForCall, ruleMatches } from "./match.ts";
-export { coverageFor, effectsForTool, isMcpProductTool };
+export { coverageFor, effectsForTool, isMcpProductTool, isPluginProductTool };
 export { simpleShellArgv };
 
 export type PolicyMode = "interactive" | "headless" | "worker";
@@ -549,6 +550,20 @@ function toolDecision(request: PolicyRequest): {
         "MCP resource operations are uncovered by the sandbox and need approval",
       rule: {
         id: "mcp.resource.ask",
+        tool: request.tool,
+        decision: "ask",
+      },
+      pathTarget: null,
+      approvalClass: "mcp",
+    };
+  }
+  if (isPluginProductTool(request.tool)) {
+    return {
+      decision: "ask",
+      reason:
+        "isolated plugin tool calls require approval unless allowed by policy",
+      rule: {
+        id: "plugin.tool.ask",
         tool: request.tool,
         decision: "ask",
       },

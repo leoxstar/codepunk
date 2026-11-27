@@ -56,6 +56,18 @@ async function listExtensionFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     if (entry.isFile() && /\.(?:mjs|cjs|js|ts)$/u.test(entry.name)) {
       files.push(normalizeAbsolute(path.join(dir, entry.name)));
+      continue;
+    }
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const manifestPath = path.join(dir, entry.name, "plugin.toml");
+      try {
+        const stat = await fs.lstat(manifestPath);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          files.push(normalizeAbsolute(manifestPath));
+        }
+      } catch {
+        // Unmanifested directory is surfaced as an isolation error on load.
+      }
     }
   }
   return files.sort();
@@ -212,7 +224,24 @@ export async function loadUserPlugins(
   if (!options.allowed) {
     return { paths: [], summary };
   }
-  const files = await listExtensionFiles(dir);
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { paths: [], summary };
+    }
+    throw new PluginError(
+      `cannot read plugin directory: ${(error as Error).message}`,
+    );
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.isFile() && /\.(?:mjs|cjs|js|ts)$/u.test(entry.name)) {
+      files.push(normalizeAbsolute(path.join(dir, entry.name)));
+    }
+  }
+  files.sort();
   summary.paths = files;
   if (files.length === 0) {
     return { paths: [], summary };

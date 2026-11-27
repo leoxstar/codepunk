@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -8,6 +9,9 @@ const MAX_FRAME_BYTES = 1024 * 1024;
 
 interface ToolDefinition {
   name: string;
+  label?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
   execute: (
     toolCallId: string,
     params: unknown,
@@ -15,6 +19,12 @@ interface ToolDefinition {
     onUpdate: unknown,
     context: unknown,
   ) => Promise<unknown> | unknown;
+}
+
+interface PendingHostCall {
+  resolve: (result: unknown) => void;
+  reject: (error: Error & { code?: string; details?: unknown }) => void;
+  timer: NodeJS.Timeout;
 }
 
 function fail(message: string): never {
@@ -95,6 +105,7 @@ async function main(): Promise<void> {
   const tools = new Map<string, ToolDefinition>();
   const commands: string[] = [];
   const controllers = new Map<string, AbortController>();
+  const pendingHostCalls = new Map<string, PendingHostCall>();
   delete process.env["CODEPUNK_HOME"];
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("CODEPUNK_")) {
@@ -102,8 +113,59 @@ async function main(): Promise<void> {
     }
   }
 
+  const requestHost = async (
+    method: "tools/call" | "tools/list",
+    params: unknown,
+    options: { timeoutMs?: number; callId?: string } = {},
+  ): Promise<unknown> => {
+    const callId = options.callId ?? `host-${randomBytes(10).toString("hex")}`;
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    const frame = {
+      type: "codepunk/plugin-request",
+      version: PROTOCOL_VERSION,
+      call_id: callId,
+      plugin_id: pluginId,
+      method,
+      params,
+      timeout_ms: timeoutMs,
+    };
+    const encoded = `${JSON.stringify(frame)}\n`;
+    if (Buffer.byteLength(encoded, "utf8") > MAX_FRAME_BYTES) {
+      const error = new Error(
+        `plugin frame exceeds ${MAX_FRAME_BYTES} bytes`,
+      ) as Error & { code?: string };
+      error.code = "plugin.frame_too_large";
+      throw error;
+    }
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingHostCalls.delete(callId);
+        const error = new Error(`host method ${method} timed out`) as Error & {
+          code?: string;
+        };
+        error.code = "plugin.timeout";
+        reject(error);
+      }, timeoutMs);
+      timer.unref();
+      pendingHostCalls.set(callId, { resolve, reject, timer });
+      process.stdout.write(encoded);
+    });
+  };
+
+  const callHostTool = async (
+    name: string,
+    args: Record<string, unknown> = {},
+    options: { timeoutMs?: number; callId?: string } = {},
+  ): Promise<unknown> =>
+    await requestHost("tools/call", { name, arguments: args }, options);
+
+  const listHostTools = async (): Promise<unknown> =>
+    await requestHost("tools/list", {});
+
   const api = {
     cwd: resolvedDir,
+    callTool: callHostTool,
+    listTools: listHostTools,
     registerTool(definition: ToolDefinition) {
       if (
         typeof definition?.name !== "string" ||
@@ -196,6 +258,38 @@ async function main(): Promise<void> {
       const callId =
         typeof frame["call_id"] === "string" ? frame["call_id"] : "unknown";
       if (
+        frame["type"] === "codepunk/plugin-response" &&
+        frame["version"] === PROTOCOL_VERSION &&
+        callId !== "unknown"
+      ) {
+        const pending = pendingHostCalls.get(callId);
+        if (pending !== undefined) {
+          clearTimeout(pending.timer);
+          pendingHostCalls.delete(callId);
+          if (frame["ok"] === true) {
+            pending.resolve(frame["result"]);
+          } else {
+            const rawError =
+              typeof frame["error"] === "object" && frame["error"] !== null
+                ? (frame["error"] as Record<string, unknown>)
+                : {};
+            const err = new Error(
+              typeof rawError["message"] === "string"
+                ? rawError["message"]
+                : "host request failed",
+            ) as Error & { code?: string; details?: unknown };
+            if (typeof rawError["code"] === "string") {
+              err.code = rawError["code"];
+            }
+            if ("details" in rawError) {
+              err.details = rawError["details"];
+            }
+            pending.reject(err);
+          }
+        }
+        return;
+      }
+      if (
         frame["type"] !== "codepunk/plugin-request" ||
         frame["version"] !== PROTOCOL_VERSION ||
         typeof frame["method"] !== "string" ||
@@ -224,6 +318,20 @@ async function main(): Promise<void> {
             launch_verified: true,
             protocol: PROTOCOL_VERSION,
             tools: [...tools.keys()].sort(),
+            tool_definitions: [...tools.values()]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((definition) => ({
+                name: definition.name,
+                ...(typeof definition.label === "string"
+                  ? { label: definition.label }
+                  : {}),
+                ...(typeof definition.description === "string"
+                  ? { description: definition.description }
+                  : {}),
+                ...(definition.parameters !== undefined
+                  ? { parameters: definition.parameters }
+                  : {}),
+              })),
             commands: [...commands].sort(),
           },
         });
@@ -319,7 +427,11 @@ async function main(): Promise<void> {
             args ?? {},
             controller.signal,
             undefined,
-            { cwd: resolvedDir },
+            {
+              cwd: resolvedDir,
+              callTool: callHostTool,
+              listTools: listHostTools,
+            },
           );
           send({
             type: "codepunk/plugin-response",

@@ -5,18 +5,32 @@ import { fileURLToPath } from "node:url";
 import type {
   PluginError as PluginErrorFrame,
   PluginErrorCode,
+  PluginFrame,
   PluginMethod,
+  PluginRequest,
   PluginResponse,
 } from "codepunk-protocol";
 import {
   PLUGIN_MAX_FRAME_BYTES,
   PLUGIN_PROTOCOL_VERSION,
+  PluginErrorCodeSchema,
+  PluginFrameSchema,
   validateSchema,
-  PluginResponseSchema,
 } from "codepunk-protocol";
 import { spawnGuardedHost } from "../workers/sandbox.ts";
 import { PluginError } from "./index.ts";
 import type { PluginManifest } from "./manifest.ts";
+
+export interface RemotePluginToolSchema {
+  name: string;
+  label?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export type PluginHostRequestHandler = (
+  request: PluginRequest,
+) => Promise<unknown>;
 
 export interface PluginHostOptions {
   manifest: PluginManifest;
@@ -26,6 +40,7 @@ export interface PluginHostOptions {
     kind: "plugin/started" | "plugin/stopped",
     data: Record<string, unknown>,
   ) => Promise<void> | void;
+  onHostRequest?: PluginHostRequestHandler;
   now?: () => Date;
   env?: NodeJS.ProcessEnv;
 }
@@ -117,10 +132,12 @@ export class PluginHost {
   readonly manifest: PluginManifest;
   readonly pid: number;
   tools: readonly string[];
+  toolDefinitions: readonly RemotePluginToolSchema[];
   commands: readonly string[];
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly onEvent: PluginHostOptions["onEvent"];
+  private onHostRequest: PluginHostRequestHandler | undefined;
   private readonly now: () => Date;
   private readonly defaultTimeoutMs: number;
   private stopped = false;
@@ -138,13 +155,19 @@ export class PluginHost {
     this.child = child;
     this.pid = child.pid ?? 0;
     this.tools = tools;
+    this.toolDefinitions = [];
     this.commands = commands;
     this.onEvent = options.onEvent;
+    this.onHostRequest = options.onHostRequest;
     this.now = options.now ?? (() => new Date());
     this.defaultTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.exited = new Promise((resolve) => {
       child.once("exit", () => resolve());
     });
+  }
+
+  setHostRequestHandler(handler: PluginHostRequestHandler | undefined): void {
+    this.onHostRequest = handler;
   }
 
   static async start(options: PluginHostOptions): Promise<PluginHost> {
@@ -188,6 +211,7 @@ export class PluginHost {
       }
       const listed = health as {
         tools?: unknown;
+        tool_definitions?: unknown;
         commands?: unknown;
       };
       const tools = Array.isArray(listed.tools)
@@ -195,12 +219,45 @@ export class PluginHost {
             (name): name is string => typeof name === "string",
           )
         : [];
+      const toolDefinitions: RemotePluginToolSchema[] = Array.isArray(
+        listed.tool_definitions,
+      )
+        ? listed.tool_definitions.flatMap((entry) => {
+            if (
+              entry === null ||
+              typeof entry !== "object" ||
+              typeof (entry as { name?: unknown }).name !== "string"
+            ) {
+              return [];
+            }
+            const item = entry as Record<string, unknown>;
+            return [
+              {
+                name: item["name"] as string,
+                ...(typeof item["label"] === "string"
+                  ? { label: item["label"] }
+                  : {}),
+                ...(typeof item["description"] === "string"
+                  ? { description: item["description"] }
+                  : {}),
+                ...(item["parameters"] !== null &&
+                typeof item["parameters"] === "object" &&
+                !Array.isArray(item["parameters"])
+                  ? {
+                      parameters: item["parameters"] as Record<string, unknown>,
+                    }
+                  : {}),
+              },
+            ];
+          })
+        : [];
       const commands = Array.isArray(listed.commands)
         ? listed.commands.filter(
             (name): name is string => typeof name === "string",
           )
         : [];
       host.tools = tools;
+      host.toolDefinitions = toolDefinitions;
       host.commands = commands;
       await options.onEvent?.("plugin/started", {
         plugin_id: manifest.id,
@@ -264,18 +321,23 @@ export class PluginHost {
         terminateTree(this.child, "SIGKILL");
         return;
       }
-      const validation = validateSchema(PluginResponseSchema, parsed);
+      const validation = validateSchema(PluginFrameSchema, parsed);
       if (!validation.ok) {
         this.failAll(
           protocolError(
             "plugin.invalid_request",
-            "plugin response failed schema validation",
+            "plugin frame failed schema validation",
           ),
         );
         terminateTree(this.child, "SIGKILL");
         return;
       }
-      const response = validation.value as PluginResponse;
+      const frame = validation.value as PluginFrame;
+      if (frame.type === "codepunk/plugin-request") {
+        void this.handleChildRequest(frame);
+        return;
+      }
+      const response = frame as PluginResponse;
       const request = this.pending.get(response.call_id);
       if (request === undefined) {
         return;
@@ -343,6 +405,94 @@ export class PluginHost {
       throw new PluginError("plugin host is stopped", "plugin.crashed");
     }
     this.child.stdin.write(`${JSON.stringify(frame)}\n`);
+  }
+
+  private async handleChildRequest(request: PluginRequest): Promise<void> {
+    if (request.plugin_id !== this.manifest.id) {
+      this.writeSafe({
+        type: "codepunk/plugin-response",
+        version: PLUGIN_PROTOCOL_VERSION,
+        call_id: request.call_id,
+        plugin_id: this.manifest.id,
+        ok: false,
+        error: protocolError(
+          "plugin.invalid_request",
+          `plugin_id ${request.plugin_id} does not match ${this.manifest.id}`,
+        ),
+      });
+      return;
+    }
+    if (this.onHostRequest === undefined) {
+      this.writeSafe({
+        type: "codepunk/plugin-response",
+        version: PLUGIN_PROTOCOL_VERSION,
+        call_id: request.call_id,
+        plugin_id: this.manifest.id,
+        ok: false,
+        error: protocolError(
+          "plugin.capability_denied",
+          "host product tools are not bound to this plugin host",
+        ),
+      });
+      return;
+    }
+    try {
+      const result = await this.onHostRequest(request);
+      this.writeSafe({
+        type: "codepunk/plugin-response",
+        version: PLUGIN_PROTOCOL_VERSION,
+        call_id: request.call_id,
+        plugin_id: this.manifest.id,
+        ok: true,
+        result: result ?? null,
+      });
+    } catch (error) {
+      const rawCode =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as { code: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : "plugin.internal";
+      const validCode = validateSchema(PluginErrorCodeSchema, rawCode).ok
+        ? (rawCode as PluginErrorCode)
+        : "plugin.internal";
+      const message =
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : typeof error === "object" &&
+              error !== null &&
+              "message" in error &&
+              typeof (error as { message: unknown }).message === "string" &&
+              (error as { message: string }).message.length > 0
+            ? (error as { message: string }).message
+            : "plugin host callback failed";
+      const details =
+        typeof error === "object" && error !== null && "details" in error
+          ? (error as { details: unknown }).details
+          : undefined;
+      this.writeSafe({
+        type: "codepunk/plugin-response",
+        version: PLUGIN_PROTOCOL_VERSION,
+        call_id: request.call_id,
+        plugin_id: this.manifest.id,
+        ok: false,
+        error: {
+          code: validCode,
+          message,
+          retryable: false,
+          ...(details !== undefined ? { details } : {}),
+        },
+      });
+    }
+  }
+
+  private writeSafe(frame: PluginResponse): void {
+    try {
+      this.write(frame);
+    } catch {
+      // Child exited or frame exceeded max size before reply could be sent.
+    }
   }
 
   async request(

@@ -12,9 +12,10 @@ import type { AgentState } from "codepunk-protocol";
 import type { ContextBundle } from "../../context/index.ts";
 import type { MemoryManager } from "../../memory/index.ts";
 import type { SessionStore } from "../../session/index.ts";
+import type { PluginManifest } from "../../plugin/manifest.ts";
 import type { AskUserChannel } from "../../tools/ask-user.ts";
 import type { SubagentToolExecutor } from "../../tools/subagent.ts";
-import type { ToolWrapOptions } from "../../wrap/index.ts";
+import type { AnyToolResult, ToolWrapOptions } from "../../wrap/index.ts";
 
 export class HostIsolationError extends Error {
   constructor(message: string) {
@@ -126,6 +127,18 @@ export interface PiHost {
     kind: Parameters<SessionStore["append"]>[0],
     data: unknown,
   ): Promise<void>;
+  executeProductToolAsPlugin(input: {
+    manifest: PluginManifest;
+    toolCallId: string;
+    toolName: string;
+    params: Record<string, unknown>;
+    signal?: AbortSignal;
+  }): Promise<{
+    result: AnyToolResult;
+    decision: "allow" | "deny";
+    rule: string;
+    reason: string | null;
+  }>;
   dispose(): Promise<void>;
 }
 

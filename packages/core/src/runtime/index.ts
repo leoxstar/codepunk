@@ -58,7 +58,11 @@ import {
   projectPaths,
   resolveAdditionalWorkspaceRoots,
 } from "../platform/paths.ts";
-import { loadUserPlugins, type PluginLoadResult } from "../plugin/index.ts";
+import {
+  emptyIsolatedPluginBundle,
+  loadIsolatedPluginBundle,
+  type IsolatedPluginBundle,
+} from "../plugin/runtime-bridge.ts";
 import {
   DeferredActionReviewer,
   resolveActionReviewer,
@@ -326,11 +330,18 @@ async function createRuntimeInner(
     !readOnly &&
     options.headless !== true &&
     (options.allowPlugins === true || config.plugins.enabled === true);
-  const plugins = await loadUserPlugins({
+  const plugins = await loadIsolatedPluginBundle({
     allowed: pluginsAllowed,
     extensionDir: path.join(paths.home, "extensions"),
+    ...(options.now !== undefined ? { now: options.now } : {}),
   });
-  const pluginState: { current: PluginLoadResult } = { current: plugins };
+  const pluginState: { current: IsolatedPluginBundle } = { current: plugins };
+  for (const warning of plugins.summary.warnings) {
+    loadedConfig.warnings.push(warning);
+  }
+  for (const error of plugins.summary.errors) {
+    loadedConfig.warnings.push(`plugin skipped: ${error}`);
+  }
   if (readOnly && config.plugins.enabled) {
     loadedConfig.warnings.push(
       "read-only autonomy does not load user plugins because plugin code runs outside the tool policy",
@@ -852,7 +863,7 @@ async function createRuntimeInner(
       memory,
       autoMemorySummary: config.memory.auto_summary,
       disableUserBash: plugins.summary.enabled,
-      extensionPaths: plugins.paths,
+      extensionPaths: plugins.legacyExtensionPaths,
       ...(options.additionalExtensionFactories !== undefined
         ? { additionalExtensionFactories: options.additionalExtensionFactories }
         : {}),
@@ -897,7 +908,7 @@ async function createRuntimeInner(
         await ledger.prepare(runId);
       },
       onRunEnd: runEnded,
-      extraTools: [...mcp.tools, ...mcp.resourceTools],
+      extraTools: [...mcp.tools, ...mcp.resourceTools, ...plugins.tools],
       ...(options.questionChannel !== undefined
         ? { questionChannel: options.questionChannel }
         : {}),
@@ -908,10 +919,22 @@ async function createRuntimeInner(
     });
   } catch (error) {
     await closePendingSandboxForStartupFailure(startupCleanup);
+    await pluginState.current.close().catch(() => undefined);
     await mcp.close();
     throw error;
   }
   hostRef.current = host;
+  const wirePluginBundle = async (
+    bundle: IsolatedPluginBundle,
+  ): Promise<void> => {
+    bundle.bindProductToolExecutor((input) =>
+      host.executeProductToolAsPlugin(input),
+    );
+    await bundle.flushLifecycleEvents(async (kind, data) => {
+      await host.recordEvent(kind, data).catch(() => undefined);
+    });
+  };
+  await wirePluginBundle(pluginState.current);
   await host.recordEvent("autonomy/profile", {
     profile: autonomy.profile,
     source: autonomy.source,
@@ -947,6 +970,7 @@ async function createRuntimeInner(
     );
   } catch (error) {
     await closePendingSandboxForStartupFailure(startupCleanup);
+    await pluginState.current.close().catch(() => undefined);
     await host.dispose().catch(() => undefined);
     throw error;
   }
@@ -981,7 +1005,11 @@ async function createRuntimeInner(
           await next.close().catch(() => undefined);
           return;
         }
-        await host.replaceExtraTools([...next.tools, ...next.resourceTools]);
+        await host.replaceExtraTools([
+          ...next.tools,
+          ...next.resourceTools,
+          ...pluginState.current.tools,
+        ]);
         await host.session.reload();
         if (runtimeDisposed) {
           await next.close().catch(() => undefined);
@@ -1467,29 +1495,48 @@ async function createRuntimeInner(
               ? "disabled"
               : null;
       if (skipped !== null) {
-        const disabled = await loadUserPlugins({
-          allowed: false,
-          extensionDir: path.join(paths.home, "extensions"),
-        });
+        const previous = pluginState.current;
+        const disabled = emptyIsolatedPluginBundle(
+          path.join(paths.home, "extensions"),
+          false,
+        );
         pluginState.current = disabled;
         host.replaceExtensionPaths([]);
+        await host.replaceExtraTools([...mcp.tools, ...mcp.resourceTools]);
         await host.session.reload();
         host.validateToolRegistry();
+        await previous.close().catch(() => undefined);
         return { skipped, plugins: disabled.summary, error: null };
       }
 
       const previous = pluginState.current;
-      let next: PluginLoadResult;
+      let next: IsolatedPluginBundle | null = null;
       try {
-        next = await loadUserPlugins({
+        next = await loadIsolatedPluginBundle({
           allowed: true,
           extensionDir: path.join(paths.home, "extensions"),
+          ...(options.now !== undefined ? { now: options.now } : {}),
         });
-        host.replaceExtensionPaths(next.paths);
+        host.replaceExtensionPaths(next.legacyExtensionPaths);
+        await host.replaceExtraTools([
+          ...mcp.tools,
+          ...mcp.resourceTools,
+          ...next.tools,
+        ]);
         await host.session.reload();
         host.validateToolRegistry();
       } catch (error) {
-        host.replaceExtensionPaths(previous.paths);
+        if (next !== null) {
+          await next.close().catch(() => undefined);
+        }
+        host.replaceExtensionPaths(previous.legacyExtensionPaths);
+        await host
+          .replaceExtraTools([
+            ...mcp.tools,
+            ...mcp.resourceTools,
+            ...previous.tools,
+          ])
+          .catch(() => undefined);
         await host.session.reload().catch(() => undefined);
         try {
           host.validateToolRegistry();
@@ -1507,6 +1554,8 @@ async function createRuntimeInner(
       }
 
       pluginState.current = next;
+      await wirePluginBundle(next);
+      await previous.close().catch(() => undefined);
       const error =
         next.summary.errors.length === 0
           ? null
@@ -1523,7 +1572,11 @@ async function createRuntimeInner(
         throw new Error("Wait for compaction to finish before reloading.");
       }
       const previous = mcp;
-      const previousTools = [...previous.tools, ...previous.resourceTools];
+      const previousTools = [
+        ...previous.tools,
+        ...previous.resourceTools,
+        ...pluginState.current.tools,
+      ];
       const sessionModel = host.session.model;
       const hasModel =
         runtime.primaryModel !== undefined ||
@@ -1562,7 +1615,11 @@ async function createRuntimeInner(
       let applied = false;
       if (next !== null) {
         try {
-          await host.replaceExtraTools([...next.tools, ...next.resourceTools]);
+          await host.replaceExtraTools([
+            ...next.tools,
+            ...next.resourceTools,
+            ...pluginState.current.tools,
+          ]);
           applied = true;
         } catch (replaceError) {
           error = `MCP tools could not be registered: ${
@@ -1654,6 +1711,7 @@ async function createRuntimeInner(
       } catch (error) {
         hookFailure = error;
       }
+      await pluginState.current.close().catch(() => undefined);
       await mcp.close();
       autonomy.revoke();
       await host

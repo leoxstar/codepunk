@@ -2,7 +2,11 @@ import type {
   AgentToolResult,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { ApprovalAnswer, SandboxDescriptor } from "codepunk-protocol";
+import type {
+  ApprovalAnswer,
+  PluginToolCallEvent,
+  SandboxDescriptor,
+} from "codepunk-protocol";
 import type { ApprovalBroker } from "../approval/index.ts";
 import type { AutonomyController } from "../autonomy/index.ts";
 import type { CheckpointStore, ShadowGitStore } from "../checkpoints/index.ts";
@@ -30,7 +34,14 @@ export interface FileSnapshot {
   mode: number | null;
 }
 
-export type AnyToolDefinition = ToolDefinition<any, any, any>;
+export interface PluginExecutionMetadata {
+  pluginId: string;
+  pluginManifestSha256: string;
+}
+
+export type AnyToolDefinition = ToolDefinition<any, any, any> & {
+  pluginMeta?: PluginExecutionMetadata;
+};
 export type AnyToolResult = AgentToolResult<any>;
 
 export interface ToolLifecycleHookInput {
@@ -112,6 +123,15 @@ export interface ToolWrapOptions {
     cwd: string,
   ) => Promise<string | null> | string | null;
   now?: () => Date;
+  pluginMeta?: PluginExecutionMetadata;
+  onPluginToolCall?: (
+    event: PluginToolCallEvent["data"],
+  ) => Promise<void> | void;
+  onToolOutcome?: (outcome: {
+    decision: "allow" | "deny";
+    rule: string;
+    reason: string | null;
+  }) => void;
   onApprovalAnswer?: (answer: ApprovalAnswer) => Promise<void> | void;
   onMemorySearch?: (retrieval: {
     ids: string[];

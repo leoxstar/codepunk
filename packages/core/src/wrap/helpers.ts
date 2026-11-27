@@ -24,6 +24,7 @@ import {
   coverageFor,
   effectsForTool,
   isMcpProductTool,
+  isPluginProductTool,
   simpleShellArgv,
 } from "../policy/index.ts";
 import type { ShellProvider } from "../sandbox/index.ts";
@@ -35,6 +36,7 @@ import {
   NONE_SANDBOX,
   type AnyToolResult,
   type FileSnapshot,
+  type PluginExecutionMetadata,
   type TaintOrigin,
   type ToolExecutionState,
   type ToolWrapOptions,
@@ -105,7 +107,8 @@ export function shouldEscalateTaintedCall(
   policyDecision: Decision,
 ): boolean {
   return (
-    policyDecision === "ask" && (isShellTool(tool) || isMcpProductTool(tool))
+    policyDecision === "ask" &&
+    (isShellTool(tool) || isMcpProductTool(tool) || isPluginProductTool(tool))
   );
 }
 
@@ -748,7 +751,13 @@ export function shellCoverage(
   return coverageFor(tool, allowed ? "allow" : "deny");
 }
 
-export function evidenceSource(tool: string): EvidenceRecord["source"] {
+export function evidenceSource(
+  tool: string,
+  pluginMeta?: PluginExecutionMetadata,
+): EvidenceRecord["source"] {
+  if (pluginMeta !== undefined || isPluginProductTool(tool)) {
+    return "plugin";
+  }
   return isMcpProductTool(tool) ? "mcp" : "tool";
 }
 
@@ -794,16 +803,28 @@ export function baseRecord(
     reused?: EvidenceRecord["reused"];
     retry?: EvidenceRecord["retry"];
     verify?: EvidenceRecord["verify"];
+    pluginMeta?: PluginExecutionMetadata;
   },
 ): Omit<
   EvidenceRecord,
   "version" | "id" | "seq" | "prev_sha256" | "created_at"
 > {
+  const pluginMeta = input.pluginMeta ?? options.pluginMeta;
+  const executor =
+    pluginMeta !== undefined && input.decision === "allow"
+      ? "child-host"
+      : input.executor;
+  const coverageBasis =
+    pluginMeta !== undefined &&
+    input.decision === "allow" &&
+    !input.coverageBasis.includes("child-host")
+      ? [...input.coverageBasis, "child-host"]
+      : input.coverageBasis;
   return {
     task_id: options.taskId ?? null,
     run_id: options.runId,
     session_id: options.sessionId,
-    source: input.source,
+    source: pluginMeta !== undefined ? "plugin" : input.source,
     tool: input.tool,
     tool_call_id: input.toolCallId,
     decision: input.decision,
@@ -826,7 +847,7 @@ export function baseRecord(
     sandbox: input.sandbox,
     effects: effectsForTool(input.tool),
     coverage: input.coverage,
-    coverage_basis: input.coverageBasis,
+    coverage_basis: coverageBasis,
     exit_code: input.exitCode,
     duration_ms: input.durationMs,
     before_sha256: input.beforeSha256,
@@ -836,7 +857,7 @@ export function baseRecord(
     output_sha256: input.outputSha256,
     output_preview: input.outputPreview,
     empty_result: input.emptyResult,
-    executor: input.executor,
+    executor,
     vcs: { commit: null, tree: null, base_commit: null },
     memory: input.memory ?? {
       ids: [],
@@ -845,6 +866,12 @@ export function baseRecord(
       cap: 0,
       truncated: false,
     },
+    ...(pluginMeta === undefined
+      ? {}
+      : {
+          plugin_id: pluginMeta.pluginId,
+          plugin_manifest_sha256: pluginMeta.pluginManifestSha256,
+        }),
     ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
     ...(input.budgetExceeded !== undefined
       ? { budget_exceeded: input.budgetExceeded }

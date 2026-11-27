@@ -780,7 +780,21 @@ export {
   type PluginManifest,
   type PluginManifestLoadResult,
 } from "./plugin/manifest.ts";
-export { PluginHost, type PluginHostOptions } from "./plugin/host.ts";
+export {
+  PluginHost,
+  type PluginHostOptions,
+  type PluginHostRequestHandler,
+  type RemotePluginToolSchema,
+} from "./plugin/host.ts";
+export {
+  emptyIsolatedPluginBundle,
+  loadIsolatedPluginBundle,
+  pluginToolName,
+  type BufferedPluginLifecycleEvent,
+  type IsolatedPluginBundle,
+  type LoadIsolatedPluginsOptions,
+  type PluginProductToolExecutor,
+} from "./plugin/runtime-bridge.ts";
 export {
   createRuntime,
   signStandalone,

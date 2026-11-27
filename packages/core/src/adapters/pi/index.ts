@@ -15,6 +15,7 @@ import {
   type ExtensionFactory,
   type ExtensionError,
   type ExtensionContext,
+  type ExtensionToolContext,
   type InputEvent,
   type InlineExtension,
   type SessionBeforeCompactEvent,
@@ -76,6 +77,7 @@ import {
 } from "../../tools/index.ts";
 import { MCP_RESOURCE_TOOL_NAMES } from "../../mcp/names.ts";
 import {
+  wrapToolDefinition,
   wrapToolDefinitions,
   wrapUserBashCommand,
   type ToolWrapOptions,
@@ -1186,6 +1188,9 @@ export async function createPiHost(
     onApprovalAnswer: async (answer) => {
       await appendEvent("approval/answer", answer);
     },
+    onPluginToolCall: async (event) => {
+      await appendEvent("plugin/tool_call", event);
+    },
     onMemorySearch: async (retrieval) => {
       await appendEvent("memory/retrieve", retrieval);
     },
@@ -1522,6 +1527,7 @@ export async function createPiHost(
     // every registered MCP tool through the normal policy/approval path.
     const mcpToolPatterns = [
       "mcp__*",
+      "plugin__*",
       TOOL_SEARCH_TOOL_NAME,
       ...[...MCP_RESOURCE_TOOL_NAMES].filter(
         (name) => !wrapped.some((definition) => definition.name === name),
@@ -1692,6 +1698,79 @@ export async function createPiHost(
       saveAgentState: saveHostAgentState,
       async recordEvent(kind, data): Promise<void> {
         await appendEvent(kind, data);
+      },
+      async executeProductToolAsPlugin(input) {
+        if (session === null) {
+          throw new HostIsolationError("Pi session is not ready");
+        }
+        const baseDefinition = baseDefinitions.find(
+          (definition) => definition.name === input.toolName,
+        );
+        if (baseDefinition === undefined) {
+          return {
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: `denied: plugin.capability_denied (tool ${input.toolName} is not available)`,
+                },
+              ],
+              details: {},
+              isError: true,
+            },
+            decision: "deny",
+            rule: "plugin.capability_denied",
+            reason: `tool ${input.toolName} is not available`,
+          };
+        }
+        let observedOutcome: {
+          decision: "allow" | "deny";
+          rule: string;
+          reason: string | null;
+        } = {
+          decision: "deny",
+          rule: "policy.default",
+          reason: "tool did not complete",
+        };
+        const additionalRoots = [
+          ...new Set([
+            ...(wrapOptions.additionalRoots ?? []),
+            ...input.manifest.readRoots,
+            ...input.manifest.writeRoots,
+          ]),
+        ];
+        const writeSet = [
+          ...new Set([
+            ...(wrapOptions.writeSet ?? []),
+            ...input.manifest.writeRoots,
+          ]),
+        ];
+        const pluginWrapped = await wrapToolDefinition(baseDefinition, {
+          ...wrapOptions,
+          runId: currentRunId,
+          additionalRoots,
+          writeSet,
+          pluginMeta: {
+            pluginId: input.manifest.id,
+            pluginManifestSha256: input.manifest.manifestSha256,
+          },
+          onToolOutcome: (outcome) => {
+            observedOutcome = outcome;
+          },
+        });
+        const result = await pluginWrapped.execute(
+          input.toolCallId,
+          input.params,
+          input.signal,
+          undefined,
+          { cwd } as ExtensionToolContext,
+        );
+        return {
+          result,
+          decision: observedOutcome.decision,
+          rule: observedOutcome.rule,
+          reason: observedOutcome.reason,
+        };
       },
       async dispose(): Promise<void> {
         if (disposed) {

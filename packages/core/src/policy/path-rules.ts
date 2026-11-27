@@ -28,6 +28,10 @@ export function isMcpProductTool(tool: string): boolean {
   return tool.startsWith("mcp__") || isMcpResourceTool(tool);
 }
 
+export function isPluginProductTool(tool: string): boolean {
+  return tool.startsWith("plugin__");
+}
+
 export function toolEffects(tool: string): Effects {
   switch (tool) {
     case "read":
@@ -69,6 +73,9 @@ export function coverageFor(
 ): Coverage {
   if (isMcpProductTool(tool)) {
     return "uncovered";
+  }
+  if (isPluginProductTool(tool)) {
+    return "app-layer";
   }
   if (tool === "bash" || tool === "exec" || tool === "user_bash") {
     return sandbox === "allow" ? "enforced" : "uncovered";

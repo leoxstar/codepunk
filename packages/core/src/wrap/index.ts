@@ -74,6 +74,7 @@ import {
   type AnyToolDefinition,
   type AnyToolResult,
   type FileSnapshot,
+  type PluginExecutionMetadata,
   type TaintOrigin,
   type ToolExecutionState,
   type ToolLifecycleHookInput,
@@ -85,6 +86,9 @@ import { deniedUserBashResult, wrapUserBashCommand } from "./user-bash.ts";
 export {
   deniedUserBashResult,
   wrapUserBashCommand,
+  type AnyToolDefinition,
+  type AnyToolResult,
+  type PluginExecutionMetadata,
   type TaintOrigin,
   type ToolExecutionState,
   type ToolLifecycleHookInput,
@@ -96,6 +100,36 @@ export async function wrapToolDefinition(
   definition: AnyToolDefinition,
   options: ToolWrapOptions,
 ): Promise<AnyToolDefinition> {
+  const effectivePluginMeta = definition.pluginMeta ?? options.pluginMeta;
+  const emitPluginToolCall = async (input: {
+    toolCallId: string;
+    decision: EvidenceRecord["decision"];
+    approval: EvidenceRecord["approval"];
+    outcome: "completed" | "failed" | "denied" | "cancelled";
+    reason: string | null;
+  }): Promise<void> => {
+    if (
+      effectivePluginMeta === undefined ||
+      options.onPluginToolCall === undefined
+    ) {
+      return;
+    }
+    const normalizedReason =
+      input.reason !== null && input.reason.trim().length > 0
+        ? input.reason
+        : null;
+    await options.onPluginToolCall({
+      run_id: options.runId,
+      tool_call_id: input.toolCallId,
+      plugin_id: effectivePluginMeta.pluginId,
+      plugin_manifest_sha256: effectivePluginMeta.pluginManifestSha256,
+      executor: "child-host",
+      decision: input.decision,
+      approval: input.approval,
+      outcome: input.outcome,
+      reason: normalizedReason,
+    });
+  };
   return {
     ...definition,
     async execute(
@@ -115,7 +149,7 @@ export async function wrapToolDefinition(
           .join("; ")}`;
         await options.ledger.append(
           baseRecord(options, {
-            source: evidenceSource(definition.name),
+            source: evidenceSource(definition.name, effectivePluginMeta),
             tool: definition.name,
             toolCallId,
             decision: "deny",
@@ -139,8 +173,23 @@ export async function wrapToolDefinition(
             outputPreview: message,
             emptyResult: null,
             executor: null,
+            ...(effectivePluginMeta === undefined
+              ? {}
+              : { pluginMeta: effectivePluginMeta }),
           }),
         );
+        options.onToolOutcome?.({
+          decision: "deny",
+          rule: "tool.invalid_arguments",
+          reason: message,
+        });
+        await emitPluginToolCall({
+          toolCallId,
+          decision: "deny",
+          approval: null,
+          outcome: "denied",
+          reason: message,
+        });
         return textResult(message);
       }
       const hookInput: ToolLifecycleHookInput = {
@@ -748,6 +797,9 @@ export async function wrapToolDefinition(
                   ? true
                   : null,
               executor: null,
+              ...(effectivePluginMeta === undefined
+                ? {}
+                : { pluginMeta: effectivePluginMeta }),
               ...(budgetExceeded === undefined ? {} : { budgetExceeded }),
               ...(definition.name === "memory_search"
                 ? {
@@ -763,6 +815,18 @@ export async function wrapToolDefinition(
                 : {}),
             }),
           );
+          options.onToolOutcome?.({
+            decision: "deny",
+            rule: finalRule,
+            reason: finalReason,
+          });
+          await emitPluginToolCall({
+            toolCallId,
+            decision: "deny",
+            approval: approvalEvidence,
+            outcome: "denied",
+            reason: finalReason,
+          });
           return textResult(message);
         }
 
@@ -1112,6 +1176,9 @@ export async function wrapToolDefinition(
                   ? "srt"
                   : "direct"
                 : null,
+            ...(effectivePluginMeta === undefined
+              ? {}
+              : { pluginMeta: effectivePluginMeta }),
             ...(idempotencyKey === null ? {} : { idempotencyKey }),
             ...(retryEvidence === undefined ? {} : { retry: retryEvidence }),
             ...(verifyEvidence === undefined ? {} : { verify: verifyEvidence }),
@@ -1129,6 +1196,29 @@ export async function wrapToolDefinition(
               : {}),
           }),
         );
+        const completedDecision = hookFailure === null ? "allow" : "deny";
+        options.onToolOutcome?.({
+          decision: completedDecision,
+          rule: hookFailure?.rule ?? finalRule,
+          reason:
+            hookFailure !== null
+              ? hookFailure.reason
+              : outcome === "completed"
+                ? null
+                : effectiveOutput || finalReason,
+        });
+        await emitPluginToolCall({
+          toolCallId,
+          decision: completedDecision,
+          approval: approvalEvidence,
+          outcome: hookFailure === null ? outcome : "denied",
+          reason:
+            hookFailure !== null
+              ? hookFailure.reason
+              : outcome === "completed"
+                ? null
+                : effectiveOutput || null,
+        });
         if (definition.name === "memory_search") {
           const retrieval = memoryRetrieval(result);
           if (retrieval !== null) {
