@@ -87,6 +87,7 @@ test("discovery canaries do not load and the registry is wrapped", async () => {
     const snapshot = host.validateToolRegistry();
     assert.deepEqual(snapshot.active.sort(), [
       "edit",
+      "lsp_query",
       "plan",
       "read",
       "todo",
@@ -94,6 +95,7 @@ test("discovery canaries do not load and the registry is wrapped", async () => {
     ]);
     assert.deepEqual(snapshot.registered, [
       "edit",
+      "lsp_query",
       "plan",
       "read",
       "todo",
@@ -101,6 +103,7 @@ test("discovery canaries do not load and the registry is wrapped", async () => {
     ]);
     assert.deepEqual(snapshot.wrapped, [
       "edit",
+      "lsp_query",
       "plan",
       "read",
       "todo",
