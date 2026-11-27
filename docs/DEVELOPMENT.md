@@ -88,8 +88,9 @@ codepunk-protocol <- codepunk-core <- codepunk-cli
 ```
 
 Cross-package imports use the public `exports` entry points. Internal packages
-are linked from the workspace through `pnpm-workspace.yaml`; their manifests
-remain installable with npm when a release is packed.
+(`codepunk-protocol` and `codepunk-core`) are private workspace packages linked
+through `pnpm-workspace.yaml` and bundled into the single published
+`codepunk-cli` package at build time.
 
 ## Dependencies
 

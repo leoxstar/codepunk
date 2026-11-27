@@ -1,23 +1,34 @@
 # Releasing Codepunk
 
-This runbook describes the manual `0.1.0` npm release. Release from a clean
-checkout after the release commit has passed the repository checks and the
-platform statement in `docs/PLATFORMS.md` agrees with the matrix in
+This runbook describes the manual `0.1.1` single-package npm release. Release
+from a clean checkout after the release commit has passed the repository checks
+and the platform statement in `docs/PLATFORMS.md` agrees with the matrix in
 `.github/workflows/ci.yml`.
+
+## Architecture of the npm distribution
+
+Codepunk keeps three workspace packages in Git (`codepunk-protocol`,
+`codepunk-core`, `codepunk-cli`) to enforce compile-time layer boundaries, while
+publishing **only `codepunk-cli`** to the public npm registry:
+
+- `packages/protocol` and `packages/core` are `"private": true` internal
+  workspace packages and are never published to npm.
+- `packages/cli` bundles `codepunk-protocol`, `codepunk-core`, and `typebox`
+  into `dist/index.js` and emits `dist/host-child.js` for isolated subprocess
+  plugins.
 
 ## Prerequisites
 
 - Use Node.js `>=22.19.0`, pnpm `12.18.0`, and npm from the active Node.js
   installation.
-- Confirm the working tree is clean and the three packages all report version
-  `0.1.0`.
+- Confirm the working tree is clean and the root and workspace manifests all
+  report version `0.1.1`.
 - Confirm the package contents, metadata, and dependency versions with
   `pnpm run verify` and the package checks below.
 - On Linux, install the sandbox dependencies required by
   `scripts/ci-install-sandbox-deps.sh`; macOS uses the built-in Seatbelt
   sandbox.
-- Confirm npm authentication and publish access for `codepunk-protocol`,
-  `codepunk-core`, and `codepunk-cli`:
+- Confirm npm authentication and publish access for `codepunk-cli`:
 
   ```text
   npm whoami
@@ -29,21 +40,28 @@ platform statement in `docs/PLATFORMS.md` agrees with the matrix in
 ## Preflight
 
 Run the following Bash commands from the repository root. Check versions,
-metadata, and tarball contents before publishing:
+metadata, private workspace flags, and the `codepunk-cli` tarball contents
+before publishing:
 
 ```bash
 (
   set -euo pipefail
-  for package in protocol core cli; do
-    jq -e '.version == "0.1.0" and
-      .repository.url == "git+https://github.com/leoxstar/codepunk.git" and
-      .publishConfig.access == "public"' "packages/$package/package.json"
-    (cd "packages/$package" && npm pack --dry-run --json) | jq -e '
-      .[0].files | map(.path) |
-      all(test("^(dist/|README\\.md$|LICENSE$|package\\.json$)")) and
-      any(. == "README.md") and any(. == "LICENSE") and
-      any(. == "package.json") and any(startswith("dist/"))'
+  for internal_pkg in protocol core; do
+    jq -e '.version == "0.1.1" and .private == true and
+      (.publishConfig == null) and (.files == null)' \
+      "packages/$internal_pkg/package.json"
   done
+  jq -e '.version == "0.1.1" and
+    .repository.url == "git+https://github.com/leoxstar/codepunk.git" and
+    .publishConfig.access == "public" and
+    (.dependencies["codepunk-core"] == null) and
+    (.dependencies["codepunk-protocol"] == null)' "packages/cli/package.json"
+  (cd "packages/cli" && npm pack --dry-run --json) | jq -e '
+    .[0].files | map(.path) |
+    all(test("^(dist/|README\\.md$|LICENSE$|package\\.json$)")) and
+    any(. == "README.md") and any(. == "LICENSE") and
+    any(. == "package.json") and any(. == "dist/index.js") and
+    any(. == "dist/host-child.js")'
 )
 ```
 
@@ -73,27 +91,25 @@ releasing. If an upstream version now supports a safe `zod >=4.6.6` path,
 upgrade, rerun all release checks, and remove the accepted-risk statement from
 `CHANGELOG.md` before publishing.
 
-Run the publish preview for each package. Use npm for this check; a pnpm dry
-run does not produce the npm publish output required here. Each command must
-exit `0`:
+Run the publish preview for `codepunk-cli`. Use npm for this check; a pnpm dry
+run does not produce the npm publish output required here. The command must exit
+`0`:
 
 ```bash
-(cd packages/protocol && npm publish --dry-run --access public)
-(cd packages/core && npm publish --dry-run --access public)
 (cd packages/cli && npm publish --dry-run --access public)
 ```
 
-Each preview must report the package name and `0.1.0`, include `public access
-(dry-run)`, and exit successfully. A preview does not publish anything.
+The preview must report `codepunk-cli@0.1.1`, include `public access (dry-run)`,
+and exit successfully. A preview does not publish anything.
 
-## Publish order
+## Publish and retire superseded 0.1.0 packages
 
-Record the output and exit codes of this block as release evidence. It first
-requires all three versions to return a nonzero `E404`, then publishes in
-dependency order. Each successful publish is followed by a lookup every five
-seconds, for at most 60 seconds. The lookup prints its attempt count and stops
-on a non-`E404` error or when visibility is not confirmed within that window.
-It never repeats `npm publish`.
+Publish `codepunk-cli@0.1.1` **before** unpublishing `codepunk-cli@0.1.0` and
+`codepunk-cli@0.0.0-stage` so `codepunk-cli` is never left with zero published
+versions (avoiding npm's 24-hour empty-package cooldown). Once
+`codepunk-cli@0.1.1` is live, remove `codepunk-cli@0.1.0`,
+`codepunk-cli@0.0.0-stage`, and the retired `codepunk-core` and
+`codepunk-protocol` packages completely:
 
 ```bash
 (
@@ -101,23 +117,16 @@ It never repeats `npm publish`.
   trap 'status=$?; printf "Release stopped with exit %s; record the disposition.\n" "$status" >&2' ERR
 
   require_absent() {
-    local package="$1" output status=0
-    output="$(npm view "codepunk-$package@0.1.0" version 2>&1)" || status=$?
-    printf '%s: exit %s\n%s\n' "codepunk-$package@0.1.0" "$status" "$output"
+    local spec="$1" output status=0
+    output="$(npm view "$spec" version 2>&1)" || status=$?
+    printf '%s: exit %s\n%s\n' "$spec" "$status" "$output"
     if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
       return 1
     fi
   }
 
-  require_visible() {
-    local package="$1" output status=0
-    output="$(npm view "codepunk-$package@0.1.0" version 2>&1)" || status=$?
-    printf '%s: exit %s\n%s\n' "codepunk-$package@0.1.0" "$status" "$output"
-    test "$status" -eq 0 && test "$output" = '0.1.0'
-  }
-
   wait_for_registry() {
-    local package="$1" start="$SECONDS" attempt=0 elapsed remaining timeout
+    local spec="$1" expected="$2" start="$SECONDS" attempt=0 elapsed remaining timeout
     local attempt_start output status wait_seconds
     while :; do
       elapsed=$((SECONDS - start))
@@ -128,11 +137,11 @@ It never repeats `npm publish`.
       attempt_start="$SECONDS"
       attempt=$((attempt + 1))
       status=0
-      output="$(npm view "codepunk-$package@0.1.0" version \
+      output="$(npm view "$spec" version \
         --fetch-retries=0 --fetch-timeout="$timeout" 2>&1)" || status=$?
       printf '%s attempt %s: exit %s\n%s\n' \
-        "codepunk-$package@0.1.0" "$attempt" "$status" "$output"
-      if [ "$status" -eq 0 ] && [ "$output" = '0.1.0' ]; then return 0; fi
+        "$spec" "$attempt" "$status" "$output"
+      if [ "$status" -eq 0 ] && [ "$output" = "$expected" ]; then return 0; fi
       if [ "$status" -eq 0 ] || ! grep -Fq 'E404' <<< "$output"; then
         return 1
       fi
@@ -143,48 +152,40 @@ It never repeats `npm publish`.
     return 1
   }
 
-  for package in protocol core cli; do require_absent "$package"; done
-
-  (cd packages/protocol && npm publish --access public)
-  wait_for_registry protocol
-  (cd packages/core && npm publish --access public)
-  wait_for_registry core
-
-  require_visible protocol
-  require_visible core
-  require_absent cli
-
+  require_absent "codepunk-cli@0.1.1"
   (cd packages/cli && npm publish --access public)
-  wait_for_registry cli
+  wait_for_registry "codepunk-cli@0.1.1" "0.1.1"
+
+  # Remove superseded CLI versions while 0.1.1 remains live on latest
+  npm unpublish codepunk-cli@0.1.0
+  npm unpublish codepunk-cli@0.0.0-stage
+
+  # Retire standalone internal packages in reverse dependency order
+  npm unpublish codepunk-core --force
+  npm unpublish codepunk-protocol --force
 )
 ```
 
-Before the CLI publish, retain the printed evidence that protocol and core are
-visible and the CLI still returns `E404`.
-
 ## Verify the release
 
-Verify versions, internal dependencies, and the registry tarballs:
+Verify the published CLI version, absence of internal runtime dependencies, and
+the registry tarball:
 
 ```bash
 (
   set -euo pipefail
   temp_dir="$(mktemp -d)"
   trap 'rm -rf -- "$temp_dir"' EXIT
-  test "$(npm view codepunk-cli@0.1.0 version)" = "0.1.0"
-  npm view codepunk-core@0.1.0 dependencies --json | jq -e \
-    '.["codepunk-protocol"] == "0.1.0"'
-  npm view codepunk-cli@0.1.0 dependencies --json | jq -e \
-    '.["codepunk-core"] == "0.1.0" and .["codepunk-protocol"] == "0.1.0"'
+  test "$(npm view codepunk-cli@0.1.1 version)" = "0.1.1"
+  npm view codepunk-cli@0.1.1 dependencies --json | jq -e \
+    '(.["codepunk-core"] == null) and (.["codepunk-protocol"] == null)'
 
-  for package in protocol core cli; do
-    tarball="$(npm view "codepunk-$package@0.1.0" dist.tarball)"
-    curl -fsSL "$tarball" -o "$temp_dir/$package.tgz"
-    tar -tzf "$temp_dir/$package.tgz" > "$temp_dir/$package.entries"
-    for entry in package/LICENSE package/README.md package/package.json package/dist/index.js; do
-      count="$(grep -Fxc "$entry" "$temp_dir/$package.entries" || true)"
-      test "$count" -eq 1
-    done
+  tarball="$(npm view "codepunk-cli@0.1.1" dist.tarball)"
+  curl -fsSL "$tarball" -o "$temp_dir/cli.tgz"
+  tar -tzf "$temp_dir/cli.tgz" > "$temp_dir/cli.entries"
+  for entry in package/LICENSE package/README.md package/package.json package/dist/index.js package/dist/host-child.js; do
+    count="$(grep -Fxc "$entry" "$temp_dir/cli.entries" || true)"
+    test "$count" -eq 1
   done
 )
 ```
@@ -227,7 +228,7 @@ error, including a missing sandbox dependency, fails the smoke test.
   cd "$temp_dir"
 
   install_status=0
-  HOME="$temp_dir/home" npm install -g --prefix "$temp_dir/prefix" codepunk-cli@0.1.0 || install_status=$?
+  HOME="$temp_dir/home" npm install -g --prefix "$temp_dir/prefix" codepunk-cli@0.1.1 || install_status=$?
   printf 'npm install exit: %s\n' "$install_status"
   test "$install_status" -eq 0
 
@@ -235,7 +236,7 @@ error, including a missing sandbox dependency, fails the smoke test.
   version_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" --version 2>&1)" || version_status=$?
   printf '%s\nversion exit: %s\n' "$version_output" "$version_status"
   test "$version_status" -eq 0
-  test "$(printf '%s\n' "$version_output" | sed -n '1p')" = 'codepunk 0.1.0'
+  test "$(printf '%s\n' "$version_output" | sed -n '1p')" = 'codepunk 0.1.1'
   grep -Fq 'source: not installed (cannot compare)' <<< "$version_output"
   ! grep -Fq 'STALE' <<< "$version_output"
 
@@ -243,16 +244,16 @@ error, including a missing sandbox dependency, fails the smoke test.
   doctor_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" doctor 2>&1)" || doctor_status=$?
   printf '%s\ndoctor exit: %s\n' "$doctor_output" "$doctor_status"
   test "$doctor_status" -eq 1
-  grep -Fq '[ok] distribution: package version 0.1.0' <<< "$doctor_output"
+  grep -Fq '[ok] distribution: package version 0.1.1' <<< "$doctor_output"
   error_lines="$(grep -F '[error]' <<< "$doctor_output" || true)"
   test "$error_lines" = '[error] model: no model configured'
 
   self_install_status=0
   self_install_output="$(HOME="$temp_dir/home" "$temp_dir/prefix/bin/codepunk" install \
-    --package-version 0.1.0 --dry-run 2>&1)" || self_install_status=$?
+    --package-version 0.1.1 --dry-run 2>&1)" || self_install_status=$?
   printf '%s\nself-install exit: %s\n' "$self_install_output" "$self_install_status"
   test "$self_install_status" -eq 0
-  grep -Fq 'npm install --global --no-audit --no-fund codepunk-cli@0.1.0' <<< "$self_install_output"
+  grep -Fq 'npm install --global --no-audit --no-fund codepunk-cli@0.1.1' <<< "$self_install_output"
 )
 ```
 
@@ -266,13 +267,10 @@ the provisioning step, or an independent acceptance reviewer is missing, record
 the Windows result as `unverified` and do not claim Windows support in the
 release notes.
 
-Install the three local tarballs with one `npm install` command so the
-top-level `codepunk-*` specs come from the local files. npm still fetches
-metadata for the internal `codepunk-protocol` and `codepunk-core` dependency
-versions while it resolves the graph; those requests are resolution traffic,
-not an install from the registry. Keep the `--loglevel=http` output with the
-release evidence and verify the installed entry resolves under the local
-prefix (`codepunk --version` and `npm ls --global --prefix <prefix> --json`).
+Install the single local `codepunk-cli` tarball with one `npm install` command,
+keep the `--loglevel=http` output with the release evidence, and verify the
+installed entry resolves under the local prefix (`codepunk --version` and
+`npm ls --global --prefix <prefix> --json`):
 
 ```powershell
 $ErrorActionPreference = "Stop"
@@ -284,13 +282,9 @@ New-Item -ItemType Directory -Force $pack, $prefix, $cpHome | Out-Null
 $env:CODEPUNK_HOME = $cpHome
 $env:USERPROFILE = $cpHome
 
-npm pack --pack-destination $pack .\packages\protocol
-npm pack --pack-destination $pack .\packages\core
 npm pack --pack-destination $pack .\packages\cli
 npm install -g --prefix $prefix --no-audit --no-fund --loglevel=http `
-  (Join-Path $pack "codepunk-protocol-0.1.0.tgz") `
-  (Join-Path $pack "codepunk-core-0.1.0.tgz") `
-  (Join-Path $pack "codepunk-cli-0.1.0.tgz")
+  (Join-Path $pack "codepunk-cli-0.1.1.tgz")
 
 $bin = Join-Path $prefix "codepunk.cmd"
 if (-not (Test-Path $bin)) { throw "codepunk shim missing: $bin" }
@@ -323,7 +317,7 @@ the local install. Registry upgrade remains part of spec 0004 and is not
 covered here.
 
 ```powershell
-& $bin install --package-version 0.1.0 --dry-run
+& $bin install --package-version 0.1.1 --dry-run
 if ($LASTEXITCODE -ne 0) { throw "install dry-run exited $LASTEXITCODE" }
 & $bin upgrade --dry-run
 if ($LASTEXITCODE -ne 0) { throw "upgrade dry-run exited $LASTEXITCODE" }
@@ -346,16 +340,16 @@ Create an annotated tag on the release commit, then push the tag and verify the
 remote ref:
 
 ```text
-git tag -a v0.1.0 -m "Release v0.1.0"
-test "$(git cat-file -t v0.1.0)" = "tag"
-test "$(git rev-list -n1 v0.1.0)" = "$(git rev-parse HEAD)"
-git push origin v0.1.0
-git ls-remote --tags origin refs/tags/v0.1.0 | grep -q 'refs/tags/v0.1.0$'
-grep -q '^## \[0.1.0\]' CHANGELOG.md
+git tag -a v0.1.1 -m "Release v0.1.1"
+test "$(git cat-file -t v0.1.1)" = "tag"
+test "$(git rev-list -n1 v0.1.1)" = "$(git rev-parse HEAD)"
+git push origin v0.1.1
+git ls-remote --tags origin refs/tags/v0.1.1 | grep -q 'refs/tags/v0.1.1$'
+grep -q '^## \[0.1.1\]' CHANGELOG.md
 grep -q 'GHSA-mrhx-c7xc-m3w5' CHANGELOG.md
 ```
 
-Confirm that `CHANGELOG.md` contains `## [0.1.0]` and
+Confirm that `CHANGELOG.md` contains `## [0.1.1]` and
 `GHSA-mrhx-c7xc-m3w5` before considering the release recorded.
 
 ## Failures and rollback

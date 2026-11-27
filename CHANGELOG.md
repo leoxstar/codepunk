@@ -7,6 +7,8 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1]
+
 ### Added
 
 - Headless `--json-schema <schema-or-file>` output contract gate for print mode
@@ -91,6 +93,11 @@ auth`), `codepunk doctor` `policy` v1/v2 self-check diagnostics, and
 
 ### Changed
 
+- Consolidated public npm distribution into the single `codepunk-cli` package
+  (inlining `codepunk-protocol` and `codepunk-core` into `dist/index.js` and
+  shipping `dist/host-child.js` for isolated plugins); `codepunk-protocol` and
+  `codepunk-core` are now `"private": true` workspace packages and their `0.1.0`
+  npm artifacts are superseded.
 - Expanded read-only shell pipeline auto-allow filters (`sort`, `uniq`, `cut`,
   `tr`, `nl`, `fd`, `basename`, `dirname`) with strict mutation-flag and
   workspace read-target guards.
@@ -123,6 +130,8 @@ auth`), `codepunk doctor` `policy` v1/v2 self-check diagnostics, and
   `--headless-policy`, keeping the headless read-only tool surface minimal.
 
 ## [0.1.0]
+
+> Superseded by single-package `codepunk-cli@0.1.1`.
 
 ### Added
 

@@ -3,7 +3,7 @@
 # the package identity, doctor contract, and absence of a silent fallback.
 set -euo pipefail
 
-version="${1:-${CODEPUNK_RELEASE_SMOKE_VERSION:-0.1.0}}"
+version="${1:-${CODEPUNK_RELEASE_SMOKE_VERSION:-0.1.1}}"
 if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   printf 'release-smoke: invalid version %s\n' "$version" >&2
   exit 2

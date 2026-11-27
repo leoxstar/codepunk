@@ -116,22 +116,15 @@ permissions insights [--json]` and `/permissions insights`), and headless
 
 ## Install
 
-Codepunk `0.1.0` is published to the public npm registry as three unscoped
-packages:
+Codepunk is published to the public npm registry as a single unified CLI
+package (`codepunk-cli`, bundling the internal `codepunk-protocol` and
+`codepunk-core` workspace packages plus the isolated plugin subprocess runner):
 
 ```text
-npm install -g codepunk-cli@0.1.0
+npm install -g codepunk-cli@0.1.1
 ```
 
-`codepunk-core@0.1.0` depends on `codepunk-protocol@0.1.0`, and
-`codepunk-cli@0.1.0` depends on both. On macOS arm64, a clean install with an
-empty `HOME`, cache, and prefix resolved all three packages from the registry;
-`codepunk --version` printed `codepunk 0.1.0`, `codepunk doctor` returned 1
-with the single expected missing-model error, and `codepunk install
---package-version 0.1.0 --dry-run` printed `npm install --global --no-audit
---no-fund codepunk-cli@0.1.0`. There is no `v0.1.0` tag yet, so the tag-based
-`release-smoke` workflow has not run. Build this repository and run the CLI
-locally with:
+Build this repository and run the CLI locally with:
 
 ```text
 pnpm run build
@@ -893,17 +886,17 @@ The repository is a pnpm workspace. Package scripts, dependency pins, CI, and
 testing conventions are documented in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 The CLI's `install`, `upgrade`, and `uninstall` commands use npm as the
 user-facing package manager; that is separate from repository development.
-This checkout is version `0.1.0`. `install` still refuses the `0.0.0`
+This checkout is version `0.1.1`. `install` still refuses the `0.0.0`
 placeholder, which no registry can resolve, and names the version it would
 fetch otherwise.
 
 ## Packages
 
-| Package             | Responsibility                                                |
-| ------------------- | ------------------------------------------------------------- |
-| `codepunk-protocol` | Boundary schemas, record shapes, and version constants        |
-| `codepunk-core`     | Engine, host adapter, policy, sandbox, evidence, and sessions |
-| `codepunk-cli`      | Terminal surface, approvals, arguments, and exit codes        |
+| Package             | Responsibility                                                                  |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `codepunk-protocol` | Private workspace package: boundary schemas, record shapes, version constants   |
+| `codepunk-core`     | Private workspace package: engine, host adapter, policy, sandbox, and evidence  |
+| `codepunk-cli`      | Published npm package: terminal surface, bundled runtime, approvals, exit codes |
 
 The dependency direction is `codepunk-protocol <- codepunk-core <- codepunk-cli`.
 
