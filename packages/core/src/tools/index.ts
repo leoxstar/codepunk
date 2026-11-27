@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   createBashToolDefinition,
   createWriteToolDefinition,
@@ -219,6 +220,15 @@ export interface WorkToolOptions {
   persistTodos: Parameters<typeof createTodoTool>[0]["persist"];
 }
 
+const shellProviderOverride = new AsyncLocalStorage<ShellProvider>();
+
+export function withShellProviderOverride<T>(
+  provider: ShellProvider,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return shellProviderOverride.run(provider, fn);
+}
+
 export function createSandboxBashOperations(
   sandbox: ShellProvider,
   onComplete?: (observation: BashObservation) => Promise<void>,
@@ -231,7 +241,12 @@ export function createSandboxBashOperations(
         ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
         env: agentShellEnvironment(options.env),
       };
-      const result = await sandbox.execCommand(command, cwd, executionOptions);
+      const activeProvider = shellProviderOverride.getStore() ?? sandbox;
+      const result = await activeProvider.execCommand(
+        command,
+        cwd,
+        executionOptions,
+      );
       if (onComplete !== undefined) {
         await onComplete({ command, cwd, result });
       }

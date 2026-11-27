@@ -20,6 +20,7 @@ export interface ApprovalChoice {
   readonly label: string;
   readonly decision: "allow" | "deny";
   readonly scope: "once" | "session" | "persistent";
+  readonly unsandboxedOnce?: boolean;
   readonly guidance?: boolean;
 }
 
@@ -95,6 +96,9 @@ function riskColor(risk: ApprovalRiskLevel): PanelColor {
 function choiceColor(choice: ApprovalChoice): PanelColor {
   if (choice.decision === "deny") {
     return choice.guidance ? "warning" : "error";
+  }
+  if (choice.unsandboxedOnce === true) {
+    return "warning";
   }
   if (choice.scope === "persistent") {
     return "warning";

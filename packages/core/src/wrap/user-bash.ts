@@ -13,7 +13,11 @@ import { recordHash, sha256Text } from "../platform/hash.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
 import { decidePolicy, policyRequestForCall } from "../policy/index.ts";
 import type { ReviewResult } from "../reviewer/index.ts";
-import { agentShellEnvironment } from "../sandbox/index.ts";
+import {
+  UnsandboxedShell,
+  agentShellEnvironment,
+  type ShellProvider,
+} from "../sandbox/index.ts";
 import { evaluatePlanModeGate } from "../work/index.ts";
 import {
   approvalFailure,
@@ -100,8 +104,13 @@ export async function wrapUserBashCommand(
       return { result: deniedUserBashResult(message) };
     }
   }
-  let sandboxProvider = resolveSandbox(options.sandbox);
+  const preferHostUserBash =
+    options.mode === "interactive" && options.userBashUnsandboxed?.() === true;
+  let sandboxProvider: ShellProvider | null = preferHostUserBash
+    ? new UnsandboxedShell()
+    : resolveSandbox(options.sandbox);
   if (
+    !preferHostUserBash &&
     sandboxProvider !== null &&
     typeof sandboxProvider.awaitReady === "function"
   ) {
@@ -149,6 +158,7 @@ export async function wrapUserBashCommand(
 
   let approvalEvidence: EvidenceRecord["approval"] = null;
   let reviewerEvidence: EvidenceRecord["reviewer"] = null;
+  let unsandboxedOnce = false;
   const gate = await resolvePermissionGate({
     policy,
     autonomy,
@@ -333,8 +343,20 @@ export async function wrapUserBashCommand(
           finalRule = failure.rule;
           finalRuleSha256 = recordHash({ rule: finalRule });
           finalReason = failure.reason;
+        } else if (
+          approval.unsandboxedOnce === true &&
+          options.mode !== "interactive"
+        ) {
+          finalDecision = "deny";
+          finalRule = "sandbox.unsandboxed_forbidden";
+          finalRuleSha256 = recordHash({ rule: finalRule });
+          finalReason =
+            "single-call unsandboxed execution is only permitted in interactive sessions";
         } else {
           finalDecision = "allow";
+          if (approval.unsandboxedOnce === true) {
+            unsandboxedOnce = true;
+          }
         }
       }
     }
@@ -382,10 +404,17 @@ export async function wrapUserBashCommand(
     return { result: deniedUserBashResult(denialMessage) };
   }
 
-  const sandbox = sandboxProvider;
+  const sandbox = unsandboxedOnce ? new UnsandboxedShell() : sandboxProvider;
   if (sandbox === null) {
     throw new Error("unreachable: denied sandbox-unavailable user_bash");
   }
+  const basisForRun = sandbox.sandboxed
+    ? ["policy", "srt"]
+    : unsandboxedOnce
+      ? ["policy", "unsandboxed-once"]
+      : preferHostUserBash
+        ? ["policy", "user-bash-uncovered"]
+        : ["policy", "unsandboxed"];
   const operations: BashOperations = {
     async exec(actualCommand, cwd, executionOptions) {
       const start = performance.now();
@@ -418,9 +447,7 @@ export async function wrapUserBashCommand(
             pathTarget: null,
             sandbox: sandbox.descriptor,
             coverage: sandbox.sandboxed ? "enforced" : "uncovered",
-            coverageBasis: sandbox.sandboxed
-              ? ["policy", "srt"]
-              : ["policy", "unsandboxed"],
+            coverageBasis: basisForRun,
             exitCode: result.exitCode,
             durationMs,
             beforeSha256: null,
@@ -468,9 +495,7 @@ export async function wrapUserBashCommand(
             pathTarget: null,
             sandbox: sandbox.descriptor,
             coverage: sandbox.sandboxed ? "enforced" : "uncovered",
-            coverageBasis: sandbox.sandboxed
-              ? ["policy", "srt"]
-              : ["policy", "unsandboxed"],
+            coverageBasis: basisForRun,
             exitCode: null,
             durationMs: Math.max(0, Math.round(performance.now() - start)),
             beforeSha256: null,

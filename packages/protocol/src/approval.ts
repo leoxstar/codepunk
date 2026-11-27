@@ -46,6 +46,7 @@ export const ApprovalAnswerSchema = Type.Object(
     request_id: NonEmptyStringSchema,
     answer: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
     scope: Type.Optional(ApprovalScopeSchema),
+    unsandboxed_once: Type.Optional(Type.Boolean()),
     guidance: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
     channel: NonEmptyStringSchema,
     channel_id: NonEmptyStringSchema,
@@ -71,6 +72,7 @@ export const ApprovalEvidenceSchema = Type.Object(
     tool_call_id: NonEmptyStringSchema,
     answer: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
     scope: Type.Optional(ApprovalScopeSchema),
+    unsandboxed_once: Type.Optional(Type.Boolean()),
     guidance: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
     // Present when an earlier session or persistent grant answered this
     // request. It names the request the human actually approved, so the

@@ -48,6 +48,8 @@ export interface TuiState {
   replaceRuntime?: (target: TuiSessionTarget) => Promise<TuiRuntimeReplacement>;
   /** Armed on quit; prints the resume command after Pi restores the terminal. */
   resumeHint?: ResumeHint;
+  /** In-session prompt draft stack managed by /stash and Alt+S. */
+  promptStash?: Array<{ readonly text: string; readonly createdAt: string }>;
 }
 
 export interface TuiSessionTarget {

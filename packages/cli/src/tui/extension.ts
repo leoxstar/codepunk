@@ -16,6 +16,8 @@ import {
 import { copyCommand } from "./commands/copy.ts";
 import { runCommand } from "./commands/custom-commands.ts";
 import { editorCommand } from "./commands/editor.ts";
+import { learnCommand } from "./commands/learn.ts";
+import { stashCommand } from "./commands/stash.ts";
 import { imageCommand, image_genCommand } from "./commands/images.ts";
 import {
   rolesCommand,
@@ -108,6 +110,8 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   copyCommand,
   editorCommand,
   runCommand,
+  stashCommand,
+  learnCommand,
 ];
 
 export function createTuiExtension(
@@ -214,6 +218,13 @@ function registerShortcuts(
     handler: async (context) => {
       const { openExternalPromptEditor } = await import("./commands/editor.ts");
       await openExternalPromptEditor(state.runtime, context);
+    },
+  });
+  pi.registerShortcut("alt+s" as Parameters<typeof pi.registerShortcut>[0], {
+    description: "Stash or restore editor prompt draft",
+    handler: async (context) => {
+      const { runPromptStashToggle } = await import("./commands/stash.ts");
+      await runPromptStashToggle(state, context);
     },
   });
   pi.registerShortcut("f1" as Parameters<typeof pi.registerShortcut>[0], {

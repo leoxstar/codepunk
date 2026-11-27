@@ -222,8 +222,7 @@ async function promptForWorkspaceTrust(
         {
           label: "Trust this workspace and remember",
           value: "always",
-          description:
-            "Load project config, MCP, skills, and instructions · remember",
+          description: "Load all resources · remember",
         },
         {
           label: "Trust for this session only",
@@ -233,12 +232,12 @@ async function promptForWorkspaceTrust(
         {
           label: "Do not trust and remember this decision",
           value: "never",
-          description: "Skip project resources · remember",
+          description: "Skip all resources · remember",
         },
         {
           label: "Do not trust for this session only",
           value: "never-session",
-          description: "Skip project resources now · ask again next start",
+          description: "Skip all now · ask again next start",
         },
       ],
       promptContext,

@@ -91,6 +91,7 @@ export interface ToolWrapOptions {
   ledger: EvidenceLedgerPort;
   sandbox?: ShellProvider | null | (() => ShellProvider | null);
   forceShellApproval?: () => boolean;
+  userBashUnsandboxed?: () => boolean;
   shellUnavailableReason?: string | (() => string);
   workerId?: string;
   disableUserBash?: boolean;

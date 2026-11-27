@@ -240,6 +240,7 @@ export {
   resolveIndentationFallbackEdits,
   shouldDeferMcpTools,
   toolExecutionPolicy,
+  withShellProviderOverride,
   type BashObservation,
   type RankedDeferredTool,
   type ToolSearchCandidate,

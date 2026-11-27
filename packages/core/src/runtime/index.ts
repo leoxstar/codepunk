@@ -411,6 +411,9 @@ async function createRuntimeInner(
   let degradedUnsandboxedFallback = false;
   const canFallbackToHumanApprovedShell = (): boolean =>
     options.headless !== true &&
+    options.approvalChannel !== undefined &&
+    options.approvalChannel !== null &&
+    options.approvalChannel.isTTY === true &&
     config.approval.mode === "ask" &&
     config.autonomy.profile === "ask" &&
     !(process.platform === "win32" && windowsShell.kind !== "auto");
@@ -808,6 +811,8 @@ async function createRuntimeInner(
         return pendingSandboxProvider();
       },
       forceShellApproval: () => degradedUnsandboxedFallback,
+      userBashUnsandboxed: () =>
+        options.headless !== true && config.sandbox.user_bash === "uncovered",
       closeSandbox: false,
       approvalMode: () => config.approval.mode,
       planMode: () => readPlanModeState(session.allEvents),

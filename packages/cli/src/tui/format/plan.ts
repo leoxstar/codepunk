@@ -1,5 +1,6 @@
 import {
   formatHookStatus,
+  formatPlan,
   planContentHash,
   redactOutputPreview,
 } from "codepunk-core";
@@ -22,6 +23,9 @@ export function formatPlanModeStatus(
       ? "No plan is recorded."
       : `Plan is recorded: ${planHash}`,
   );
+  if (plan !== null && plan.steps.length > 0) {
+    lines.push("", formatPlan(plan));
+  }
   if (state?.mode === "executing") {
     lines.push(
       approvedHash === null

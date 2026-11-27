@@ -17,6 +17,7 @@ export interface ApprovalChannel {
 
 export interface ApprovalResult {
   approved: boolean;
+  unsandboxedOnce?: boolean;
   answer: ApprovalAnswer | null;
   evidence: ApprovalEvidence | null;
   reason: string;
@@ -340,18 +341,25 @@ export class ApprovalBroker {
         failure: "scope_untrusted",
       };
     }
+    const unsandboxedMismatch =
+      !correlationMismatch &&
+      answer.unsandboxed_once === true &&
+      (answer.answer !== "allow" ||
+        scope !== "once" ||
+        !isShellApprovalTool(request.tool));
     const scopeShapeMismatch =
       !correlationMismatch &&
-      scope !== "once" &&
-      (request.tool === undefined ||
-        (scope === "persistent" &&
-          (request.argv === undefined || request.cwd === undefined)) ||
-        (scope === "session" &&
-          isShellApprovalTool(request.tool) &&
-          request.argv === undefined &&
-          (request.command === undefined ||
-            request.command.trim().length === 0 ||
-            request.cwd === undefined)));
+      (unsandboxedMismatch ||
+        (scope !== "once" &&
+          (request.tool === undefined ||
+            (scope === "persistent" &&
+              (request.argv === undefined || request.cwd === undefined)) ||
+            (scope === "session" &&
+              isShellApprovalTool(request.tool) &&
+              request.argv === undefined &&
+              (request.command === undefined ||
+                request.command.trim().length === 0 ||
+                request.cwd === undefined)))));
     const approved =
       !correlationMismatch && !scopeShapeMismatch && answer.answer === "allow";
     if (approved && scope !== "once" && !scopeShapeMismatch) {
@@ -369,6 +377,9 @@ export class ApprovalBroker {
     }
     return {
       approved,
+      ...(approved && answer.unsandboxed_once === true
+        ? { unsandboxedOnce: true }
+        : {}),
       answer,
       evidence: approvalEvidence(request, answer),
       reason: correlationMismatch
@@ -447,6 +458,7 @@ function approvalEvidence(
     tool_call_id: request.tool_call_id,
     answer: answer.answer,
     scope: answer.scope ?? "once",
+    ...(answer.unsandboxed_once === true ? { unsandboxed_once: true } : {}),
     ...(answer.guidance === undefined ? {} : { guidance: answer.guidance }),
     ...(reusedFromRequestId === null
       ? {}

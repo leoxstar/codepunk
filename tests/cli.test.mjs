@@ -89,7 +89,10 @@ test("the built CLI reports version and help", async () => {
     "why",
     "--help",
   ]);
-  assert.match(permissionsHelp.stdout, /permissions rules \[--json\]/u);
+  assert.match(
+    permissionsHelp.stdout,
+    /permissions rules \[add -- <argv\.\.\.>\] \[--json\]/u,
+  );
   assert.match(
     permissionsHelp.stdout,
     /permissions reviewer show\|off\|model \[provider\/model\]\|timeout <ms>/u,

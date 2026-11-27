@@ -7,11 +7,13 @@ Daily essentials
   Alt+T / /tasks             open the unified interactive task & subagent center
   Alt+R / /rewind            rewind file checkpoints or switch session branches
   Alt+G / /editor [--reply]  compose or edit the prompt in $VISUAL/$EDITOR
+  Alt+S / /stash             stash or restore prompt drafts in the editor
   F1 / /help [query]         search, browse, and run commands interactively
   F2 / /model                cycle recent models or search all models
   Shift+Tab                  cycle reasoning/thinking level
   /copy [last|<n>|code [n]]  copy latest assistant reply or fenced code block
   /run [list|<name> [args]]  run a custom Markdown command template
+  /learn [memory|<rule>]     distill session corrections into AGENTS.md or memory
   /permissions, /settings    configure approvals, sandbox, theme, and TUI options
   /diff, /commit, /context   inspect diff, commit changes, or view context budget
   /resume                    fuzzy-search and switch project sessions

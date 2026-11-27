@@ -24,9 +24,11 @@ import { canonicalJson, recordHash, sha256Text } from "../platform/hash.ts";
 import { normalizeAbsolute, relativeDisplayPath } from "../platform/path.ts";
 import { decidePolicy, policyRequestForCall } from "../policy/index.ts";
 import type { ReviewResult } from "../reviewer/index.ts";
+import { UnsandboxedShell } from "../sandbox/index.ts";
 import {
   extractEditReplacements,
   toolExecutionPolicy,
+  withShellProviderOverride,
 } from "../tools/index.ts";
 import { evaluatePlanModeGate } from "../work/index.ts";
 import {
@@ -246,6 +248,7 @@ export async function wrapToolDefinition(
 
         let approvalEvidence: EvidenceRecord["approval"] = null;
         let reviewerEvidence: EvidenceRecord["reviewer"] = null;
+        let unsandboxedOnce = false;
         const gate = await resolvePermissionGate({
           policy,
           autonomy,
@@ -573,8 +576,21 @@ export async function wrapToolDefinition(
                   taintEscalated && failure.rule === "approval.unavailable"
                     ? `${requestReason}; interactive human approval is required after untrusted web ingestion`
                     : failure.reason;
+              } else if (
+                approval.unsandboxedOnce === true &&
+                (options.mode !== "interactive" ||
+                  !isShellTool(definition.name))
+              ) {
+                finalDecision = "deny";
+                finalRule = "sandbox.unsandboxed_forbidden";
+                finalRuleSha256 = recordHash({ rule: finalRule });
+                finalReason =
+                  "single-call unsandboxed execution is only permitted for interactive shell calls";
               } else {
                 finalDecision = "allow";
+                if (approval.unsandboxedOnce === true) {
+                  unsandboxedOnce = true;
+                }
               }
             }
           }
@@ -759,13 +775,11 @@ export async function wrapToolDefinition(
           let result: AnyToolResult;
           let executionError: unknown;
           try {
-            result = await definition.execute(
-              toolCallId,
-              params,
-              signal,
-              onUpdate,
-              context,
-            );
+            const runTool = () =>
+              definition.execute(toolCallId, params, signal, onUpdate, context);
+            result = unsandboxedOnce
+              ? await withShellProviderOverride(new UnsandboxedShell(), runTool)
+              : await runTool();
           } catch (error) {
             executionError = error;
             result = textResult(
@@ -967,11 +981,18 @@ export async function wrapToolDefinition(
         const exitCode = isShellTool(definition.name)
           ? structuredNumber(result, "exit_code")
           : null;
+        const effectiveShellProvider = unsandboxedOnce
+          ? new UnsandboxedShell()
+          : sandboxProvider;
         const sandbox =
-          isShellTool(definition.name) && sandboxProvider !== null
-            ? sandboxProvider.descriptor
+          isShellTool(definition.name) && effectiveShellProvider !== null
+            ? effectiveShellProvider.descriptor
             : NONE_SANDBOX;
-        const coverage = shellCoverage(definition.name, true, sandboxProvider);
+        const coverage = shellCoverage(
+          definition.name,
+          true,
+          effectiveShellProvider,
+        );
         const beforeBytes = before?.bytes ?? Buffer.alloc(0);
         const afterBytes = after?.bytes ?? beforeBytes;
         const label =
@@ -1035,9 +1056,11 @@ export async function wrapToolDefinition(
               hookFailure !== null
                 ? ["policy", "hook"]
                 : isShellTool(definition.name)
-                  ? sandboxProvider?.sandboxed === true
-                    ? ["policy", "srt"]
-                    : ["policy", "unsandboxed"]
+                  ? unsandboxedOnce
+                    ? ["policy", "unsandboxed-once"]
+                    : effectiveShellProvider?.sandboxed === true
+                      ? ["policy", "srt"]
+                      : ["policy", "unsandboxed"]
                   : ["policy"],
             exitCode,
             durationMs,
@@ -1055,8 +1078,8 @@ export async function wrapToolDefinition(
                 ? effectiveOutput.trim().length === 0
                 : null,
             executor:
-              isShellTool(definition.name) && sandboxProvider !== null
-                ? sandboxProvider.sandboxed
+              isShellTool(definition.name) && effectiveShellProvider !== null
+                ? effectiveShellProvider.sandboxed
                   ? "srt"
                   : "direct"
                 : null,

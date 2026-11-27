@@ -2263,6 +2263,8 @@ test("a real pty plans a requested task in plan mode", async () => {
       );
       assert.match(planOutput, /plan · 2 steps · sha [0-9a-f]{12}…/u);
       await runCommandAfter(session, "/plan", "[>] inspect the repository");
+      session.child.stdin.write("\u001b");
+      await waitForQuiet(session, 250);
       await runCommandAfter(session, "/plan status", "Plan mode: planning");
 
       const sent = JSON.stringify(model.requests[0]);

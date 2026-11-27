@@ -36,6 +36,7 @@ registerShortcut alt+t	Open the unified task and subagent center
 registerShortcut alt+r	Open the interactive rewind picker
 registerShortcut alt+k	Open the interactive command palette
 registerShortcut alt+g	Compose or edit prompt in external editor
+registerShortcut alt+s	Stash or restore editor prompt draft
 registerShortcut f1	Open searchable command help
 registerCommand budget	Show model token and cost usage against the budget
 registerCommand doctor	Run codepunk doctor diagnostics
@@ -59,3 +60,5 @@ registerCommand memory	List, search, delete, or archive memory
 registerCommand copy	Copy the latest assistant reply or code block to clipboard
 registerCommand editor	Compose or edit the current prompt in $VISUAL/$EDITOR
 registerCommand run	Run or list custom Markdown prompt templates (/run [list|<name> [args...]])
+registerCommand stash	Stash or restore prompt drafts in the editor (Alt+S)
+registerCommand learn	Distill session corrections into AGENTS.md or project memory with diff review

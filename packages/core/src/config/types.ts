@@ -127,6 +127,7 @@ export interface CodepunkConfig {
   };
   sandbox: {
     mode: SandboxMode;
+    user_bash: "sandboxed" | "uncovered";
     network_allow: string[];
     network_deny: string[];
     network_max_requests: number | null;
@@ -424,6 +425,10 @@ export const KEY_SPECS = new Map<string, KeySpec>([
     "sandbox.mode",
     { type: "string", allowed: ["required", "uncovered"], scope: "user" },
   ],
+  [
+    "sandbox.user_bash",
+    { type: "string", allowed: ["sandboxed", "uncovered"], scope: "user" },
+  ],
   ["sandbox.network_allow", { type: "string-array", scope: "user" }],
   ["sandbox.network_deny", { type: "string-array", scope: "user" }],
   [
@@ -543,6 +548,7 @@ export function defaultConfig(): CodepunkConfig {
     },
     sandbox: {
       mode: "required",
+      user_bash: "sandboxed",
       network_allow: [],
       network_deny: [],
       network_max_requests: null,

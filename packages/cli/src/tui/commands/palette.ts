@@ -17,6 +17,8 @@ import type { TuiState } from "../state.ts";
 import { runCopyAction } from "./copy.ts";
 import { executeCustomCommandAction } from "./custom-commands.ts";
 import { openExternalPromptEditor } from "./editor.ts";
+import { runLearnAction } from "./learn.ts";
+import { runPromptStashToggle } from "./stash.ts";
 import {
   openAttestOverlay,
   openContextOverlay,
@@ -99,6 +101,22 @@ const STATIC_PALETTE_ITEMS: readonly CommandPaletteItem[] = [
     hint: "undo file edits or restore session state",
     shortcut: "Alt+R",
     keywords: "undo redo checkpoint tree",
+  },
+  {
+    id: "prompt:stash",
+    category: "Prompt",
+    label: "Stash or pop prompt draft",
+    hint: "save or restore editor draft stack",
+    shortcut: "Alt+S",
+    keywords: "stash draft save restore",
+  },
+  {
+    id: "project:learn",
+    category: "Project",
+    label: "Learn session rules",
+    hint: "distill corrections into AGENTS.md or memory",
+    shortcut: "/learn",
+    keywords: "learn agents rules memory conventions",
   },
   {
     id: "config:trust",
@@ -398,6 +416,12 @@ export async function openCommandPalette(
       return;
     case "custom:run":
       await executeCustomCommandAction(runtime, context, "");
+      return;
+    case "prompt:stash":
+      await runPromptStashToggle(state, context);
+      return;
+    case "project:learn":
+      await runLearnAction(runtime, context, "");
       return;
   }
 }

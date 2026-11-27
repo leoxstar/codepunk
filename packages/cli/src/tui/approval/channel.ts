@@ -12,6 +12,13 @@ import { formatApproval, persistentApprovalPreview } from "./text.ts";
 const APPROVAL_CHOICES: readonly ApprovalChoice[] = [
   { key: "a", label: "Allow once", decision: "allow", scope: "once" },
   {
+    key: "u",
+    label: "Allow once (unsandboxed)",
+    decision: "allow",
+    scope: "once",
+    unsandboxedOnce: true,
+  },
+  {
     key: "s",
     label: "Allow for session",
     decision: "allow",
@@ -82,11 +89,18 @@ export class TuiApprovalChannel implements ApprovalChannel {
         request.argv !== undefined &&
         request.argv.length > 0 &&
         request.cwd !== undefined;
-      const choices = APPROVAL_CHOICES.filter((choice) =>
-        choice.scope === "persistent"
-          ? canPersistExact && this.workspaceTrusted
-          : true,
-      );
+      const canRunUnsandboxedOnce =
+        (request.tool === "bash" || request.tool === "user_bash") &&
+        !/no srt sandbox|uncovered/iu.test(request.coverage_preview ?? "");
+      const choices = APPROVAL_CHOICES.filter((choice) => {
+        if (choice.unsandboxedOnce === true) {
+          return canRunUnsandboxedOnce;
+        }
+        if (choice.scope === "persistent") {
+          return canPersistExact && this.workspaceTrusted;
+        }
+        return true;
+      });
       const inline = await this.askInline(request, choices);
       if (inline.used) {
         return await this.resolveChoice(request, inline.choice);
@@ -169,7 +183,13 @@ export class TuiApprovalChannel implements ApprovalChannel {
         return this.answer(request, "allow", "once");
       }
     }
-    return this.answer(request, "allow", choice.scope);
+    return this.answer(
+      request,
+      "allow",
+      choice.scope,
+      undefined,
+      choice.unsandboxedOnce === true,
+    );
   }
 
   private async askWithSelect(
@@ -213,7 +233,13 @@ export class TuiApprovalChannel implements ApprovalChannel {
           return this.answer(request, "allow", "once");
         }
       }
-      return this.answer(request, "allow", choice.scope);
+      return this.answer(
+        request,
+        "allow",
+        choice.scope,
+        undefined,
+        choice.unsandboxedOnce === true,
+      );
     }
   }
 
@@ -222,11 +248,13 @@ export class TuiApprovalChannel implements ApprovalChannel {
     decision: "allow" | "deny",
     scope: ApprovalScope,
     guidance?: string,
+    unsandboxedOnce = false,
   ): ApprovalAnswer {
     return {
       request_id: request.request_id,
       answer: decision,
       scope,
+      ...(unsandboxedOnce ? { unsandboxed_once: true } : {}),
       ...(guidance === undefined ? {} : { guidance }),
       channel: this.kind,
       channel_id: request.channel_id,
