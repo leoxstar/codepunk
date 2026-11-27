@@ -5,7 +5,6 @@ import type {
 import type { TuiApprovalChannel } from "./approval/channel.ts";
 import {
   recapCommand,
-  sideCommand,
   subagentCommand,
   agentsCommand,
   psCommand,
@@ -29,7 +28,6 @@ import { rewindCommand } from "./commands/rewind.ts";
 import { tasksCommand } from "./commands/tasks.ts";
 import {
   permissionsCommand,
-  permissionCommand,
   cp_exportCommand,
   signCommand,
   rememberCommand,
@@ -45,7 +43,6 @@ import {
   statusCommand,
   cp_sessionsCommand,
   planCommand,
-  plan_modeCommand,
   goalCommand,
   hooksCommand,
   todosCommand,
@@ -74,12 +71,10 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   statusCommand,
   cp_sessionsCommand,
   planCommand,
-  plan_modeCommand,
   goalCommand,
   hooksCommand,
   presetCommand,
   btwCommand,
-  sideCommand,
   recapCommand,
   imageCommand,
   image_genCommand,
@@ -99,7 +94,6 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   pluginsCommand,
   mcpCommand,
   permissionsCommand,
-  permissionCommand,
   cp_exportCommand,
   subagentCommand,
   agentsCommand,

@@ -810,7 +810,6 @@ export {
 } from "./mcp/auth.ts";
 export {
   DEFAULT_PROTECTED_PATHS,
-  REQUIREMENT_ANGLES,
   TASK_STATES,
   TaskGraph,
   assertLinkedWorktree,
@@ -825,7 +824,6 @@ export {
   pathCoveredBySet,
   pathIntersectsProtected,
   removeMergedWorktree,
-  runRequirementTeam,
   treeFileHash,
   verifyPostMerge,
   writeHandoff,
@@ -837,11 +835,6 @@ export {
   type MergeOptions,
   type PostMergeRun,
   type PostMergeVerification,
-  type RequirementAngle,
-  type RequirementChair,
-  type RequirementReview,
-  type RequirementReviewer,
-  type RequirementTeamResult,
   type TaskSpecInput,
   type TaskState,
   type Worktree,
@@ -901,17 +894,6 @@ export {
   type WorkerStatus,
   type WorkerUsage,
 } from "./workers/index.ts";
-export {
-  BoundedSwarm,
-  GitHubWorkSource,
-  LocalWorkSource,
-  MessageBridge,
-  type BoundedSwarmOptions,
-  type GitHubWorkSourceOptions,
-  type NotificationAdapter,
-  type NotificationInput,
-  type WorkSource,
-} from "./swarm/index.ts";
 export {
   BACKGROUND_DEFAULT_MAX_CONCURRENT,
   BACKGROUND_DEFAULT_MAX_LOG_BYTES,

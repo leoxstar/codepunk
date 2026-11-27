@@ -66,7 +66,7 @@ export function buildPlanRoundPrompt(request: string): string {
     "keeping at most one step in_progress.",
     "",
     "Do not implement the request. Stop after the plan is recorded and reply",
-    "with a short summary; the user approves it with /plan-mode approve.",
+    "with a short summary; the user approves it with /plan approve.",
     "",
     "Request:",
     request,

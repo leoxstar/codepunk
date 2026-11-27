@@ -1171,12 +1171,10 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.match(help, /\/favorite\s+toggle the current model in favorites/u);
   assert.match(help, /F2 cycles through recent models/u);
   assert.match(help, /\/permissions why -- <cmd>/u);
-  assert.match(
-    help,
-    /\/plan \[request\]\s+show the current plan, or plan a request read-only/u,
-  );
-  assert.match(help, /\/plan-mode \[status\|on\|approve\|off\]/u);
-  assert.match(help, /show, enter, approve, or exit plan mode/u);
+  assert.match(help, /\/plan \[request\|status\|on\|approve\|off\]/u);
+  assert.doesNotMatch(help, /\/plan-mode/u);
+  assert.doesNotMatch(help, /\/side\b/u);
+  assert.doesNotMatch(help, /\/setting\b/u);
   assert.match(help, /\/goal \[text\|status\|pause\|resume\|clear\]/u);
   assert.match(help, /\/review\s+review the current diff/u);
   assert.match(help, /\/hooks \[status\]/u);
@@ -1186,7 +1184,7 @@ test("the Codepunk help lists the real command surface", async () => {
   assert.doesNotMatch(help, /\/cp-plan/u);
   assert.match(help, /\/todos\s+show the current todo list/u);
   assert.match(help, /\/init \[--update\]/u);
-  assert.match(help, /\/settings, \/setting\s+open interactive settings/u);
+  assert.match(help, /\/settings\s+open interactive settings/u);
   assert.match(help, /\/diff\s+show staged and unstaged/u);
   assert.match(help, /\/commit \[message\]\s+review and create/u);
   assert.match(help, /\/mcp \[list\|add \[name\]\|remove/u);
@@ -2179,14 +2177,14 @@ test("a real pty covers the plan mode command surface", async () => {
     });
     try {
       await waitForOutput(session, "codepunk · auto/auto", "startup");
-      await runCommandAfter(session, "/plan-mode status", "Plan mode: off");
-      await runCommandAfter(session, "/plan-mode on", "Plan mode: planning");
+      await runCommandAfter(session, "/plan status", "Plan mode: off");
+      await runCommandAfter(session, "/plan on", "Plan mode: planning");
       await runCommandAfter(
         session,
-        "/plan-mode approve",
-        "/plan-mode failed: No plan to approve",
+        "/plan approve",
+        "/plan failed: No plan to approve",
       );
-      await runCommandAfter(session, "/plan-mode off", "Plan mode: off");
+      await runCommandAfter(session, "/plan off", "Plan mode: off");
       session.child.stdin.write("/quit\r");
       const result = await Promise.race([
         session.exited,
@@ -2265,11 +2263,7 @@ test("a real pty plans a requested task in plan mode", async () => {
       );
       assert.match(planOutput, /plan · 2 steps · sha [0-9a-f]{12}…/u);
       await runCommandAfter(session, "/plan", "[>] inspect the repository");
-      await runCommandAfter(
-        session,
-        "/plan-mode status",
-        "Plan mode: planning",
-      );
+      await runCommandAfter(session, "/plan status", "Plan mode: planning");
 
       const sent = JSON.stringify(model.requests[0]);
       assert.match(sent, /add a health check/u);
@@ -6268,7 +6262,7 @@ test("product commands and intercepted Pi builtins render through a real pty", a
       await closeOverlay(session);
       await runCommandAfter(
         session,
-        "/setting permissions",
+        "/settings permissions",
         "codepunk permissions",
       );
       await closeOverlay(session);

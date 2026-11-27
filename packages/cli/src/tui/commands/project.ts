@@ -230,7 +230,6 @@ async function runPlanModeSubcommand(
   runtime: CodepunkRuntime,
   context: ExtensionCommandContext,
   subcommand: string,
-  commandLabel: "/plan" | "/plan-mode",
 ): Promise<boolean> {
   try {
     if (subcommand === "" || subcommand === "status") {
@@ -307,9 +306,7 @@ async function runPlanModeSubcommand(
     return false;
   } catch (error) {
     context.ui.notify(
-      `${commandLabel} failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `/plan failed: ${error instanceof Error ? error.message : String(error)}`,
       "error",
     );
     return true;
@@ -329,7 +326,7 @@ export function planCommand(state: TuiState): TuiCommand {
         request === "approve" ||
         request === "off"
       ) {
-        await runPlanModeSubcommand(state, runtime, context, request, "/plan");
+        await runPlanModeSubcommand(state, runtime, context, request);
         return;
       }
       if (request.length === 0) {
@@ -340,7 +337,7 @@ export function planCommand(state: TuiState): TuiCommand {
           work.plan.steps.length > 0 &&
           typeof context.ui.select === "function"
         ) {
-          await runPlanModeSubcommand(state, runtime, context, "", "/plan");
+          await runPlanModeSubcommand(state, runtime, context, "");
           return;
         }
         await notify(context, formatPlan(work.plan));
@@ -374,29 +371,6 @@ export function planCommand(state: TuiState): TuiCommand {
             error instanceof Error ? error.message : String(error)
           }`,
           "error",
-        );
-      }
-    }),
-  });
-}
-
-export function plan_modeCommand(state: TuiState): TuiCommand {
-  return defineCommand({
-    name: "plan-mode",
-    description: "Show, enter, approve, or exit plan mode",
-    handler: commandContext(state, async (runtime, context, args) => {
-      const subcommand = args.trim();
-      const handled = await runPlanModeSubcommand(
-        state,
-        runtime,
-        context,
-        subcommand,
-        "/plan-mode",
-      );
-      if (!handled) {
-        context.ui.notify(
-          "usage: /plan-mode [status|on|approve|off]",
-          "warning",
         );
       }
     }),

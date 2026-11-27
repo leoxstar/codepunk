@@ -92,11 +92,3 @@ repository. Cleanup verifies that the child `HEAD` is an ancestor of the merge
 commit before using a bounded forced removal for the generated Codepunk state;
 discard requires a separate human confirmation. The main checkout is never a
 valid target for either operation.
-
-## RequirementTeam
-
-`runRequirementTeam` accepts three or four reviewers with distinct angles
-(product, engineering, security, cost). Reviewers get only `read` and `search`
-tools. A local human TTY chair must confirm the requirement; model output
-cannot self-approve. The confirmed requirement becomes the hash-bound
-`TaskSpec` used by delivery.

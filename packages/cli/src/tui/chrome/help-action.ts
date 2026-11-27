@@ -7,7 +7,6 @@ const ARG_COMMANDS = new Set([
   "/logs",
   "/stop",
   "/btw",
-  "/side",
   "/image",
   "/image-gen",
   "/remember",
@@ -38,15 +37,13 @@ export async function dispatchSlashOrPrefill(
     return;
   }
   switch (command) {
-    case "/settings":
-    case "/setting": {
+    case "/settings": {
       const { showInteractiveSettingsMenu } =
         await import("../commands/settings.ts");
       await showInteractiveSettingsMenu(state, context, "");
       return;
     }
-    case "/permissions":
-    case "/permission": {
+    case "/permissions": {
       const { configurePermissions } =
         await import("../commands/permission-actions.ts");
       await configurePermissions(state, context, "");

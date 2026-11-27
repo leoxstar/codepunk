@@ -77,7 +77,7 @@ export class TaskCenter implements Component {
         truncateToWidth(
           this.theme.fg(
             "muted",
-            "No active or recent tasks. Start one with /subagent <task>, /btw <prompt>, or /side <prompt>.",
+            "No active or recent tasks. Start one with /subagent <task> or /btw <prompt>.",
           ),
           inner,
           "…",

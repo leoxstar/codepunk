@@ -37,12 +37,3 @@ export {
   type PostMergeRun,
   type PostMergeVerification,
 } from "./merge.ts";
-export {
-  REQUIREMENT_ANGLES,
-  runRequirementTeam,
-  type RequirementAngle,
-  type RequirementChair,
-  type RequirementReview,
-  type RequirementReviewer,
-  type RequirementTeamResult,
-} from "./requirement.ts";

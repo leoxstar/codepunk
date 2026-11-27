@@ -15,12 +15,10 @@ registerCommand commit	Review and create a Git commit as a human action
 registerCommand status	Show model, session, permission, trust, and usage status
 registerCommand cp-sessions	List codepunk sessions
 registerCommand plan	Show, enter, approve, or exit plan mode, or plan a request read-only
-registerCommand plan-mode	Show, enter, approve, or exit plan mode
 registerCommand goal	Create or manage the goal that survives turns
 registerCommand hooks	Show lifecycle hook evidence
 registerCommand preset	List or apply a user preset to this session
 registerCommand btw	Run a read-only side question without stopping the main task
-registerCommand side	Run a background side task without stopping the main task
 registerCommand recap	Show a derived recap for a contiguous session range
 registerCommand image	Confirm an image and send it with the next prompt
 registerCommand image-gen	Generate an image through an available image model
@@ -47,7 +45,6 @@ registerCommand skills	Inspect loaded skills and reload
 registerCommand plugins	Inspect plugins, toggle enablement, or reload
 registerCommand mcp	List, sign in to, or inspect user MCP servers
 registerCommand permissions	Show or change approval, autonomy, and sandbox modes
-registerCommand permission	Show or change approval, autonomy, and sandbox modes
 registerCommand cp-export	Export a redacted audit transcript
 registerCommand subagent	Start a background child Pi session
 registerCommand agents	Review, sign, merge, or discard background subagents

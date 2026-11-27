@@ -112,7 +112,7 @@ export function evaluatePlanModeGate(input: {
           allowed: false,
           rule: "plan_mode.read_only",
           reason:
-            "Plan mode is on; only read-only tools are available. Record the plan, then run /plan-mode approve before mutating anything.",
+            "Plan mode is on; only read-only tools are available. Record the plan, then run /plan approve before mutating anything.",
         };
   }
   if (state.plan_sha256 === null) {
@@ -120,7 +120,7 @@ export function evaluatePlanModeGate(input: {
       allowed: false,
       rule: "plan_mode.approval_missing",
       reason:
-        "Plan execution has no approved plan hash. Run /plan-mode approve after recording a plan.",
+        "Plan execution has no approved plan hash. Run /plan approve after recording a plan.",
     };
   }
   const current = planContentHash(plan);
@@ -129,7 +129,7 @@ export function evaluatePlanModeGate(input: {
       allowed: false,
       rule: "plan_mode.approval_missing",
       reason:
-        "No plan is recorded for this execution. Record a plan and run /plan-mode approve.",
+        "No plan is recorded for this execution. Record a plan and run /plan approve.",
     };
   }
   if (current !== state.plan_sha256) {
@@ -137,7 +137,7 @@ export function evaluatePlanModeGate(input: {
       allowed: false,
       rule: "plan_mode.approval_mismatch",
       reason:
-        "The current plan no longer matches the approved plan. Review it and run /plan-mode approve again.",
+        "The current plan no longer matches the approved plan. Review it and run /plan approve again.",
     };
   }
   return { allowed: true, rule: null, reason: null };

@@ -36,7 +36,7 @@ export function formatWorkWidgetLines(
   if (planMode !== null && planMode.mode !== "off") {
     const label =
       planMode.mode === "planning"
-        ? `${paint(theme, "accent", "◆ PLAN MODE", true)} ${paint(theme, "muted", "(read-only · Alt+M to switch · /plan-mode approve to execute)")}`
+        ? `${paint(theme, "accent", "◆ PLAN MODE", true)} ${paint(theme, "muted", "(read-only · Alt+M to switch · /plan approve to execute)")}`
         : `${paint(theme, "success", "▶ PLAN EXECUTING", true)} ${paint(theme, "muted", "(approved plan active)")}`;
     lines.push(label);
   } else if (runtime.config.autonomy.profile === "read-only") {

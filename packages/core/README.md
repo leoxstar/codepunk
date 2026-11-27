@@ -2,7 +2,7 @@
 
 Owns the engine, host adapter, policy, approval broker, sandbox, tools,
 evidence, context, model integration, platform adapters, sessions, delivery,
-workers, swarm bridge, and the local read-only daemon.
+workers, and the local read-only daemon.
 
 ## Status
 

@@ -52,16 +52,6 @@ export function btwCommand(state: TuiState): TuiCommand {
   });
 }
 
-export function sideCommand(state: TuiState): TuiCommand {
-  return defineCommand({
-    name: "side",
-    description: "Run a background side task without stopping the main task",
-    handler: commandContext(state, async (runtime, context, args) => {
-      await runSideTask(state, runtime, context, "side", args);
-    }),
-  });
-}
-
 export function recapCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "recap",

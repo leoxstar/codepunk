@@ -19,16 +19,6 @@ export function permissionsCommand(state: TuiState): TuiCommand {
   });
 }
 
-export function permissionCommand(state: TuiState): TuiCommand {
-  return defineCommand({
-    name: "permission",
-    description: "Show or change approval, autonomy, and sandbox modes",
-    handler: commandContext(state, async (_runtime, context, args) => {
-      await configurePermissions(state, context, args);
-    }),
-  });
-}
-
 export function cp_exportCommand(state: TuiState): TuiCommand {
   return defineCommand({
     name: "cp-export",

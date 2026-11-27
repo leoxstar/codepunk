@@ -250,10 +250,9 @@ async function handleConfigSlashCommand(
   }
   if (
     isSlashCommand(trimmed, "/settings") ||
-    isSlashCommand(trimmed, "/setting") ||
     isSlashCommand(trimmed, "/config")
   ) {
-    const argument = trimmed.replace(/^\/(?:settings?|config)/u, "").trim();
+    const argument = trimmed.replace(/^\/(?:settings|config)/u, "").trim();
     await showInteractiveSettingsMenu(state, context, argument);
     return true;
   }
@@ -274,12 +273,7 @@ async function handleConfigSlashCommand(
     await configureTrust(state, context, argument);
     return true;
   }
-  if (
-    trimmed === "/permissions" ||
-    trimmed.startsWith("/permissions ") ||
-    trimmed === "/permission" ||
-    trimmed.startsWith("/permission ")
-  ) {
+  if (trimmed === "/permissions" || trimmed.startsWith("/permissions ")) {
     const slash = trimmed.indexOf(" ");
     await configurePermissions(
       state,
