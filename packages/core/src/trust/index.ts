@@ -75,6 +75,8 @@ const TRUST_REQUIRING_FILES = [
   "config.toml",
   "hooks.toml",
   "local.toml",
+  "mcp.toml",
+  "mcp.json",
   "policy.toml",
 ] as const;
 
@@ -130,6 +132,17 @@ export async function findTrustRequiringProjectResources(
   const normalizedCwd = normalizeAbsolute(cwd);
   const projectDir = path.join(normalizedRoot, ".codepunk");
   const resources: string[] = [];
+  const rootMcpJson = path.join(normalizedRoot, ".mcp.json");
+  try {
+    const stat = await fs.lstat(rootMcpJson);
+    if (stat.isSymbolicLink() || stat.isFile()) {
+      resources.push(".mcp.json");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      resources.push(".mcp.json");
+    }
+  }
   for (const name of TRUST_REQUIRING_FILES) {
     const candidate = path.join(projectDir, name);
     try {
@@ -174,9 +187,13 @@ export function workspaceTrustResourceKind(
   resource: string,
 ): WorkspaceTrustResourceKind {
   if (
+    resource === ".mcp.json" ||
+    resource.endsWith("/.mcp.json") ||
     resource.endsWith("/config.toml") ||
     resource.endsWith("/hooks.toml") ||
-    resource.endsWith("/local.toml")
+    resource.endsWith("/local.toml") ||
+    resource.endsWith("/mcp.toml") ||
+    resource.endsWith("/mcp.json")
   ) {
     return "config";
   }

@@ -1,5 +1,4 @@
 import {
-  WORKSPACE_TRUST_RESOURCE_KINDS,
   allWorkspaceTrustGrants,
   findDeliveryRoot,
   formatWorkspaceTrustResourcePreview,
@@ -12,7 +11,6 @@ import {
   workspaceTrustMode,
   type WorkspaceTrust,
   type WorkspaceTrustGrants,
-  type WorkspaceTrustResourceKind,
   type WorkspaceTrustSource,
 } from "codepunk-core";
 import type { CliOptions } from "../args/options.ts";
@@ -187,46 +185,23 @@ async function promptForWorkspaceTrust(
 ): Promise<WorkspaceTrust> {
   const { project, paths, resolved, previews, excluded, savedDecision, build } =
     context;
-  const kindCopy: Record<
-    WorkspaceTrustResourceKind,
-    { label: string; detail: string }
-  > = {
-    config: {
-      label: "Project configuration",
-      detail: "config.toml, local.toml, and project agent profiles",
-    },
-    policy: {
-      label: "Project policy",
-      detail: "policy.toml rules and write set",
-    },
-    skills: {
-      label: "Project skills",
-      detail: ".codepunk/skills",
-    },
-    instructions: {
-      label: "Project instructions",
-      detail: "AGENTS.md and CLAUDE.md files",
-    },
-  };
-  const discoveredKinds = WORKSPACE_TRUST_RESOURCE_KINDS.filter((kind) =>
-    previews.some((preview) => preview.kind === kind),
-  );
-  const customChoices = discoveredKinds.map((kind) => ({
-    label: kindCopy[kind].label,
-    value: kind,
-    checked: true,
-    description: `${kindCopy[kind].detail} — ${previews
-      .filter((preview) => preview.kind === kind)
-      .map((preview) => preview.path)
-      .join(", ")}`,
-  }));
-  type TrustChoice =
-    "always" | "session" | "custom" | "never" | "never-session";
+  type TrustChoice = "always" | "session" | "never" | "never-session";
+  const discoveredSummary = previews
+    .slice(0, 6)
+    .map((preview) => preview.path)
+    .join(", ");
   const promptContext = {
     contextLines: [
       `cwd: ${project.cwd}`,
       `checkout root: ${resolved.root}`,
       `saved decision: ${savedDecision}`,
+      ...(discoveredSummary.length === 0
+        ? []
+        : [
+            `resources: ${discoveredSummary}${
+              previews.length > 6 ? ` (+${previews.length - 6} more)` : ""
+            }`,
+          ]),
       ...(excluded.length === 0
         ? []
         : [`excluded for this run: ${excluded.join(", ")}`]),
@@ -235,70 +210,46 @@ async function promptForWorkspaceTrust(
       ? { footerNote: formatBuildLabel(build) }
       : {}),
   };
-  let decision: Exclude<TrustChoice, "custom"> | null = null;
   // Loaded on demand: only the interactive prompt needs the terminal picker,
   // and its module graph pulls in the TUI stack.
   const { selectTerminalChoice, TerminalSelectCancelledError } =
     await import("../terminal-select.ts");
-  while (decision === null) {
-    let choice: TrustChoice;
-    try {
-      choice = await selectTerminalChoice<TrustChoice>(
-        "Project trust",
-        [
-          {
-            label: "Trust this workspace and remember",
-            value: "always",
-            description: "Load all resources · remember",
-          },
-          {
-            label: "Trust for this session only",
-            value: "session",
-            description: "Load all now · ask again next start",
-          },
-          ...(customChoices.length > 1
-            ? [
-                {
-                  label: "Customize resources…",
-                  value: "custom" as const,
-                  description: "Pick which groups load",
-                },
-              ]
-            : []),
-          {
-            label: "Do not trust and remember this decision",
-            value: "never",
-            description: "Skip all resources · remember",
-          },
-          {
-            label: "Do not trust for this session only",
-            value: "never-session",
-            description: "Skip all now · ask again next start",
-          },
-        ],
-        promptContext,
-      );
-    } catch (error) {
-      if (error instanceof TerminalSelectCancelledError) {
-        throw new Error(
-          "workspace trust was not decided; choose an option or pass --trust / --no-trust",
-        );
-      }
-      throw error;
-    }
-    if (choice !== "custom") {
-      decision = choice;
-      break;
-    }
-    const custom = await selectCustomTrust(
-      paths,
-      project,
-      resolved,
-      customChoices,
+  let decision: TrustChoice;
+  try {
+    decision = await selectTerminalChoice<TrustChoice>(
+      "Project trust",
+      [
+        {
+          label: "Trust this workspace and remember",
+          value: "always",
+          description:
+            "Load project config, MCP, skills, and instructions · remember",
+        },
+        {
+          label: "Trust for this session only",
+          value: "session",
+          description: "Load all now · ask again next start",
+        },
+        {
+          label: "Do not trust and remember this decision",
+          value: "never",
+          description: "Skip project resources · remember",
+        },
+        {
+          label: "Do not trust for this session only",
+          value: "never-session",
+          description: "Skip project resources now · ask again next start",
+        },
+      ],
+      promptContext,
     );
-    if (custom !== null) {
-      return custom;
+  } catch (error) {
+    if (error instanceof TerminalSelectCancelledError) {
+      throw new Error(
+        "workspace trust was not decided; choose an option or pass --trust / --no-trust",
+      );
     }
+    throw error;
   }
   if (decision === "session") {
     return trustWithGrants(resolved, allWorkspaceTrustGrants(true), "prompt");
@@ -307,92 +258,6 @@ async function promptForWorkspaceTrust(
     return trustWithGrants(resolved, allWorkspaceTrustGrants(false), "prompt");
   }
   const grants = allWorkspaceTrustGrants(decision === "always");
-  const saved = await saveWorkspaceTrustGrants(
-    paths.home,
-    resolved.root,
-    grants,
-    "prompt",
-  );
-  return {
-    ...trustWithGrants(resolved, grants, "prompt", resolved.root),
-    storePath: saved.storePath,
-    resourceStorePath: saved.resourceStorePath,
-  };
-}
-
-async function selectCustomTrust(
-  paths: ReturnType<typeof projectPaths>,
-  project: Awaited<ReturnType<typeof findDeliveryRoot>>,
-  resolved: WorkspaceTrust,
-  customChoices: readonly {
-    label: string;
-    value: WorkspaceTrustResourceKind;
-    checked: boolean;
-    description: string;
-  }[],
-): Promise<WorkspaceTrust | null> {
-  const {
-    selectTerminalCheckboxes,
-    selectTerminalChoice,
-    TerminalSelectCancelledError,
-  } = await import("../terminal-select.ts");
-  const selectedKinds =
-    await selectTerminalCheckboxes<WorkspaceTrustResourceKind>(
-      "Load project resources",
-      customChoices,
-      {
-        contextLines: [
-          `cwd: ${project.cwd}`,
-          `checkout root: ${resolved.root}`,
-          "Space toggles one resource group; empty selection loads none.",
-        ],
-      },
-    );
-  if (selectedKinds === null) {
-    return null;
-  }
-  let scope: "session" | "remember" | "back";
-  try {
-    scope = await selectTerminalChoice<"session" | "remember" | "back">(
-      "Apply custom trust",
-      [
-        {
-          label: "Apply to this session",
-          value: "session",
-          description: "Use now · ask again next start",
-        },
-        {
-          label: "Apply and remember",
-          value: "remember",
-          description: "Use now and for future sessions",
-        },
-        {
-          label: "Back",
-          value: "back",
-          description: "Return to the trust menu",
-        },
-      ],
-      {
-        contextLines: [
-          `selected: ${
-            selectedKinds.length === 0 ? "none" : selectedKinds.join(", ")
-          }`,
-        ],
-      },
-    );
-  } catch (error) {
-    if (error instanceof TerminalSelectCancelledError) {
-      return null;
-    }
-    throw error;
-  }
-  if (scope === "back") {
-    return null;
-  }
-  const grants = workspaceTrustGrantsFromKinds(selectedKinds);
-  if (scope === "session") {
-    return trustWithGrants(resolved, grants, "prompt");
-  }
   const saved = await saveWorkspaceTrustGrants(
     paths.home,
     resolved.root,

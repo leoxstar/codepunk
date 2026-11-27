@@ -458,7 +458,7 @@ test("user Pi MCP config fails closed; project MCP files and .pi canaries stay i
   });
 });
 
-test("a project MCP file is always inert instead of blocking startup", async () => {
+test("an untrusted project MCP file stays inert instead of blocking startup", async () => {
   await withTempDirectory("codepunk-mcp-trust-", async (root) => {
     const project = path.join(root, "project");
     await fs.mkdir(project);
@@ -476,10 +476,6 @@ test("a project MCP file is always inert instead of blocking startup", async () 
       cwd: project,
       home,
     });
-    assert.doesNotMatch(
-      `${doctor.stdout}\n${doctor.stderr}`,
-      /MCP configuration is user-scope only/u,
-    );
     assert.match(doctor.stdout, /\[ok\] mcp: no user MCP servers configured/u);
   });
 });
@@ -1602,7 +1598,7 @@ test("runtime MCP reload keeps the previous surface on an invalid config", async
   });
 });
 
-test("a project MCP file is ignored after trust and never starts a server", async () => {
+test("an untrusted project MCP file is skipped with a warning and starts only when workspace config is trusted", async () => {
   await withTempDirectory("codepunk-mcp-project-", async (root) => {
     const project = await makeRepo(root);
     const home = path.join(root, "home");
@@ -1615,20 +1611,44 @@ test("a project MCP file is ignored after trust and never starts a server", asyn
       path.join(project, ".codepunk", "mcp.toml"),
       serverTable("project", "normal", pidFile),
     );
-    const runtime = await core.createRuntime({
+    const untrusted = await core.createRuntime({
       cwd: project,
       environment: { CODEPUNK_HOME: home },
       model: TEST_MODEL,
+      projectTrust: {
+        config: false,
+        policy: false,
+        skills: false,
+        instructions: false,
+      },
     });
     try {
-      assert.deepEqual(runtime.mcpServers, []);
+      assert.deepEqual(untrusted.mcpServers, []);
       assert.match(
-        runtime.loadedConfig.warnings.join("\n"),
-        /project MCP configuration \.codepunk\/mcp\.toml is ignored; MCP configuration is user-scope only/u,
+        untrusted.loadedConfig.warnings.join("\n"),
+        /project MCP configuration \.codepunk\/mcp\.toml skipped because workspace config is not trusted/u,
       );
       await assert.rejects(() => fs.access(pidFile));
     } finally {
-      await runtime.dispose();
+      await untrusted.dispose();
+    }
+
+    const trusted = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: home },
+      model: TEST_MODEL,
+      projectTrust: {
+        config: true,
+        policy: true,
+        skills: true,
+        instructions: true,
+      },
+    });
+    try {
+      assert.deepEqual(trusted.mcpServers, ["project"]);
+      await fs.access(pidFile);
+    } finally {
+      await trusted.dispose();
     }
   });
 });

@@ -100,7 +100,15 @@ export async function wrapUserBashCommand(
       return { result: deniedUserBashResult(message) };
     }
   }
-  const sandboxProvider = resolveSandbox(options.sandbox);
+  let sandboxProvider = resolveSandbox(options.sandbox);
+  if (
+    sandboxProvider !== null &&
+    typeof sandboxProvider.awaitReady === "function"
+  ) {
+    const settled = await sandboxProvider.awaitReady();
+    const refreshed = resolveSandbox(options.sandbox);
+    sandboxProvider = refreshed === null ? null : settled;
+  }
   const autonomy = options.autonomy ?? null;
   const approvalMode = resolveApprovalMode(options);
   const policy = decidePolicy(

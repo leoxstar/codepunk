@@ -149,7 +149,16 @@ export async function wrapToolDefinition(
           JSON.stringify(redactApprovalValue(params), null, 2),
         ),
       };
-      const sandboxProvider = resolveSandbox(options.sandbox);
+      let sandboxProvider = resolveSandbox(options.sandbox);
+      if (
+        isShellTool(definition.name) &&
+        sandboxProvider !== null &&
+        typeof sandboxProvider.awaitReady === "function"
+      ) {
+        const settled = await sandboxProvider.awaitReady();
+        const refreshed = resolveSandbox(options.sandbox);
+        sandboxProvider = refreshed === null ? null : settled;
+      }
       const autonomy = options.autonomy ?? null;
       const target = targetPath(definition.name, params, options.cwd);
       const isMutation =
@@ -262,6 +271,17 @@ export async function wrapToolDefinition(
           finalDecision = "ask";
           consultApproval = true;
           taintEscalated = true;
+        }
+        let degradedShellEscalated = false;
+        if (
+          options.forceShellApproval?.() === true &&
+          finalDecision !== "deny" &&
+          scopedRule === null &&
+          isShellTool(definition.name)
+        ) {
+          finalDecision = "ask";
+          consultApproval = true;
+          degradedShellEscalated = true;
         }
         let budgetExceeded: EvidenceRecord["budget_exceeded"];
         const autonomyEvidence = () =>
@@ -446,7 +466,10 @@ export async function wrapToolDefinition(
             taintEscalated && executionState.taintedBy !== null
               ? `[taint guard: session ingested untrusted ${executionState.taintedBy.tool} output from ${executionState.taintedBy.source}] `
               : "";
-          const requestReason = `${taintNotice}${baseReason}`;
+          const degradedNotice = degradedShellEscalated
+            ? "[degraded unsandboxed shell: srt unavailable] "
+            : "";
+          const requestReason = `${taintNotice}${degradedNotice}${baseReason}`;
           const reviewer = options.reviewer ?? null;
           let review: ReviewResult | null = null;
           if (

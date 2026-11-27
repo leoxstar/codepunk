@@ -61,3 +61,9 @@ export {
   type SubagentHostResult,
   type SubagentStreamEvent,
 } from "./child-host.ts";
+export {
+  MessageBridge,
+  NotificationBridgeError,
+  type NotificationAdapter,
+  type NotificationInput,
+} from "./notifications.ts";

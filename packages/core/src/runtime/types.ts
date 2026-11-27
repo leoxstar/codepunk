@@ -81,6 +81,7 @@ export interface RuntimeOptions {
   bindMode?: "print" | "tui";
   runId?: string;
   additionalExtensionFactories?: readonly InlineExtension[];
+  createSandbox?: typeof import("../sandbox/index.ts").SrtSandbox.create;
   now?: () => Date;
   timeZone?: string;
 }

@@ -358,13 +358,14 @@ test("trust status names resources excluded by one-session isolation", () => {
   );
 });
 
-test("project MCP files stay inert and do not gate trust", async () => {
+test("project MCP files gate workspace config trust while unsupported dirs stay inert", async () => {
   await withTempDirectory("codepunk-trust-unsupported-", async (root) => {
     const project = path.join(root, "project");
     await writeFile(
       path.join(project, ".codepunk", "mcp.toml"),
       '[servers.probe]\ncommand = "probe"\n',
     );
+    await writeFile(path.join(project, ".mcp.json"), '{"mcpServers":{}}\n');
     await writeFile(
       path.join(project, ".codepunk", "extensions", "probe.ts"),
       "export default () => undefined;\n",
@@ -373,10 +374,11 @@ test("project MCP files stay inert and do not gate trust", async () => {
       path.join(project, ".codepunk", "hooks", "probe.sh"),
       "#!/bin/sh\n",
     );
-    assert.deepEqual(
-      await core.findTrustRequiringProjectResources(project),
-      [],
-    );
+    assert.deepEqual(await core.findTrustRequiringProjectResources(project), [
+      ".mcp.json",
+      ".codepunk/mcp.toml",
+    ]);
+    await fs.rm(path.join(project, ".mcp.json"));
     await fs.rm(path.join(project, ".codepunk", "mcp.toml"));
     assert.deepEqual(
       await core.findTrustRequiringProjectResources(project),
@@ -385,7 +387,7 @@ test("project MCP files stay inert and do not gate trust", async () => {
   });
 });
 
-test("a project MCP file alone does not require a trust decision", async () => {
+test("a project MCP file requires a workspace trust decision", async () => {
   await withTempDirectory("codepunk-trust-mcp-", async (root) => {
     const project = path.join(root, "project");
     const home = path.join(root, "home");
@@ -400,10 +402,10 @@ test("a project MCP file alone does not require a trust decision", async () => {
       root: project,
       home,
     });
-    assert.equal(trust.trusted, true);
-    assert.equal(trust.source, "no-resources");
-    assert.deepEqual(trust.resources, []);
-    assert.deepEqual(core.skippedProjectResources(trust), []);
+    assert.equal(trust.trusted, false);
+    assert.equal(trust.source, "default");
+    assert.deepEqual(trust.resources, [".codepunk/mcp.toml"]);
+    assert.deepEqual(core.skippedProjectResources(trust), ["project-config"]);
   });
 });
 

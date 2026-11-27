@@ -59,7 +59,6 @@ export interface SandboxLifecycle {
  * resolved provider instead of blocking the TUI before its first frame.
  */
 export class DeferredSandbox implements ShellProvider {
-  readonly sandboxed = true;
   private provider: ShellProvider | null;
   private readonly ready: Promise<ShellProvider | null>;
   private readonly lifecycle: SandboxLifecycle | null;
@@ -86,6 +85,18 @@ export class DeferredSandbox implements ShellProvider {
       },
       () => undefined,
     );
+  }
+
+  get sandboxed(): boolean {
+    return this.provider === null ? true : this.provider.sandboxed;
+  }
+
+  async awaitReady(): Promise<ShellProvider | null> {
+    if (this.state === "closed") {
+      return null;
+    }
+    const resolved = this.provider ?? (await this.ready);
+    return (this.state as "pending" | "closed") === "closed" ? null : resolved;
   }
 
   private async resolve(): Promise<ShellProvider> {
@@ -234,6 +245,7 @@ export interface ShellExecutionResult {
 export interface ShellProvider {
   readonly descriptor: SandboxDescriptor;
   readonly sandboxed: boolean;
+  awaitReady?(): Promise<ShellProvider | null>;
   execCommand(
     command: string,
     cwd: string,

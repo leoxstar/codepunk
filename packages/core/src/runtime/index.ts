@@ -271,13 +271,16 @@ async function createRuntimeInner(
     projectTrusted: workspaceTrust.grants.policy,
   });
   loadedConfig.warnings.push(...policy.warnings);
-  for (const projectMcpConfig of await findProjectMcpConfigs(paths)) {
-    loadedConfig.warnings.push(
-      `project MCP configuration ${relativeDisplayPath(
-        paths.deliveryRoot,
-        projectMcpConfig,
-      )} is ignored; MCP configuration is user-scope only`,
-    );
+  const projectMcpFiles = await findProjectMcpConfigs(paths);
+  if (!workspaceTrust.grants.config) {
+    for (const projectMcpConfig of projectMcpFiles) {
+      loadedConfig.warnings.push(
+        `project MCP configuration ${relativeDisplayPath(
+          paths.deliveryRoot,
+          projectMcpConfig,
+        )} skipped because workspace config is not trusted`,
+      );
+    }
   }
   const skippedTrustResources = skippedProjectResources(workspaceTrust);
   if (skippedTrustResources.length > 0) {
@@ -405,8 +408,15 @@ async function createRuntimeInner(
     }
     await hostRef.current.recordEvent("hook/result", evidence);
   };
+  let degradedUnsandboxedFallback = false;
+  const canFallbackToHumanApprovedShell = (): boolean =>
+    options.headless !== true &&
+    config.approval.mode === "ask" &&
+    config.autonomy.profile === "ask" &&
+    !(process.platform === "win32" && windowsShell.kind !== "auto");
   if (config.sandbox.mode === "required") {
-    const createPromise = SrtSandbox.create(
+    const sandboxFactory = options.createSandbox ?? SrtSandbox.create;
+    const createPromise = sandboxFactory(
       {
         cwd: paths.cwd,
         workspaceRoot: paths.deliveryRoot,
@@ -441,7 +451,19 @@ async function createRuntimeInner(
       .catch((error: unknown) => {
         sandboxUnavailableReason =
           error instanceof Error ? error.message : String(error);
+        if (canFallbackToHumanApprovedShell()) {
+          degradedUnsandboxedFallback = true;
+          const fallbackShell = new UnsandboxedShell();
+          sandbox = fallbackShell;
+          loadedConfig.warnings.push(
+            `srt sandbox is unavailable (${sandboxUnavailableReason}); standard interactive mode degraded to per-command human-approved unsandboxed shell (uncovered)`,
+          );
+          return fallbackShell;
+        }
         sandbox = null;
+        loadedConfig.warnings.push(
+          `sandbox required but srt is unavailable; shell tools are disabled: ${sandboxUnavailableReason}; run codepunk doctor`,
+        );
         return null;
       });
     const pendingSandbox = new DeferredSandbox(sandboxReady, {
@@ -580,10 +602,14 @@ async function createRuntimeInner(
   let mcpReady: Promise<void> = Promise.resolve();
   let startDeferredMcp = false;
   const mcpStartupWarnings: string[] = [];
-  const hasMcpConfig = await fs
+  const userMcpExists = await fs
     .access(path.join(paths.home, "mcp.toml"))
     .then(() => true)
     .catch(() => false);
+  const hasMcpConfig =
+    userMcpExists ||
+    (workspaceTrust.grants.config && projectMcpFiles.length > 0);
+  const projectMcpTrusted = workspaceTrust.grants.config;
   if (disableMcp) {
     mcp = emptyMcpBundle();
     mcpStatus = "skipped";
@@ -619,6 +645,7 @@ async function createRuntimeInner(
     try {
       mcp = await loadMcpTools({
         paths,
+        projectTrusted: projectMcpTrusted,
         // A broken optional MCP server must not make the coding session
         // unusable. It is reported as a startup warning and omitted from the
         // tool registry; explicit `mcp test <name>` remains strict.
@@ -771,8 +798,16 @@ async function createRuntimeInner(
       autonomy,
       ledger,
       reviewer,
-      sandbox: () =>
-        shellPreflightIssue === null ? pendingSandboxProvider() : null,
+      sandbox: () => {
+        if (shellPreflightIssue !== null) {
+          return null;
+        }
+        if (degradedUnsandboxedFallback && !canFallbackToHumanApprovedShell()) {
+          return null;
+        }
+        return pendingSandboxProvider();
+      },
+      forceShellApproval: () => degradedUnsandboxedFallback,
       closeSandbox: false,
       approvalMode: () => config.approval.mode,
       planMode: () => readPlanModeState(session.allEvents),
@@ -924,6 +959,7 @@ async function createRuntimeInner(
       try {
         const next = await loadMcpTools({
           paths,
+          projectTrusted: projectMcpTrusted,
           strict: false,
           onServerStart: (start) => {
             deferredStarts.push(start);
@@ -1497,6 +1533,7 @@ async function createRuntimeInner(
         try {
           next = await loadMcpTools({
             paths,
+            projectTrusted: projectMcpTrusted,
             strict: false,
             onServerStart: (start) => {
               starts.push(start);

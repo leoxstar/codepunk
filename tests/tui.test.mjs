@@ -4347,36 +4347,20 @@ test("a real pty applies a custom per-resource trust decision", async () => {
     });
     try {
       await waitForOutput(session, "Project trust", "trust prompt");
-      assert.match(session.output(), /Customize resources/u);
+      assert.doesNotMatch(session.output(), /Customize resources/u);
       assert.doesNotMatch(
         session.output(),
         /1\. Trust this workspace and remember/u,
       );
       await waitForQuiet(session, 250);
+      // Choose "Do not trust and remember this decision" (3rd option), then grant instructions + config via /trust.
       session.child.stdin.write("\u001b[B\u001b[B\r");
-      await waitForOutput(
+      await waitForOutput(session, "codepunk · auto/auto", "untrusted startup");
+      await runCommandAfter(
         session,
-        "Load project resources",
-        "resource checkbox",
+        "/trust grant instructions",
+        "workspace trust saved as trusted",
       );
-      await waitForQuiet(session, 250);
-      assert.match(session.output(), /\[x\] Project configuration/u);
-      assert.match(session.output(), /\[x\] Project skills/u);
-      assert.match(session.output(), /\[x\] Project instructions/u);
-      assert.match(session.output(), /space toggle  enter apply  esc back/u);
-      // Turn config and skills off, leaving only project instructions.
-      session.child.stdin.write(" \u001b[B \r");
-      await waitForOutput(session, "Apply custom trust", "custom scope");
-      await waitForQuiet(session, 250);
-      assert.match(session.output(), /selected: instructions/u);
-      session.child.stdin.write("\u001b[B\r");
-      await waitForOutput(session, "codepunk · auto/auto", "custom startup");
-      await waitForOutput(
-        session,
-        "trust custom (instructions)",
-        "custom trust status",
-      );
-      assert.match(session.output(), /trust custom \(instructions\)/u);
       const saved = JSON.parse(
         await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
       );
@@ -4418,7 +4402,7 @@ test("a real pty applies a custom per-resource trust decision", async () => {
       await runCommandAfter(
         session,
         "/trust revoke instructions",
-        "workspace trust saved as untrusted",
+        "workspace trust saved as trusted",
       );
       const savedAfterRevoke = JSON.parse(
         await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
@@ -4427,6 +4411,23 @@ test("a real pty applies a custom per-resource trust decision", async () => {
         savedAfterRevoke.workspaces[await fs.realpath(project)].grants,
         {
           config: true,
+          policy: false,
+          skills: false,
+          instructions: false,
+        },
+      );
+      await runCommandAfter(
+        session,
+        "/trust revoke config",
+        "workspace trust saved as untrusted",
+      );
+      const savedAfterFullRevoke = JSON.parse(
+        await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),
+      );
+      assert.deepEqual(
+        savedAfterFullRevoke.workspaces[await fs.realpath(project)].grants,
+        {
+          config: false,
           policy: false,
           skills: false,
           instructions: false,

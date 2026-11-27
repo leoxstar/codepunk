@@ -90,6 +90,7 @@ export interface ToolWrapOptions {
   networkDeniedDomains?: readonly string[];
   ledger: EvidenceLedgerPort;
   sandbox?: ShellProvider | null | (() => ShellProvider | null);
+  forceShellApproval?: () => boolean;
   shellUnavailableReason?: string | (() => string);
   workerId?: string;
   disableUserBash?: boolean;

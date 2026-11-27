@@ -468,16 +468,19 @@ async function assertMcpConfigScope(paths: ProjectPaths): Promise<void> {
 
 const PROJECT_MCP_CONFIG_FILES = ["mcp.toml", "mcp.json"] as const;
 
-/**
- * Project-scope MCP files are intentionally inert. MCP servers execute
- * outside the shell sandbox, so Codepunk only loads user-scope configuration;
- * a trusted workspace must not turn a repository file into a startup failure
- * after the user has already granted trust.
- */
 export async function findProjectMcpConfigs(
   paths: ProjectPaths,
 ): Promise<string[]> {
   const found: string[] = [];
+  const rootMcpJson = path.join(paths.deliveryRoot, ".mcp.json");
+  try {
+    const stat = await fs.lstat(rootMcpJson);
+    if (stat.isFile() || stat.isSymbolicLink()) {
+      found.push(rootMcpJson);
+    }
+  } catch {
+    // Missing files are the normal case.
+  }
   for (const name of PROJECT_MCP_CONFIG_FILES) {
     const candidate = path.join(paths.projectConfigDir, name);
     try {
@@ -490,6 +493,102 @@ export async function findProjectMcpConfigs(
     }
   }
   return found;
+}
+
+function parseJsonMcpDocument(content: string, label: string): TomlTable {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch (error) {
+    throw new McpError(
+      "mcp.invalid_config",
+      `${label}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new McpError("mcp.invalid_config", `${label} must be a JSON object`);
+  }
+  const obj = raw as Record<string, unknown>;
+  const servers = obj["mcpServers"] ?? obj["servers"];
+  if (servers === undefined) {
+    return {};
+  }
+  return { servers } as unknown as TomlTable;
+}
+
+async function readTrustedProjectMcpServers(
+  paths: ProjectPaths,
+): Promise<McpServerConfig[]> {
+  const realRoot = normalizeAbsolute(await fs.realpath(paths.deliveryRoot));
+  const candidates: {
+    filePath: string;
+    format: "toml" | "json";
+    label: string;
+  }[] = [
+    {
+      filePath: path.join(paths.projectConfigDir, "mcp.toml"),
+      format: "toml",
+      label: ".codepunk/mcp.toml",
+    },
+    {
+      filePath: path.join(paths.projectConfigDir, "mcp.json"),
+      format: "json",
+      label: ".codepunk/mcp.json",
+    },
+    {
+      filePath: path.join(paths.deliveryRoot, ".mcp.json"),
+      format: "json",
+      label: ".mcp.json",
+    },
+  ];
+  const merged = new Map<string, McpServerConfig>();
+  for (const candidate of candidates) {
+    let stat;
+    try {
+      stat = await fs.lstat(candidate.filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      throw new McpError(
+        "mcp.config_unreadable",
+        `cannot inspect ${candidate.label}`,
+      );
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new McpError(
+        "mcp.invalid_config",
+        `${candidate.label} must be a regular non-symlink file`,
+      );
+    }
+    const realFile = normalizeAbsolute(await fs.realpath(candidate.filePath));
+    if (!isInsidePath(realRoot, realFile)) {
+      throw new McpError(
+        "mcp.invalid_config",
+        `${candidate.label} resolves outside the delivery root`,
+      );
+    }
+    const content = await fs.readFile(realFile, "utf8");
+    let parsed: TomlTable;
+    if (candidate.format === "toml") {
+      try {
+        parsed = parseToml(content);
+      } catch (error) {
+        throw new McpError(
+          "mcp.invalid_config",
+          `${candidate.label}: ${error instanceof TomlError ? error.message : String(error)}`,
+        );
+      }
+    } else {
+      parsed = parseJsonMcpDocument(content, candidate.label);
+    }
+    for (const server of parseServers(parsed, paths)) {
+      if (!merged.has(server.name)) {
+        merged.set(server.name, server);
+      }
+    }
+  }
+  return [...merged.values()];
 }
 
 interface McpConfigDocument {
@@ -540,8 +639,22 @@ async function readMcpConfigDocument(
 
 export async function readMcpConfig(
   paths: ProjectPaths,
+  options: { projectTrusted?: boolean } = {},
 ): Promise<McpServerConfig[]> {
-  return (await readMcpConfigDocument(paths)).servers;
+  const userServers = (await readMcpConfigDocument(paths)).servers;
+  if (options.projectTrusted !== true) {
+    return userServers;
+  }
+  const projectServers = await readTrustedProjectMcpServers(paths);
+  const seen = new Set(userServers.map((server) => server.name));
+  const combined = [...userServers];
+  for (const projectServer of projectServers) {
+    if (!seen.has(projectServer.name)) {
+      seen.add(projectServer.name);
+      combined.push(projectServer);
+    }
+  }
+  return combined;
 }
 
 interface NormalizedMcpStdioServerInput {
@@ -1358,6 +1471,7 @@ function createResourceTools(
 
 export async function loadMcpTools(options: {
   paths: ProjectPaths;
+  projectTrusted?: boolean;
   onServerStart?: (start: McpServerStart) => Promise<void> | void;
   requestTimeoutMs?: number;
   only?: readonly string[];
@@ -1372,7 +1486,9 @@ export async function loadMcpTools(options: {
     1,
     options.requestTimeoutMs ?? MCP_REQUEST_TIMEOUT_MS,
   );
-  const configs = await readMcpConfig(options.paths);
+  const configs = await readMcpConfig(options.paths, {
+    projectTrusted: options.projectTrusted === true,
+  });
   const requested = options.only === undefined ? null : new Set(options.only);
   const missing = [...(requested ?? [])].filter(
     (name) => !configs.some((config) => config.name === name),
