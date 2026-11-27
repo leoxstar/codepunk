@@ -51,6 +51,7 @@ const PLAN_MODE_READ_ONLY_TOOLS = new Set([
   "subagent",
   "memory_search",
   "tool_search",
+  "lsp_query",
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",

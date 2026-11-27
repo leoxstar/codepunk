@@ -32,6 +32,7 @@ export function toolEffects(tool: string): Effects {
   switch (tool) {
     case "read":
     case "search":
+    case "lsp_query":
     case "memory_search":
     case "subagent":
       return { fs: "read", shell: false, network: false };
@@ -72,7 +73,12 @@ export function coverageFor(
   if (tool === "bash" || tool === "exec" || tool === "user_bash") {
     return sandbox === "allow" ? "enforced" : "uncovered";
   }
-  if (tool === "read" || tool === "search" || tool === "memory_search") {
+  if (
+    tool === "read" ||
+    tool === "search" ||
+    tool === "lsp_query" ||
+    tool === "memory_search"
+  ) {
     return "app-layer";
   }
   if (tool === "web_fetch" || tool === "web_search") {

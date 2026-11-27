@@ -365,11 +365,15 @@ function toolDecision(request: PolicyRequest): {
       approvalClass: "exec",
     };
   }
-  if (request.tool === "read" || request.tool === "search") {
+  if (
+    request.tool === "read" ||
+    request.tool === "search" ||
+    request.tool === "lsp_query"
+  ) {
     const candidate =
       typeof request.args?.["path"] === "string"
         ? request.args["path"]
-        : request.tool === "search"
+        : request.tool === "search" || request.tool === "lsp_query"
           ? request.cwd
           : undefined;
     const check = decisionForPath(request, candidate, false);
@@ -604,6 +608,7 @@ export function decidePolicy(request: PolicyRequest): PolicyDecision {
     decision === "ask" &&
     request.tool !== "read" &&
     request.tool !== "search" &&
+    request.tool !== "lsp_query" &&
     request.tool !== "memory_search"
   ) {
     decision = "deny";
@@ -613,6 +618,7 @@ export function decidePolicy(request: PolicyRequest): PolicyDecision {
     decision === "ask" &&
     request.tool !== "read" &&
     request.tool !== "search" &&
+    request.tool !== "lsp_query" &&
     request.autonomy !== "scoped"
   ) {
     // Print and worker sessions have no approval channel. The configured

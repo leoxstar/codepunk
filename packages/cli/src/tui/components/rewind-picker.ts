@@ -10,16 +10,25 @@ import {
 
 export interface RewindCheckpointItem {
   readonly id: string;
-  readonly tool: "write" | "edit";
+  readonly tool: "write" | "edit" | "bash" | "shadow";
   readonly displayTarget: string;
   readonly createdAt: string;
   readonly stepsBack: number;
+  readonly source?: "checkpoint" | "shadow";
 }
 
 export type RewindSelection =
-  | { readonly mode: "files"; readonly stepsBack: number }
+  | {
+      readonly mode: "files";
+      readonly stepsBack: number;
+      readonly source?: "checkpoint" | "shadow";
+    }
   | { readonly mode: "tree" }
-  | { readonly mode: "both"; readonly stepsBack: number };
+  | {
+      readonly mode: "both";
+      readonly stepsBack: number;
+      readonly source?: "checkpoint" | "shadow";
+    };
 
 export interface RewindPickerOptions {
   readonly title: string;
@@ -151,11 +160,19 @@ export class RewindPicker implements Component {
       return;
     }
     if (data === "\r" || data === "\n" || data === "f") {
-      this.done({ mode: "files", stepsBack: chosen.stepsBack });
+      this.done({
+        mode: "files",
+        stepsBack: chosen.stepsBack,
+        ...(chosen.source === undefined ? {} : { source: chosen.source }),
+      });
       return;
     }
     if (data === "b") {
-      this.done({ mode: "both", stepsBack: chosen.stepsBack });
+      this.done({
+        mode: "both",
+        stepsBack: chosen.stepsBack,
+        ...(chosen.source === undefined ? {} : { source: chosen.source }),
+      });
     }
   }
 

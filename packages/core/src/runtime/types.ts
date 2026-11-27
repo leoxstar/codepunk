@@ -8,7 +8,7 @@ import type { EvidenceRecord, Verdict } from "codepunk-protocol";
 import type { createPiHost, PiHost } from "../adapters/pi/index.ts";
 import type { ApprovalBroker, ApprovalChannel } from "../approval/index.ts";
 import type { AutonomyController } from "../autonomy/index.ts";
-import type { CheckpointStore } from "../checkpoints/index.ts";
+import type { CheckpointStore, ShadowGitStore } from "../checkpoints/index.ts";
 import type {
   CodepunkConfig,
   ConfigOverrides,
@@ -203,6 +203,7 @@ export interface CodepunkRuntime {
   memory: MemoryManager;
   session: SessionStore;
   checkpoints: CheckpointStore;
+  shadowGit: ShadowGitStore;
   ledger: RunLedger;
   sandbox: ShellProvider | null;
   sandboxReady: Promise<ShellProvider | null>;

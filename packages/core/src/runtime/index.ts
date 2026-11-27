@@ -9,7 +9,7 @@ import {
   type ScopedRule,
 } from "../autonomy/index.ts";
 import { HookRunner } from "../capabilities/hooks.ts";
-import { CheckpointStore } from "../checkpoints/index.ts";
+import { CheckpointStore, ShadowGitStore } from "../checkpoints/index.ts";
 import {
   ConfigError,
   loadConfig,
@@ -594,6 +594,11 @@ async function createRuntimeInner(
     additionalRoots: paths.additionalRoots,
     ...(options.now !== undefined ? { now: options.now } : {}),
   });
+  const shadowGit = new ShadowGitStore({
+    sessionDir: session.paths.sessionDir,
+    workspaceRoot: paths.deliveryRoot,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
   if (selectedModel === undefined && config.model.fallback.length > 0) {
     loadedConfig.warnings.push(
       "model fallback is ignored until a primary model is configured",
@@ -826,6 +831,8 @@ async function createRuntimeInner(
       context: configuredContext,
       artifactsDir: paths.artifactsDir,
       checkpoints,
+      shadowGit,
+      projectTrusted: () => workspaceTrust.grants.config,
       artifactThresholdTokens: config.context.artifact_threshold_tokens,
       maxToolOutputTokens: config.context.max_tool_output_tokens,
       truncation: config.context.truncation,
@@ -1137,6 +1144,7 @@ async function createRuntimeInner(
     memory,
     session,
     checkpoints,
+    shadowGit,
     ledger,
     get sandbox() {
       return sandbox;

@@ -16,6 +16,13 @@ import {
   resolveRealPath,
 } from "../platform/path.ts";
 
+export {
+  ShadowGitStore,
+  type ShadowGitRestoreResult,
+  type ShadowGitSnapshot,
+  type ShadowGitStoreOptions,
+} from "./shadow-git.ts";
+
 const CHECKPOINT_VERSION = 1;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;

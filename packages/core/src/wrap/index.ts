@@ -766,6 +766,13 @@ export async function wrapToolDefinition(
           return textResult(message);
         }
 
+        const mayMutateWorktree = isMutation || definition.name === "bash";
+        const shadowBeforeTree =
+          mayMutateWorktree &&
+          options.shadowGit !== null &&
+          options.shadowGit !== undefined
+            ? await options.shadowGit.captureWorktree().catch(() => null)
+            : null;
         let durationMs = 0;
         const executeOnce = async (): Promise<{
           result: AnyToolResult;
@@ -1024,6 +1031,28 @@ export async function wrapToolDefinition(
             // Undo is an auxiliary recovery surface. A full checkpoint store
             // must not turn a successful file mutation into a tool failure.
           }
+        }
+        if (
+          mayMutateWorktree &&
+          shadowBeforeTree !== null &&
+          hookFailure === null &&
+          options.shadowGit !== null &&
+          options.shadowGit !== undefined
+        ) {
+          await options.shadowGit
+            .recordStep({
+              runId: options.runId,
+              tool: definition.name as "bash" | "write" | "edit",
+              label:
+                definition.name === "bash"
+                  ? (command ?? "bash")
+                  : relativeDisplayPath(
+                      options.workspaceRoot,
+                      target ?? options.cwd,
+                    ),
+              beforeTree: shadowBeforeTree,
+            })
+            .catch(() => null);
         }
         if (
           outcome === "completed" &&

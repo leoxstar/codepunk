@@ -5,7 +5,7 @@ import type {
 import type { ApprovalAnswer, SandboxDescriptor } from "codepunk-protocol";
 import type { ApprovalBroker } from "../approval/index.ts";
 import type { AutonomyController } from "../autonomy/index.ts";
-import type { CheckpointStore } from "../checkpoints/index.ts";
+import type { CheckpointStore, ShadowGitStore } from "../checkpoints/index.ts";
 import type { ApprovalMode } from "../config/index.ts";
 import type { EvidenceLedgerPort } from "../evidence/index.ts";
 import type {
@@ -105,6 +105,8 @@ export interface ToolWrapOptions {
    * file mutation itself. External shell edits remain outside this boundary.
    */
   checkpoints?: CheckpointStore | null;
+  shadowGit?: ShadowGitStore | null;
+  projectTrusted?: () => boolean;
   verifyExec?: (
     argv: readonly string[],
     cwd: string,

@@ -1475,6 +1475,10 @@ export async function createPiHost(
       {
         mode: options.mode ?? "interactive",
         workspaceRoot: options.workspaceRoot,
+        codepunkHome,
+        ...(options.projectTrusted !== undefined
+          ? { projectTrusted: options.projectTrusted }
+          : {}),
         ...(options.additionalRoots !== undefined
           ? { additionalRoots: options.additionalRoots }
           : {}),

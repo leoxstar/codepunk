@@ -3,6 +3,7 @@ import type {
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { askUserRenderers } from "./ask-user.ts";
+import { lspQueryRenderers } from "./lsp-query.ts";
 import { memorySearchRenderers } from "./memory.ts";
 import { planRenderers } from "./plan.ts";
 import { searchRenderers } from "./search.ts";
@@ -16,6 +17,7 @@ export {
   askUserRenderers,
   bashRenderers,
   editRenderers,
+  lspQueryRenderers,
   memorySearchRenderers,
   planRenderers,
   searchRenderers,
@@ -29,6 +31,7 @@ export {
 
 const CODEPUNK_RENDERERS: Readonly<Record<string, ToolRenderers>> = {
   search: searchRenderers,
+  lsp_query: lspQueryRenderers,
   plan: planRenderers,
   todo: todoRenderers,
   tool_search: toolSearchRenderers,

@@ -25,6 +25,17 @@ import { createSearchTool } from "../search/index.ts";
 import { createWebFetchTool } from "../webfetch/index.ts";
 import { createWebSearchTool } from "../websearch/index.ts";
 import { createAskUserTool, type AskUserChannel } from "./ask-user.ts";
+import {
+  LSP_QUERY_TOOL_NAME,
+  createLspQueryTool,
+  extractSymbolsFromSource,
+  parseTscDiagnosticsOutput,
+  type LspDiagnosticItem,
+  type LspQueryAction,
+  type LspQueryOptions,
+  type LspReferenceHit,
+  type LspSymbolLocation,
+} from "./lsp-query.ts";
 import { createSubagentTool, type SubagentToolExecutor } from "./subagent.ts";
 import {
   DEFAULT_TOOL_SEARCH_LIMIT,
@@ -57,6 +68,7 @@ export const CODEPUNK_TOOL_NAMES = [
   "bash",
   "exec",
   "search",
+  "lsp_query",
   "memory_search",
   "web_fetch",
   "web_search",
@@ -113,6 +125,12 @@ export const TOOL_EXECUTION_POLICIES: Readonly<
     sideEffect: "read",
     idempotent: true,
     resultBudgetBytes: 256 * 1_024,
+    retry: "never",
+  },
+  lsp_query: {
+    sideEffect: "read",
+    idempotent: true,
+    resultBudgetBytes: 128 * 1_024,
     retry: "never",
   },
   memory_search: {
@@ -202,6 +220,17 @@ export {
   formatCodeOutline,
   type OutlineEntry,
 };
+export {
+  LSP_QUERY_TOOL_NAME,
+  createLspQueryTool,
+  extractSymbolsFromSource,
+  parseTscDiagnosticsOutput,
+  type LspDiagnosticItem,
+  type LspQueryAction,
+  type LspQueryOptions,
+  type LspReferenceHit,
+  type LspSymbolLocation,
+};
 export { createAskUserTool, type AskUserChannel } from "./ask-user.ts";
 export { createSubagentTool, type SubagentToolExecutor } from "./subagent.ts";
 
@@ -269,6 +298,8 @@ export function createCodepunkToolDefinitions(
     memory?: MemoryManager | null;
     workspaceRoot?: string;
     additionalRoots?: readonly string[];
+    codepunkHome?: string;
+    projectTrusted?: () => boolean;
     work?: WorkToolOptions | null;
     /** Operator-denied domains applied to every web_fetch and web_search call. */
     networkDeny?: readonly string[];
@@ -282,6 +313,7 @@ export function createCodepunkToolDefinitions(
     "read",
     "write",
     "edit",
+    "lsp_query",
     options.mode === "headless" ? "exec" : "bash",
   ];
   if (options.work !== null && options.work !== undefined) {
@@ -299,6 +331,19 @@ export function createCodepunkToolDefinitions(
         : {}),
       ...(options.additionalRoots !== undefined
         ? { additionalRoots: options.additionalRoots }
+        : {}),
+    }),
+    createLspQueryTool({
+      cwd,
+      workspaceRoot: options.workspaceRoot ?? cwd,
+      ...(options.additionalRoots !== undefined
+        ? { additionalRoots: options.additionalRoots }
+        : {}),
+      ...(options.codepunkHome !== undefined
+        ? { codepunkHome: options.codepunkHome }
+        : {}),
+      ...(options.projectTrusted !== undefined
+        ? { projectTrusted: options.projectTrusted }
         : {}),
     }),
   ];

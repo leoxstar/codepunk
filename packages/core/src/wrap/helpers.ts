@@ -712,7 +712,9 @@ export function targetPath(
   // A workspace-wide search has no path argument, but the policy still
   // checks its cwd as the read target. Record that target so the evidence
   // class check and verdict describe the check that actually happened.
-  return tool === "search" ? normalizeAbsolute(cwd) : null;
+  return tool === "search" || tool === "lsp_query"
+    ? normalizeAbsolute(cwd)
+    : null;
 }
 
 export function diffHash(
