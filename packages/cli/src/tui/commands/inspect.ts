@@ -273,6 +273,8 @@ export async function openDoctorOverlay(
     await runDoctor({
       paths: runtime.paths,
       config: runtime.config,
+      projectTrusted: runtime.workspaceTrust.grants.skills,
+      projectPolicyTrusted: runtime.workspaceTrust.grants.policy,
       pluginEnabled: runtime.plugins.enabled,
       packageVersion: build.version,
     }),

@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { CodepunkConfig } from "../config/index.ts";
+import { ConfigError, type CodepunkConfig } from "../config/index.ts";
+import { loadPolicyFiles } from "../config/policy.ts";
 import { probeConfiguredModel } from "../model/index.ts";
 import {
   assertProjectConfigSafe,
@@ -50,6 +51,7 @@ export interface DoctorOptions {
    */
   arch?: string;
   projectTrusted?: boolean;
+  projectPolicyTrusted?: boolean;
   environment?: NodeJS.ProcessEnv;
   /**
    * Test seam for the documented Node floor. Production uses the running
@@ -327,6 +329,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     message: projectIssue ?? "project .codepunk directory is local and safe",
     hint: projectIssue === null ? null : "fix ownership or symlink state first",
   });
+  checks.push(await inspectPolicyDoctorCheck(options));
   const pluginDirectory = path.join(options.paths.home, "extensions");
   let pluginCount = 0;
   try {
@@ -378,6 +381,88 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     codepunkHome: options.paths.home,
     checks,
   };
+}
+
+function sanitizeDoctorPolicyText(text: string, paths: ProjectPaths): string {
+  return text
+    .replaceAll(paths.projectConfigDir, ".codepunk")
+    .replaceAll(paths.home, "~/.codepunk")
+    .replaceAll(paths.cwd, ".");
+}
+
+async function pathExistsNoFollow(targetPath: string): Promise<boolean> {
+  try {
+    await fs.lstat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function inspectPolicyDoctorCheck(
+  options: DoctorOptions,
+): Promise<DoctorCheck> {
+  const projectPolicyTrusted =
+    options.projectPolicyTrusted ?? options.projectTrusted === true;
+  try {
+    const policy = await loadPolicyFiles(options.paths, {
+      projectTrusted: projectPolicyTrusted,
+    });
+    const legacyWarnings = policy.warnings.filter((warning) =>
+      warning.includes("legacy version 1"),
+    );
+    if (legacyWarnings.length > 0) {
+      return {
+        id: "policy",
+        status: "warn",
+        message: sanitizeDoctorPolicyText(
+          legacyWarnings.join("; "),
+          options.paths,
+        ),
+        hint: "upgrade policy.toml to version = 2 with justification, match, and not_match fixtures",
+      };
+    }
+    const projectPolicyExists = await pathExistsNoFollow(policy.projectPath);
+    const ignoredWarnings = projectPolicyExists
+      ? policy.warnings.filter((warning) =>
+          warning.startsWith("project policy ignored:"),
+        )
+      : [];
+    if (ignoredWarnings.length > 0) {
+      return {
+        id: "policy",
+        status: "warn",
+        message: sanitizeDoctorPolicyText(
+          ignoredWarnings.join("; "),
+          options.paths,
+        ),
+        hint: "run `codepunk trust grant --policy` to enable .codepunk/policy.toml",
+      };
+    }
+    const totalRules = policy.userRules.length + policy.projectRules.length;
+    return {
+      id: "policy",
+      status: "ok",
+      message:
+        policy.layers.length === 0
+          ? "no custom policy files configured"
+          : `${totalRules} version 2 policy rule(s) verified`,
+      hint: null,
+    };
+  } catch (error) {
+    const rawMessage =
+      error instanceof ConfigError && error.key !== undefined
+        ? `[${error.key}] ${error.message}`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    return {
+      id: "policy",
+      status: "error",
+      message: sanitizeDoctorPolicyText(rawMessage, options.paths),
+      hint: "fix policy.toml syntax or version = 2 justification/match/not_match fixtures",
+    };
+  }
 }
 
 export function formatDoctor(report: DoctorReport): string {

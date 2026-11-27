@@ -233,6 +233,120 @@ test("doctor reports an unpublished 0.0.0 package instead of claiming npm is rea
   });
 });
 
+test("doctor checks policy v2 self-proof, warns on legacy v1, and errors on invalid fixtures", async () => {
+  await withTempDirectory("codepunk-operations-policy-", async (root) => {
+    const { paths } = await makeProject(root);
+    const base = {
+      paths,
+      config: core.defaultConfig(),
+      platform: "darwin",
+      environment: { PATH: "" },
+      sandboxProbe: async () => null,
+      modelProbe: async () => null,
+      packageVersion: "0.1.0",
+    };
+
+    // Legacy v1 policy: doctor stays ready (ok: true) with a migration warning
+    await fs.writeFile(
+      path.join(paths.home, "policy.toml"),
+      [
+        "version = 1",
+        "",
+        "[rules.legacy_echo]",
+        'tool = "exec"',
+        'decision = "allow"',
+        'command = "echo"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const legacyReport = await core.runDoctor(base);
+    assert.equal(legacyReport.ok, true);
+    const legacyPolicy = legacyReport.checks.find(
+      (check) => check.id === "policy",
+    );
+    assert.equal(legacyPolicy?.status, "warn");
+    assert.match(legacyPolicy?.message ?? "", /legacy version 1/u);
+    assert.match(legacyPolicy?.message ?? "", /policy\.migrate_hint/u);
+    assert.doesNotMatch(core.formatDoctor(legacyReport), /\/Users\//u);
+
+    // Positive v2 policy: doctor reports ok
+    await fs.writeFile(
+      path.join(paths.home, "policy.toml"),
+      [
+        "version = 2",
+        "",
+        "[rules.allow_echo]",
+        'tool = "exec"',
+        'decision = "allow"',
+        'command = "/bin/echo"',
+        'justification = "exact echo only"',
+        "",
+        "[[rules.allow_echo.match]]",
+        'tool = "exec"',
+        'command = "/bin/echo"',
+        'argv = ["/bin/echo", "ok"]',
+        'cwd = "."',
+        "",
+        "[[rules.allow_echo.not_match]]",
+        'tool = "exec"',
+        'command = "/bin/echo"',
+        'argv = ["/bin/echo", "nope"]',
+        'cwd = "."',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const v2Report = await core.runDoctor(base);
+    assert.equal(v2Report.ok, true);
+    const v2Policy = v2Report.checks.find((check) => check.id === "policy");
+    assert.equal(v2Policy?.status, "ok");
+    assert.match(
+      v2Policy?.message ?? "",
+      /1 version 2 policy rule\(s\) verified/u,
+    );
+
+    // Negative control: broken v2 not_match fixture causes doctor error (ok: false)
+    await fs.writeFile(
+      path.join(paths.home, "policy.toml"),
+      [
+        "version = 2",
+        "",
+        "[rules.allow_echo]",
+        'tool = "exec"',
+        'decision = "allow"',
+        'command = "/bin/echo"',
+        'justification = "broken negative example"',
+        "",
+        "[[rules.allow_echo.match]]",
+        'tool = "exec"',
+        'command = "/bin/echo"',
+        'argv = ["/bin/echo", "ok"]',
+        'cwd = "."',
+        "",
+        "[[rules.allow_echo.not_match]]",
+        'tool = "exec"',
+        'command = "/bin/echo"',
+        'argv = ["/bin/echo", "ok"]',
+        'cwd = "."',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const brokenReport = await core.runDoctor(base);
+    assert.equal(brokenReport.ok, false);
+    const brokenPolicy = brokenReport.checks.find(
+      (check) => check.id === "policy",
+    );
+    assert.equal(brokenPolicy?.status, "error");
+    assert.match(
+      brokenPolicy?.message ?? "",
+      /rules\.allow_echo\.not_match\[0\]/u,
+    );
+    assert.doesNotMatch(core.formatDoctor(brokenReport), /\/Users\//u);
+  });
+});
+
 test("workspace diff separates staged and unstaged changes", async () => {
   await withTempDirectory("codepunk-diff-", async (root) => {
     await execFileAsync("git", ["init", "-q"], { cwd: root });

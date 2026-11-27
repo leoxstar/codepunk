@@ -11,6 +11,7 @@ export async function commandDoctor(options: CliOptions): Promise<number> {
       paths,
       config,
       projectTrusted: workspaceTrust.grants.skills,
+      projectPolicyTrusted: workspaceTrust.grants.policy,
       pluginEnabled: options.allowPlugins,
       packageVersion: build.version,
     }),

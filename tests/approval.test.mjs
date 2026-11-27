@@ -494,6 +494,49 @@ test("untrusted workspace allows session reuse but rejects persistent rules", as
     assert.match(rejected.reason, /approval\.scope_untrusted/u);
     assert.equal(rejected.evidence.scope, "persistent");
     await assert.rejects(fs.stat(scopedRules), { code: "ENOENT" });
+
+    broker.replaceChannel({
+      id: "tui-main",
+      kind: "tui",
+      isTTY: true,
+      async ask(request) {
+        return answerFor(request, {
+          scope: "once",
+          unsandboxed_once: true,
+        });
+      },
+    });
+    const unsandboxedRejected = await broker.request({
+      ...input,
+      argv: ["/bin/mkdir", "host-escape"],
+      toolCallId: "call-unsandboxed-untrusted",
+    });
+    assert.equal(unsandboxedRejected.approved, false);
+    assert.equal(unsandboxedRejected.unsandboxedOnce, undefined);
+    assert.equal(unsandboxedRejected.failure, "scope_untrusted");
+    assert.match(unsandboxedRejected.reason, /approval\.scope_untrusted/u);
+    assert.match(unsandboxedRejected.reason, /unsandboxed shell escape/u);
+
+    const trustedBroker = new core.ApprovalBroker({ workspaceTrusted: true });
+    trustedBroker.registerChannel({
+      id: "tui-main",
+      kind: "tui",
+      isTTY: true,
+      async ask(request) {
+        return answerFor(request, {
+          scope: "once",
+          unsandboxed_once: true,
+        });
+      },
+    });
+    const unsandboxedTrusted = await trustedBroker.request({
+      ...input,
+      argv: ["/bin/mkdir", "host-escape"],
+      toolCallId: "call-unsandboxed-trusted",
+    });
+    assert.equal(unsandboxedTrusted.approved, true);
+    assert.equal(unsandboxedTrusted.unsandboxedOnce, true);
+    assert.equal(unsandboxedTrusted.failure, null);
   });
 });
 

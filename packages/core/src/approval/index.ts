@@ -36,9 +36,10 @@ export interface ApprovalBrokerOptions {
   ttlMs?: number;
   now?: () => Date;
   /**
-   * Whether the current workspace may persist an approval beyond this call.
-   * Untrusted workspaces only receive `once`; the broker rejects broader
-   * scopes even if a channel or caller offers one.
+   * Whether the current workspace is trusted for persistent rules or host
+   * shell escapes. Untrusted workspaces may receive `once` or in-process
+   * `session` grants, while `persistent` scopes and `unsandboxed_once` escapes
+   * are rejected with `scope_untrusted`.
    */
   workspaceTrusted?: boolean;
 }
@@ -338,6 +339,24 @@ export class ApprovalBroker {
         reason:
           "approval.scope_untrusted: persistent rules need workspace trust; " +
           "use session approval, or run `codepunk trust grant` and start a new session",
+        failure: "scope_untrusted",
+      };
+    }
+    if (
+      !correlationMismatch &&
+      answer.answer === "allow" &&
+      scope === "once" &&
+      answer.unsandboxed_once === true &&
+      isShellApprovalTool(request.tool) &&
+      !this.workspaceTrusted
+    ) {
+      return {
+        approved: false,
+        answer,
+        evidence: approvalEvidence(request, answer),
+        reason:
+          "approval.scope_untrusted: unsandboxed shell escape requires workspace trust; " +
+          "run `codepunk trust grant` and start a new session",
         failure: "scope_untrusted",
       };
     }
