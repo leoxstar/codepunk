@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { importCore, importSource, REPO_ROOT } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { makeProject, withTempDirectory } from "./support/helpers.mjs";
 
 const requireFromCli = createRequire(
   pathToFileURL(path.join(REPO_ROOT, "packages", "cli", "package.json")),
@@ -909,4 +909,64 @@ test("Ergonomics: command palette opens inspect overlays directly without sessio
   });
   await new Promise((resolve) => setTimeout(resolve, 70));
   assert.equal(disabledBells.length, 0);
+});
+
+test("W-08: /btw reports clear unsupported-on-Windows message without foreground fallback", async () => {
+  const { runSideTask } = await importSource(
+    "packages/cli/src/tui/format/background.ts",
+  );
+  await withTempDirectory("codepunk-w08-btw-", async (root) => {
+    const { paths } = await makeProject(root);
+    const notices = [];
+    let promptCalled = false;
+    const runtime = {
+      paths,
+      session: { sessionId: "sess-w08" },
+      host: {
+        session: {
+          prompt: async () => {
+            promptCalled = true;
+          },
+          model: undefined,
+        },
+      },
+    };
+    const context = {
+      ui: {
+        notify: (message, level) => notices.push({ message, level }),
+      },
+    };
+    const state = {
+      runtime,
+      context,
+      childHostArgv: [process.execPath, "dist/index.js"],
+    };
+
+    // Direct win32 pre-check: clear product warning, no queue entry, no foreground fallback.
+    await runSideTask(state, runtime, context, "btw", "summarize git log", "win32");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].level, "warning");
+    assert.match(notices[0].message, /not yet supported on Windows/u);
+    assert.match(notices[0].message, /codepunk -p/u);
+    assert.doesNotMatch(notices[0].message, /POSIX process groups/u);
+    assert.equal(promptCalled, false);
+    assert.equal(state.sideQueue, undefined);
+
+    // Defensive catch path when BackgroundTaskManager throws background.unsupported_platform.
+    notices.length = 0;
+    state.backgroundTasks = {
+      setSessionId: () => {},
+      start: async () => {
+        throw new core.BackgroundTaskError(
+          "background.unsupported_platform",
+          "background tasks require POSIX process groups",
+        );
+      },
+    };
+    await runSideTask(state, runtime, context, "btw", "check status", "linux");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].level, "warning");
+    assert.match(notices[0].message, /not yet supported on Windows/u);
+    assert.equal(promptCalled, false);
+  });
 });

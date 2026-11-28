@@ -1,4 +1,5 @@
 import {
+  BackgroundTaskError,
   BackgroundTaskManager,
   SideTaskQueue,
   type BackgroundTaskSnapshot,
@@ -124,15 +125,26 @@ export function formatSideTasks(tasks: readonly SideTaskRecord[]): string {
   ].join("\n");
 }
 
+function unsupportedSideTaskMessage(kind: "btw" | "side"): string {
+  return kind === "btw"
+    ? "/btw background side tasks are not yet supported on Windows. Ask your read-only question in the main session or run `codepunk -p` in another terminal."
+    : "/side background tasks are not yet supported on Windows.";
+}
+
 export async function runSideTask(
   state: TuiState,
   runtime: CodepunkRuntime,
   context: ExtensionCommandContext,
   kind: "btw" | "side",
   prompt: string,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
   if (prompt.trim().length === 0) {
     context.ui.notify(`usage: /${kind} <prompt>`, "warning");
+    return;
+  }
+  if (platform === "win32") {
+    context.ui.notify(unsupportedSideTaskMessage(kind), "warning");
     return;
   }
   if (state.childHostArgv.length === 0) {
@@ -206,6 +218,13 @@ export async function runSideTask(
       throw error;
     }
   } catch (error) {
+    if (
+      error instanceof BackgroundTaskError &&
+      error.code === "background.unsupported_platform"
+    ) {
+      context.ui.notify(unsupportedSideTaskMessage(kind), "warning");
+      return;
+    }
     context.ui.notify(
       `/${kind} failed: ${error instanceof Error ? error.message : String(error)}`,
       "error",
