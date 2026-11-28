@@ -2,7 +2,7 @@ packages:
   - "packages/*"
 
 catalog:
-  "@anthropic-ai/sandbox-runtime": "0.0.82"
+  "@anthropic-ai/sandbox-runtime": "0.0.83"
   "@earendil-works/pi-ai": "1.6.0"
   "@earendil-works/pi-coding-agent": "1.6.0"
   "@earendil-works/pi-mcp": "1.6.0"
