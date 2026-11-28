@@ -52,6 +52,7 @@ const SCRIPT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 export async function checkRepository({
   root = SCRIPT_ROOT,
   requireBuilt = false,
+  skipPack = false,
 } = {}) {
   const normalizedRoot = path.resolve(root);
   const errors = [];
@@ -170,6 +171,7 @@ export async function checkRepository({
           rootLicense,
           requireBuilt,
           add,
+          { skipPack },
         ),
       );
     }

@@ -54,6 +54,31 @@ function runCheck(
   });
 }
 
+async function runCheckInProcess(
+  root,
+  { requireBuilt = false, skipPack = true } = {},
+) {
+  const result = await checkRepository({ root, requireBuilt, skipPack });
+  if (result.errors.length === 0) {
+    return {
+      status: 0,
+      stdout: `Repository check passed: ${result.fileCount} files, 3 packages.\n`,
+      stderr: "",
+    };
+  }
+  return {
+    status: 1,
+    stdout: "",
+    stderr: [
+      `Repository check failed with ${result.errors.length} finding(s):`,
+      ...result.errors.map(
+        (error) => `[${error.rule}] ${error.path}: ${error.message}`,
+      ),
+      "",
+    ].join("\n"),
+  };
+}
+
 function outputOf(result) {
   return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }
@@ -388,7 +413,7 @@ test("packaging rejects each manifest and byte-level license violation", async (
           );
           try {
             assertRuleFailure(
-              runCheck(fixture.root),
+              await runCheckInProcess(fixture.root),
               "pkg.manifest",
               manifestPath,
             );
@@ -402,7 +427,11 @@ test("packaging rejects each manifest and byte-level license violation", async (
       await t.test(`${packageName}: missing package LICENSE`, async () => {
         await rm(path.join(fixture.root, licensePath));
         try {
-          assertRuleFailure(runCheck(fixture.root), "pkg.license", licensePath);
+          assertRuleFailure(
+            await runCheckInProcess(fixture.root),
+            "pkg.license",
+            licensePath,
+          );
         } finally {
           await writeFile(path.join(fixture.root, licensePath), license);
         }
@@ -413,7 +442,11 @@ test("packaging rejects each manifest and byte-level license violation", async (
           Buffer.concat([license, Buffer.from("\n")]),
         );
         try {
-          assertRuleFailure(runCheck(fixture.root), "pkg.license", licensePath);
+          assertRuleFailure(
+            await runCheckInProcess(fixture.root),
+            "pkg.license",
+            licensePath,
+          );
         } finally {
           await writeFile(path.join(fixture.root, licensePath), license);
         }
@@ -423,7 +456,11 @@ test("packaging rejects each manifest and byte-level license violation", async (
       const license = await readFile(path.join(fixture.root, "LICENSE"));
       await rm(path.join(fixture.root, "LICENSE"));
       try {
-        assertRuleFailure(runCheck(fixture.root), "pkg.license", "LICENSE");
+        assertRuleFailure(
+          await runCheckInProcess(fixture.root),
+          "pkg.license",
+          "LICENSE",
+        );
       } finally {
         await writeFile(path.join(fixture.root, "LICENSE"), license);
       }
@@ -1364,8 +1401,8 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
 
 test("0003 checker negative controls are isolated and reversible", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const assertRestored = (label) => {
-    assertClean(runFixtureCheck(fixture), label);
+  const assertRestored = async (label) => {
+    assertClean(await runCheckInProcess(fixture.root), label);
   };
   const assertMatrixFailure = (result) => {
     assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
@@ -1387,7 +1424,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
   };
 
   try {
-    assertRestored("0003 fixture before planting violations");
+    await assertRestored("0003 fixture before planting violations");
 
     for (const matrixCase of [
       {
@@ -1419,12 +1456,12 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
           matrixCase.transform,
         );
         try {
-          const result = runFixtureCheck(fixture);
+          const result = await runCheckInProcess(fixture.root);
           assertMatrixFailure(result);
         } finally {
           await restore();
         }
-        assertRestored(`restored ${matrixCase.name}`);
+        await assertRestored(`restored ${matrixCase.name}`);
       });
     }
 
@@ -1435,11 +1472,11 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         (content) => content.replace("          - macos-15-intel\n", ""),
       );
       try {
-        assertFullMatrixFailure(runFixtureCheck(fixture));
+        assertFullMatrixFailure(await runCheckInProcess(fixture.root));
       } finally {
         await restore();
       }
-      assertRestored("restored full matrix runner");
+      await assertRestored("restored full matrix runner");
     });
 
     await t.test("full CI rejects a scheduled trigger", async () => {
@@ -1453,7 +1490,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
           ),
       );
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(
           result,
           "ci.contract",
@@ -1466,7 +1503,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       } finally {
         await restore();
       }
-      assertRestored("restored full CI trigger");
+      await assertRestored("restored full CI trigger");
     });
 
     await t.test("platform table rejects a changed runner", async () => {
@@ -1488,14 +1525,14 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         },
       );
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(result, "docs.platforms", relativePath);
         assert.match(outputOf(result), /CI runner table must require/u);
         assert.doesNotMatch(outputOf(result), /missing exact CI runner line/u);
       } finally {
         await restore();
       }
-      assertRestored("restored platform table runner");
+      await assertRestored("restored platform table runner");
     });
 
     for (const relativePath of [
@@ -1517,7 +1554,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
             ),
         );
         try {
-          const result = runFixtureCheck(fixture);
+          const result = await runCheckInProcess(fixture.root);
           assertRuleFailure(result, "docs.platforms", relativePath);
           assert.match(
             outputOf(result),
@@ -1526,7 +1563,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         } finally {
           await restore();
         }
-        assertRestored(`restored fixed runner line in ${relativePath}`);
+        await assertRestored(`restored fixed runner line in ${relativePath}`);
       });
     }
 
@@ -1549,7 +1586,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         },
       );
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(result, "docs.platforms", relativePath);
         assert.match(
           outputOf(result),
@@ -1558,7 +1595,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       } finally {
         await restore();
       }
-      assertRestored("restored duplicate fixed runner line");
+      await assertRestored("restored duplicate fixed runner line");
     });
 
     await t.test("CI rejects removing the lint gate step", async () => {
@@ -1572,13 +1609,13 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
           ),
       );
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
         assert.match(outputOf(result), /CI run commands differ/u);
       } finally {
         await restore();
       }
-      assertRestored("restored CI lint step");
+      await assertRestored("restored CI lint step");
     });
 
     await t.test(
@@ -1592,14 +1629,14 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         );
         try {
           assertRuleFailure(
-            runFixtureCheck(fixture),
+            await runCheckInProcess(fixture.root),
             "repo.lineEndings",
             ".gitattributes",
           );
         } finally {
           await restore();
         }
-        assertRestored("restored exact LF policy");
+        await assertRestored("restored exact LF policy");
       },
     );
   } finally {
@@ -1609,18 +1646,19 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
 
 test("0006 eval contract rejects removed gates and vacuous baselines", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const assertRestored = (label) => {
-    assertClean(runFixtureCheck(fixture), label);
+  const assertRestored = async (label) => {
+    assertClean(await runCheckInProcess(fixture.root), label);
   };
 
   try {
-    assertRestored("0006 fixture before planting violations");
+    await assertRestored("0006 fixture before planting violations");
 
     const cases = [
       {
         name: "eval removed from root entries",
         rule: "repo.root",
         expectedPath: "eval",
+        subprocess: true,
         async apply(root) {
           return replaceFile(root, "scripts/checks/shared.mjs", (content) =>
             content.replace('  "eval",\n', ""),
@@ -1677,7 +1715,9 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
       await t.test(negativeCase.name, async () => {
         const restore = await negativeCase.apply(fixture.root);
         try {
-          const result = runFixtureCheck(fixture);
+          const result = negativeCase.subprocess
+            ? runFixtureCheck(fixture)
+            : await runCheckInProcess(fixture.root);
           assertRuleFailure(
             result,
             negativeCase.rule,
@@ -1686,7 +1726,7 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
         } finally {
           await restore();
         }
-        assertRestored(`restored ${negativeCase.name}`);
+        await assertRestored(`restored ${negativeCase.name}`);
       });
     }
   } finally {
@@ -1696,12 +1736,12 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
 
 test("0004 release-smoke contract rejects drift and extra workflows", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const assertRestored = (label) => {
-    assertClean(runFixtureCheck(fixture), label);
+  const assertRestored = async (label) => {
+    assertClean(await runCheckInProcess(fixture.root), label);
   };
 
   try {
-    assertRestored("0004 fixture before planting violations");
+    await assertRestored("0004 fixture before planting violations");
 
     const cases = [
       {
@@ -1760,7 +1800,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
           testCase.transform,
         );
         try {
-          const result = runFixtureCheck(fixture);
+          const result = await runCheckInProcess(fixture.root);
           assertRuleFailure(
             result,
             "release-smoke",
@@ -1770,7 +1810,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         } finally {
           await restore();
         }
-        assertRestored(`restored ${testCase.name}`);
+        await assertRestored(`restored ${testCase.name}`);
       });
     }
 
@@ -1781,7 +1821,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         "name: unreviewed\n",
       );
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(
           result,
           "ci.contract",
@@ -1790,7 +1830,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       } finally {
         await remove();
       }
-      assertRestored("removed the third workflow");
+      await assertRestored("removed the third workflow");
     });
 
     await t.test("a missing release-smoke workflow is rejected", async () => {
@@ -1799,7 +1839,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       const original = await readFile(absolutePath);
       await rm(absolutePath);
       try {
-        const result = runFixtureCheck(fixture);
+        const result = await runCheckInProcess(fixture.root);
         assertRuleFailure(result, "release-smoke", relativePath);
         assert.match(
           outputOf(result),
@@ -1808,7 +1848,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       } finally {
         await writeFile(absolutePath, original);
       }
-      assertRestored("restored the release-smoke workflow");
+      await assertRestored("restored the release-smoke workflow");
     });
   } finally {
     await fixture.cleanup();
@@ -2053,7 +2093,7 @@ test("ignored deja runtime state is scanned but not rejected", async () => {
 test("each planted violation fails and removal restores zero", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
   try {
-    assertClean(runCheck(fixture.root), "copied product tree");
+    assertClean(await runCheckInProcess(fixture.root), "copied product tree");
 
     for (const negativeCase of NEGATIVE_CASES) {
       await t.test(negativeCase.name, async () => {
@@ -2061,7 +2101,7 @@ test("each planted violation fails and removal restores zero", async (t) => {
         try {
           restore = await negativeCase.apply(fixture.root);
           assertRuleFailure(
-            runCheck(fixture.root),
+            await runCheckInProcess(fixture.root),
             negativeCase.rule,
             negativeCase.path,
           );
@@ -2071,7 +2111,7 @@ test("each planted violation fails and removal restores zero", async (t) => {
           }
         }
         assertClean(
-          runCheck(fixture.root),
+          await runCheckInProcess(fixture.root),
           `copied product tree after removing ${negativeCase.name}`,
         );
       });

@@ -277,10 +277,15 @@ test("a real pty applies a custom per-resource trust decision", async () => {
           instructions: true,
         },
       );
+      const revokeMark = session.output().length;
       await runCommandAfter(
         session,
         "/trust revoke instructions",
-        "workspace trust saved as trusted",
+        "resources: config=allowed, policy=skipped, skills=skipped, instructions=skipped",
+      );
+      assert.doesNotMatch(
+        stripAnsi(session.output().slice(revokeMark)),
+        /workspace trust saved as untrusted/u,
       );
       const savedAfterRevoke = JSON.parse(
         await fs.readFile(path.join(home, "workspace-trust.json"), "utf8"),

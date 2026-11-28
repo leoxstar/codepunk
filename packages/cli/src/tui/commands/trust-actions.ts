@@ -130,9 +130,12 @@ export async function configureTrust(
         grants,
         "cli",
       );
+      const anyAllowed = WORKSPACE_TRUST_RESOURCE_KINDS.some(
+        (kind) => grants[kind],
+      );
       context.ui.notify(
         [
-          `workspace trust saved as ${action === "grant" ? "trusted" : "untrusted"}`,
+          `workspace trust saved as ${anyAllowed ? "trusted" : "untrusted"}`,
           `root: ${runtime.workspaceTrust.root}`,
           `resources: ${WORKSPACE_TRUST_RESOURCE_KINDS.map(
             (kind) => `${kind}=${grants[kind] ? "allowed" : "skipped"}`,
@@ -141,7 +144,7 @@ export async function configureTrust(
           `resource store: ${saved.resourceStorePath}`,
           "the current session is unchanged; restart codepunk to load or skip project resources",
         ].join("\n"),
-        action === "grant" ? "info" : "warning",
+        anyAllowed ? "info" : "warning",
       );
     } catch (error) {
       context.ui.notify(

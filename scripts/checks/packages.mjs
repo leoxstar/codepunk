@@ -1017,6 +1017,7 @@ export async function checkPackagePackaging(
   rootLicense,
   requireBuilt,
   add,
+  { skipPack = false } = {},
 ) {
   const packTimeoutMs = process.platform === "win32" ? 60_000 : 10_000;
   const relativeLicense = `${spec.dir}/LICENSE`;
@@ -1037,7 +1038,7 @@ export async function checkPackagePackaging(
     );
   }
 
-  if (!spec.publishable) {
+  if (!spec.publishable || skipPack) {
     return;
   }
 
