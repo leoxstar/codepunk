@@ -2376,7 +2376,7 @@ async function checkControlCorpus(root, add) {
   }
 }
 
-const COMPAT_CORPUS_ROOT = "tests/fixtures/compat/0.1.0";
+const COMPAT_CORPUS_DIR = "tests/fixtures/compat";
 
 function compatCorpusEntries(manifest) {
   const entries = [];
@@ -2407,12 +2407,9 @@ function compatCorpusEntries(manifest) {
   return entries;
 }
 
-async function checkCompatCorpus(root, add) {
-  const corpusRoot = path.join(root, COMPAT_CORPUS_ROOT);
-  if (!existsSync(corpusRoot)) {
-    return;
-  }
-  const manifestRelative = `${COMPAT_CORPUS_ROOT}/MANIFEST.json`;
+async function checkSingleCompatCorpus(root, corpusRelative, add) {
+  const corpusRoot = path.join(root, corpusRelative);
+  const manifestRelative = `${corpusRelative}/MANIFEST.json`;
   let manifest;
   try {
     manifest = JSON.parse(
@@ -2447,7 +2444,7 @@ async function checkCompatCorpus(root, add) {
     } catch (error) {
       add(
         "compat.corpus",
-        `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+        `${corpusRelative}/${relativePath}`,
         `corpus file listed in the manifest is missing: ${error.message}`,
       );
       continue;
@@ -2455,7 +2452,7 @@ async function checkCompatCorpus(root, add) {
     if (actual !== digest) {
       add(
         "compat.corpus",
-        `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+        `${corpusRelative}/${relativePath}`,
         `corpus digest ${actual} does not match the manifest digest ${digest}`,
       );
     }
@@ -2466,9 +2463,24 @@ async function checkCompatCorpus(root, add) {
     }
     add(
       "compat.corpus",
-      `${COMPAT_CORPUS_ROOT}/${relativePath}`,
+      `${corpusRelative}/${relativePath}`,
       "corpus file is not listed in the manifest",
     );
+  }
+}
+
+async function checkCompatCorpus(root, add) {
+  const compatRoot = path.join(root, COMPAT_CORPUS_DIR);
+  if (!existsSync(compatRoot)) {
+    return;
+  }
+  const entries = await readdir(compatRoot, { withFileTypes: true });
+  const versionDirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  for (const version of versionDirs) {
+    await checkSingleCompatCorpus(root, `${COMPAT_CORPUS_DIR}/${version}`, add);
   }
 }
 

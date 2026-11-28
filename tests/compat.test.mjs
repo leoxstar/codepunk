@@ -1028,3 +1028,222 @@ test("a tampered corpus byte breaks the restored evidence chain", async () => {
     await assert.rejects(() => core.readEvidenceFile(ledger), /evidence/u);
   });
 });
+
+async function restoreVersionedCorpus(root, version) {
+  const corpusRoot = path.resolve(
+    import.meta.dirname,
+    "fixtures",
+    "compat",
+    version,
+  );
+  const manifestPath = path.join(corpusRoot, "MANIFEST.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  const corpusProjectId = manifest.environment.projectId;
+  const home = path.join(root, "home");
+  const project = path.join(root, "project");
+  await fs.mkdir(home, { recursive: true });
+  await fs.mkdir(project, { recursive: true });
+
+  const projectId = core.projectIdFor(project);
+  const restoredNpmPrefix = path.join(root, "capture-npm", "node_modules");
+  const replacements = [
+    ["{{PROJECT}}", project],
+    ["{{HOME}}", home],
+    ["{{NPM_PREFIX}}", restoredNpmPrefix],
+    [
+      "{{PI_AGENT_DOCS}}",
+      path.join(restoredNpmPrefix, "@earendil-works", "pi-coding-agent"),
+    ],
+    ["{{COMPAT_BASE_URL}}", "http://127.0.0.1:48761/v1"],
+    ["{{COMPAT_API_KEY}}", "compat-test-key"],
+  ];
+
+  for (const entry of manifest.files) {
+    const source = path.join(corpusRoot, entry.path);
+    const relative = entry.path.replace(
+      `home/projects/${corpusProjectId}/`,
+      `home/projects/${projectId}/`,
+    );
+    const target = path.join(root, relative);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, await fs.readFile(source));
+  }
+
+  const restoredFiles = [];
+  async function walk(directory) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolute);
+      } else if (entry.isFile()) {
+        restoredFiles.push(absolute);
+      }
+    }
+  }
+  await walk(root);
+
+  for (const file of restoredFiles) {
+    const original = await fs.readFile(file, "utf8");
+    let content = original;
+    for (const [placeholder, value] of replacements) {
+      const replacement = replacementValue(value, file);
+      content = content.replaceAll(placeholder, () => replacement);
+    }
+    content = content.replaceAll(
+      `"project_id":"${corpusProjectId}"`,
+      `"project_id":"${projectId}"`,
+    );
+    content = content.replaceAll(
+      `"id":"${corpusProjectId}"`,
+      `"id":"${projectId}"`,
+    );
+    if (content !== original) {
+      await fs.writeFile(file, content, "utf8");
+    }
+  }
+
+  const projectDir = path.join(home, "projects", projectId);
+  const sessionsDir = path.join(projectDir, "sessions");
+  const sessionIds = (await fs.readdir(sessionsDir)).sort();
+  for (const sessionId of sessionIds) {
+    const logPath = path.join(sessionsDir, sessionId, "session.jsonl");
+    const lines = (await fs.readFile(logPath, "utf8"))
+      .split("\n")
+      .filter((line) => line.length > 0);
+    const forked = lines
+      .slice(1)
+      .map((line) => JSON.parse(line))
+      .find((event) => event.kind === "session/forked");
+    if (forked === undefined) {
+      continue;
+    }
+    const parentStatePath = path.join(
+      sessionsDir,
+      forked.data.parent_session_id,
+      "agent-state.json",
+    );
+    const parentState = JSON.parse(await fs.readFile(parentStatePath, "utf8"));
+    const expected = core.recordHash(parentState);
+    const rewritten = lines.map((line, index) => {
+      if (index === 0) {
+        return line;
+      }
+      const event = JSON.parse(line);
+      if (event.kind !== "session/forked") {
+        return line;
+      }
+      event.data.parent_state_sha256 = expected;
+      return JSON.stringify(event);
+    });
+    await fs.writeFile(logPath, `${rewritten.join("\n")}\n`, "utf8");
+  }
+
+  return {
+    corpusRoot,
+    manifest,
+    home,
+    project,
+    projectId,
+    projectDir,
+    sessionsDir,
+    sessionIds,
+  };
+}
+
+test("the 0.1.1 corpus matches its manifest digests", async () => {
+  const corpusRoot = path.resolve(
+    import.meta.dirname,
+    "fixtures",
+    "compat",
+    "0.1.1",
+  );
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(corpusRoot, "MANIFEST.json"), "utf8"),
+  );
+  assert.equal(manifest.source.package, "codepunk-cli");
+  assert.equal(manifest.source.version, "0.1.1");
+  assert.deepEqual(manifest.notCovered, []);
+  assert.ok(manifest.files.length > 0);
+  for (const entry of manifest.files) {
+    const bytes = await fs.readFile(path.join(corpusRoot, entry.path));
+    assert.equal(
+      createHash("sha256").update(bytes).digest("hex"),
+      entry.sha256,
+      entry.path,
+    );
+  }
+});
+
+test("the restored 0.1.1 corpus reads sessions, memory, mcp-auth, retention, and config", async () => {
+  await withTempDirectory("codepunk-compat-011-", async (root) => {
+    const restored = await restoreVersionedCorpus(root, "0.1.1");
+    assert.equal(restored.sessionIds.length, 2);
+
+    const sessions = await core.listProjectSessions(
+      restored.home,
+      restored.projectId,
+    );
+    assert.deepEqual(
+      sessions.map((session) => session.id).sort(),
+      restored.sessionIds,
+    );
+
+    for (const sessionId of restored.sessionIds) {
+      const store = await core.SessionStore.open({
+        rootDir: restored.home,
+        cwd: restored.project,
+        projectRoot: restored.project,
+        projectId: restored.projectId,
+        sessionId,
+      });
+      const state = await store.readAgentState();
+      assert.ok(state !== null, `${sessionId} has no agent state`);
+      assert.equal(state.session_id, sessionId);
+
+      const runtime = await core.createRuntime({
+        cwd: restored.project,
+        environment: { ...process.env, CODEPUNK_HOME: restored.home },
+        sessionId,
+        allowMissingModel: true,
+      });
+      await runtime.dispose();
+    }
+
+    const auth = new core.McpAuthStore(restored.home);
+    assert.deepEqual(
+      await auth.status("compat-auth", "http://127.0.0.1:48762/mcp"),
+      {
+        signed_in: false,
+        expires_at: null,
+        scope: null,
+      },
+    );
+
+    const migration = await core.checkMigration(restored.home);
+    assert.deepEqual(migration, {
+      current: 1,
+      target: 1,
+      required: false,
+    });
+
+    const operations = await core.readRetentionOperations(restored.home);
+    assert.ok(operations.length > 0);
+
+    const paths = core.projectPaths(
+      {
+        cwd: restored.project,
+        deliveryRoot: restored.project,
+        projectId: restored.projectId,
+      },
+      restored.home,
+    );
+    const loaded = await core.loadConfig(
+      paths,
+      { ...process.env, CODEPUNK_HOME: restored.home },
+      {},
+      { projectTrusted: true },
+    );
+    assert.equal(loaded.config.model.provider, "compat");
+    assert.equal(loaded.config.model.id, "compat-model");
+  });
+});

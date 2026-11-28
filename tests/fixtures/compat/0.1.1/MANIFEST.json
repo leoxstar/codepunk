@@ -1,0 +1,158 @@
+{
+  "source": {
+    "package": "codepunk-cli",
+    "version": "0.1.1",
+    "integrity": "sha512-8C35ccAxLlGm/cFnwKnB+CCeafWPvPv35V/EujWmh1rX9ehYjkZ9QLimVulst3xokbOnJAjx5MRu6z0nFxVfcw==",
+    "tarballSha1": "53951b30a157b0f28efdd13f8beea36038c531af"
+  },
+  "environment": {
+    "os": "Darwin arm64 27.0.0",
+    "node": "v24.16.0",
+    "codepunkHome": "{{HOME}}",
+    "project": "{{PROJECT}}",
+    "projectId": "4c349f0949bbf21e",
+    "collectionDate": "2026-11-28T10:26:47.677Z"
+  },
+  "pathPlaceholders": {
+    "{{HOME}}": "restored CODEPUNK_HOME directory",
+    "{{PROJECT}}": "restored project directory",
+    "{{NPM_PREFIX}}": "temporary npm prefix that installed the published codepunk-cli tarball",
+    "{{COMPAT_BASE_URL}}": "loopback OpenAI-compatible stub used during capture",
+    "{{COMPAT_API_KEY}}": "placeholder API key used by the loopback capture stub",
+    "{{PI_AGENT_DOCS}}": "published pi-coding-agent documentation directory inside the temporary npm installation"
+  },
+  "coverage": {
+    "sessions": [
+      "print turn",
+      "fork from compat-parent"
+    ],
+    "mcpAuth": "mcp add + mcp logout",
+    "memory": "project and user memory add",
+    "trust": "workspace trust grant",
+    "retention": "migrate --apply + backup create operations ledger"
+  },
+  "notCovered": [],
+  "captureCommands": [
+    "npm install codepunk-cli@0.1.1 --prefix {{NPM_PREFIX}} --ignore-scripts",
+    "models import --provider compat --base-url {{COMPAT_BASE_URL}} --api-key {{COMPAT_API_KEY}} --model compat-model",
+    "models set compat/compat-model",
+    "trust grant {{PROJECT}}",
+    "-p --cwd {{PROJECT}} \"First compat turn.\"",
+    "sessions list --json",
+    "-p --cwd {{PROJECT}} --fork <parent-session-id> \"Forked compat turn.\"",
+    "mcp add compat-auth --url http://127.0.0.1:48762/mcp",
+    "mcp logout compat-auth",
+    "memory add --scope project \"compat project note\"",
+    "memory add --scope user \"compat user note\"",
+    "migrate --apply",
+    "backup create --json"
+  ],
+  "files": [
+    {
+      "path": "home/config.toml",
+      "sha256": "be9bca840b1d08c20dccdf8376a09a58b181a3400d9a40cf4efe3ad53dc1afa5",
+      "bytes": 48
+    },
+    {
+      "path": "home/mcp-auth.json",
+      "sha256": "446acede942a1352fd5a22f8132f8ad79b0183170a65ee604cbdfb8248e78019",
+      "bytes": 36
+    },
+    {
+      "path": "home/mcp.toml",
+      "sha256": "51e16f640e64bef68d376711b50dac8acdeb8c8e57a669ec4066db983af57fd2",
+      "bytes": 57
+    },
+    {
+      "path": "home/memory/records.jsonl",
+      "sha256": "5fb7a59eb3db9625c4d03e3f38a4c130f115000188786f20eba100845d914b7b",
+      "bytes": 450
+    },
+    {
+      "path": "home/models-store.json",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "bytes": 2
+    },
+    {
+      "path": "home/models.json",
+      "sha256": "f221d5467d4b4834e8fb7be097766354d046c0880f4061b39822af49e14f702e",
+      "bytes": 528
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/memory/records.jsonl",
+      "sha256": "b3224316a46f8d5da8a36e9384169c1f1c408060f5ccd8e2f095856fc81c1c70",
+      "bytes": 1117
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/project.json",
+      "sha256": "07b9e55c41e2c1eb4ae5bdddc17244eb13befaf64bab6a872871cf1d7545a944",
+      "bytes": 104
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2R3EWDZZ9CST2CMDQSQX/agent-state.json",
+      "sha256": "399d73472a1a3b91e4369208c352fd905cad177cd3b373de30c336365b67ddf3",
+      "bytes": 16300
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2R3EWDZZ9CST2CMDQSQX/session-meta.json",
+      "sha256": "23f610c67f196c3e7c12f0ed7dfec56bc73d1da1251ae8aa36642a016978206e",
+      "bytes": 153
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2R3EWDZZ9CST2CMDQSQX/session.jsonl",
+      "sha256": "8f7d483f268449076623ed6772f56057827c41f06cb278cd8d6a4cc48f1f3adb",
+      "bytes": 3158
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2SMA2AE79JXB3YR1SFAM/agent-state.json",
+      "sha256": "69a8b4ae2a95b2e67dd1a7ccdb057657b533acd709b55a9995608c1448b9b2c2",
+      "bytes": 18602
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2SMA2AE79JXB3YR1SFAM/session-meta.json",
+      "sha256": "c861b08671a6097450e292a2de631267cbc4d5014db86696db8a7f71c1c76010",
+      "bytes": 154
+    },
+    {
+      "path": "home/projects/4c349f0949bbf21e/sessions/01M8GV2SMA2AE79JXB3YR1SFAM/session.jsonl",
+      "sha256": "b3fc48cf53624978e0e5a6b4a18ca09ce2aef904e1c912494b9bd6c2df25db91",
+      "bytes": 4605
+    },
+    {
+      "path": "home/retention/operations.jsonl",
+      "sha256": "6095a4c2f243f88f1c9024dd534dbec2b7258281237af0b3dd205cf6f7816e99",
+      "bytes": 2158
+    },
+    {
+      "path": "home/state-version.json",
+      "sha256": "4b8894d57dfa621e534ef4eb25263e8f00254cbcb4327f1f98796314ac279dde",
+      "bytes": 19
+    },
+    {
+      "path": "home/trust.json",
+      "sha256": "29db4da75104b1202f142b6facc18c0d32f775d775b07df7261e169d19c72829",
+      "bytes": 26
+    },
+    {
+      "path": "home/workspace-trust.json",
+      "sha256": "24e2aca660f109a531847d13308eeb3c830a8654d367f7e0e4ee2e34d408be9d",
+      "bytes": 173
+    },
+    {
+      "path": "project/.codepunk/.gitignore",
+      "sha256": "4e32d39ff6282b720f9e2608ed93070e5ec4605d24585cf5085a0f3cd47ced2f",
+      "bytes": 24
+    },
+    {
+      "path": "project/README.md",
+      "sha256": "33fa1be53fa7a6418d7aed82372c53737da32a67f7a46efa250852023543779b",
+      "bytes": 17
+    }
+  ],
+  "excludedCaptureArtifacts": [
+    "home/backups/** (duplicate snapshot created by backup create)",
+    "project/.git/** (source-control internals)",
+    "session.lock files (live locks are not compatibility data)",
+    "shadow-git/** (git pack/object internals)"
+  ]
+}

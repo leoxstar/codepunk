@@ -1,0 +1,24 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "compat": {
+      "name": "compat",
+      "baseUrl": "{{COMPAT_BASE_URL}}",
+      "api": "openai-completions",
+      "apiKey": "{{COMPAT_API_KEY}}",
+      "authHeader": false,
+      "models": [
+        {
+          "id": "compat-model",
+          "name": "compat-model",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 16384
+        }
+      ]
+    }
+  }
+}
