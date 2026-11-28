@@ -2,6 +2,19 @@ import type { TSchema } from "typebox";
 import { Check, Errors } from "typebox/value";
 
 export {
+  APP_NAME,
+  CLI_PACKAGE_NAME,
+  CORE_PACKAGE_NAME,
+  ENV_VARS,
+  EXIT_CODES,
+  PROJECT_CONFIG_DIR,
+  PROTOCOL_PACKAGE_NAME,
+  SCHEMA_VERSIONS,
+  STATE_FILES,
+  UNPUBLISHED_VERSION,
+} from "./constants.ts";
+
+export {
   AGENT_STATE_SCHEMA_VERSION,
   EVIDENCE_SCHEMA_VERSION,
   PROTOCOL_VERSION,

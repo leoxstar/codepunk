@@ -1,4 +1,5 @@
 import { Type, type Static } from "typebox";
+import { SCHEMA_VERSIONS } from "./constants.ts";
 import {
   DAEMON_METHODS,
   DAEMON_SCOPES,
@@ -8,7 +9,7 @@ import {
   DaemonWriterLeaseSchema,
 } from "./daemon.ts";
 
-export const ACP_PROTOCOL_VERSION = 1 as const;
+export const ACP_PROTOCOL_VERSION = SCHEMA_VERSIONS.acp;
 export const ACP_REQUEST_MAX_BYTES = 64 * 1024;
 export const ACP_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const ACP_METHODS = [

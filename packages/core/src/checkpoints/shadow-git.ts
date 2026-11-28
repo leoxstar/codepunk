@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { SCHEMA_VERSIONS } from "codepunk-protocol";
 import {
   ensurePrivateDir,
   readJsonFile,
@@ -17,7 +18,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const SHADOW_INDEX_VERSION = 1;
+const SHADOW_INDEX_VERSION = SCHEMA_VERSIONS.shadowGitIndex;
 const MAX_SHADOW_SNAPSHOTS = 40;
 const MAX_UNTRACKED_CANDIDATES = 2_000;
 const GIT_TIMEOUT_MS = 15_000;

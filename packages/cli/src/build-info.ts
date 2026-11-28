@@ -2,15 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DoctorCheck, DoctorReport } from "codepunk-core";
+import { UNPUBLISHED_VERSION } from "codepunk-protocol";
 
 const BUILD_PACKAGES = ["protocol", "core", "cli"] as const;
 const MTIME_TOLERANCE_MS = 1_000;
 
-/**
- * Version reported when the package manifest cannot be read. It is the
- * placeholder npm refuses to resolve, never a released version.
- */
-export const UNPUBLISHED_VERSION = "0.0.0";
+export { UNPUBLISHED_VERSION };
 
 /**
  * Reads the CLI package version without walking `dist` against `src`.
@@ -151,7 +148,7 @@ export async function inspectCliBuild(
   const entryPath = path.join(path.dirname(currentModule), `index${extension}`);
   const cliRoot = path.dirname(path.dirname(entryPath));
   const repositoryRoot = path.dirname(path.dirname(cliRoot));
-  let version = "0.0.0";
+  let version: string = UNPUBLISHED_VERSION;
   try {
     const packageJson = JSON.parse(
       await fs.readFile(path.join(cliRoot, "package.json"), "utf8"),

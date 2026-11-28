@@ -1,8 +1,10 @@
-export const PROTOCOL_VERSION = 1 as const;
-export const EVIDENCE_SCHEMA_VERSION = 1 as const;
-export const SESSION_EVENT_SCHEMA_VERSION = 1 as const;
-export const AGENT_STATE_SCHEMA_VERSION = 1 as const;
-export const VERDICT_SCHEMA_VERSION = 1 as const;
+import { SCHEMA_VERSIONS } from "./constants.ts";
+
+export const PROTOCOL_VERSION = SCHEMA_VERSIONS.protocol;
+export const EVIDENCE_SCHEMA_VERSION = SCHEMA_VERSIONS.evidence;
+export const SESSION_EVENT_SCHEMA_VERSION = SCHEMA_VERSIONS.sessionEvent;
+export const AGENT_STATE_SCHEMA_VERSION = SCHEMA_VERSIONS.agentState;
+export const VERDICT_SCHEMA_VERSION = SCHEMA_VERSIONS.verdict;
 
 export type ProtocolKind =
   "evidence" | "session-event" | "agent-state" | "verdict";

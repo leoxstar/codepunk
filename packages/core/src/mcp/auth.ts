@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { SCHEMA_VERSIONS } from "codepunk-protocol";
 import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import {
   McpOAuthAuthorizationRequiredError,
@@ -25,7 +26,7 @@ import { normalizeAbsolute } from "../platform/path.ts";
 
 export type { McpAuthProvider } from "@earendil-works/pi-mcp/oauth";
 
-const AUTH_VERSION = 1;
+const AUTH_VERSION = SCHEMA_VERSIONS.mcpAuth;
 export const MCP_REFRESH_LOCK_POLICY = {
   waitMs: CLAIM_LOCK_TIMEOUT_MS,
   staleMs: CLAIM_LOCK_STALE_MS,

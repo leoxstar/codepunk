@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { SCHEMA_VERSIONS } from "codepunk-protocol";
 
-export const MODEL_HISTORY_VERSION = 1;
+export const MODEL_HISTORY_VERSION = SCHEMA_VERSIONS.modelHistory;
 export const RECENT_MODEL_LIMIT = 10;
 export const FAVORITE_MODEL_LIMIT = 20;
 

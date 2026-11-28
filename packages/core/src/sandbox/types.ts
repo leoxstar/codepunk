@@ -5,11 +5,12 @@ import type {
   WrapWithSandboxOptions,
 } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxDescriptor } from "codepunk-protocol";
+import { BUILD_SRT_VERSION } from "../build-meta.ts";
 import type { NetworkEventSink, NetworkGuard } from "../network/index.ts";
 
 export type { WindowsBinShell } from "@anthropic-ai/sandbox-runtime";
 
-export const SRT_VERSION = "0.0.82";
+export const SRT_VERSION = BUILD_SRT_VERSION;
 export const SANDBOX_EXECUTOR = "srt";
 export const DIRECT_EXECUTOR = "direct";
 

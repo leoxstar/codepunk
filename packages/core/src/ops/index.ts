@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { UNPUBLISHED_VERSION } from "codepunk-protocol";
 import { ConfigError, type CodepunkConfig } from "../config/index.ts";
 import { loadPolicyFiles } from "../config/policy.ts";
 import { probeConfiguredModel } from "../model/index.ts";
@@ -10,6 +11,7 @@ import {
 } from "../platform/paths.ts";
 import { resolveSearchBinary } from "../search/index.ts";
 import {
+  SRT_VERSION,
   probeSrtSandbox,
   resolveWindowsShell,
   SrtSandbox as SandboxProvider,
@@ -156,7 +158,7 @@ function sandboxFixHint(
   sandboxIssue: string,
 ): string {
   if (/Windows sandbox|srt-win|not provisioned/u.test(sandboxIssue)) {
-    return "provision the Windows sandbox once with `npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install`; add `--skip-profile-grant` when the user profile must stay unreadable; shell tools stay disabled until then";
+    return `provision the Windows sandbox once with \`npx --yes @anthropic-ai/sandbox-runtime@${SRT_VERSION} windows-install\`; add \`--skip-profile-grant\` when the user profile must stay unreadable; shell tools stay disabled until then`;
   }
   if (platform === "linux") {
     if (/apparmor|userns|namespace|bwrap/iu.test(sandboxIssue)) {
@@ -361,17 +363,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   checks.push({
     id: "distribution",
     status:
-      options.packageVersion === undefined || options.packageVersion === "0.0.0"
+      options.packageVersion === undefined ||
+      options.packageVersion === UNPUBLISHED_VERSION
         ? "warn"
         : "ok",
     message:
       options.packageVersion === undefined
         ? "package version was not provided to doctor"
-        : options.packageVersion === "0.0.0"
-          ? "local checkout version is 0.0.0; npm distribution is not published"
+        : options.packageVersion === UNPUBLISHED_VERSION
+          ? `local checkout version is ${UNPUBLISHED_VERSION}; npm distribution is not published`
           : `package version ${options.packageVersion}`,
     hint:
-      options.packageVersion === undefined || options.packageVersion === "0.0.0"
+      options.packageVersion === undefined ||
+      options.packageVersion === UNPUBLISHED_VERSION
         ? "publish codepunk-cli or install from the repository checkout"
         : null,
   });

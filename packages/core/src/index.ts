@@ -1,4 +1,9 @@
 export {
+  BUILD_COMMIT,
+  BUILD_SRT_VERSION,
+  CODEPUNK_VERSION,
+} from "./build-meta.ts";
+export {
   AutonomyController,
   AutonomyError,
   SCOPED_REST_WILDCARD,

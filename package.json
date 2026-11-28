@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@12.18.0",
   "scripts": {
-    "build": "pnpm --filter codepunk-protocol build && pnpm --filter codepunk-core build && pnpm --filter codepunk-cli build",
+    "build": "tsc -b && node packages/cli/build.mjs",
     "check": "node scripts/check-repo.mjs",
     "eval": "node eval/run.mjs",
     "format": "prettier --write . --ignore-path .prettierignore",
@@ -20,11 +20,11 @@
     "verify": "pnpm run format:check && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.6.0",
-    "@earendil-works/pi-coding-agent": "1.6.0",
-    "@types/node": "22.19.1",
-    "node-pty": "1.1.0",
-    "prettier": "3.10.1",
-    "typescript": "7.0.2"
+    "@earendil-works/pi-ai": "catalog:",
+    "@earendil-works/pi-coding-agent": "catalog:",
+    "@types/node": "catalog:",
+    "node-pty": "catalog:",
+    "prettier": "catalog:",
+    "typescript": "catalog:"
   }
 }

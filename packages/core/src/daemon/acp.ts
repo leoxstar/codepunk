@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { CODEPUNK_VERSION } from "../build-meta.ts";
 import {
   ACP_ERROR_MESSAGES,
   ACP_METHODS,
@@ -195,7 +196,7 @@ export class AcpServer {
     this.output = options.output;
     this.maxRequestBytes = options.maxRequestBytes ?? ACP_REQUEST_MAX_BYTES;
     this.maxResponseBytes = options.maxResponseBytes ?? ACP_RESPONSE_MAX_BYTES;
-    this.agentVersion = options.agentVersion ?? "0.1.1";
+    this.agentVersion = options.agentVersion ?? CODEPUNK_VERSION;
   }
 
   async run(): Promise<void> {

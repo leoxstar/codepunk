@@ -9,6 +9,8 @@ import {
   toLlmContent,
   type CallToolResult,
 } from "@earendil-works/pi-mcp";
+import { APP_NAME } from "codepunk-protocol";
+import { CODEPUNK_VERSION } from "../build-meta.ts";
 import { sha256Text } from "../platform/hash.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
 import {
@@ -162,8 +164,8 @@ async function connect(
       ...(authProvider === undefined ? {} : { authProvider }),
     });
     const client = new McpClient({
-      name: "codepunk",
-      version: "0.0.0",
+      name: APP_NAME,
+      version: CODEPUNK_VERSION,
       requestTimeoutMs,
     });
     try {
@@ -187,8 +189,8 @@ async function connect(
     env,
   });
   const client = new McpClient({
-    name: "codepunk",
-    version: "0.0.0",
+    name: APP_NAME,
+    version: CODEPUNK_VERSION,
     requestTimeoutMs,
   });
   try {

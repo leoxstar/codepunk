@@ -3,7 +3,7 @@ import type { WriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { finished } from "node:stream/promises";
-import type { EvidenceRecord } from "codepunk-protocol";
+import { SCHEMA_VERSIONS, type EvidenceRecord } from "codepunk-protocol";
 import { checkStoreVersion } from "../compat/index.ts";
 import { EvidenceLedger } from "../evidence/index.ts";
 import { atomicWriteFile, ensurePrivateDir } from "../platform/fs.ts";
@@ -16,7 +16,7 @@ import {
   type ClaimRecord,
 } from "../workers/claims.ts";
 
-export const BACKGROUND_TASK_VERSION = 1 as const;
+export const BACKGROUND_TASK_VERSION = SCHEMA_VERSIONS.backgroundTask;
 export const BACKGROUND_DEFAULT_MAX_TASKS = 8;
 export const BACKGROUND_DEFAULT_MAX_CONCURRENT = 2;
 export const BACKGROUND_DEFAULT_MAX_STEERING = 16;

@@ -1,12 +1,13 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rewriteRelativeImportExtensions": true,
     "types": ["node"],
     "skipLibCheck": true,
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
+  "references": [{ "path": "../protocol" }, { "path": "../core" }],
   "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

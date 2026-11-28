@@ -1,5 +1,6 @@
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { SCHEMA_VERSIONS, STATE_FILES } from "codepunk-protocol";
 import {
   ProjectTrustStore,
   type ProjectTrustStoreEntry,
@@ -84,8 +85,8 @@ const TRUST_REQUIRING_DIRECTORIES = ["skills", "agents", "commands"] as const;
 const PREVIEW_MAX_ENTRIES = 512;
 const PREVIEW_MAX_BYTES = 1024 * 1024;
 const NOFOLLOW = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
-const RESOURCE_TRUST_STORE_VERSION = 1;
-const RESOURCE_TRUST_STORE_FILE = "workspace-trust.json";
+const RESOURCE_TRUST_STORE_VERSION = SCHEMA_VERSIONS.resourceTrust;
+const RESOURCE_TRUST_STORE_FILE = STATE_FILES.WORKSPACE_TRUST;
 
 async function directoryHasEntries(directory: string): Promise<boolean> {
   try {

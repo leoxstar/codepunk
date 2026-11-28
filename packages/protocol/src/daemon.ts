@@ -175,7 +175,7 @@ export type DaemonControlEvent = Static<typeof DaemonControlEventSchema>;
  */
 export const DaemonHelloResultSchema = Type.Object(
   {
-    protocol_version: Type.Literal(1),
+    protocol_version: Type.Literal(DAEMON_PROTOCOL_VERSION),
     read_only: Type.Boolean(),
     methods: Type.Array(
       Type.Union([

@@ -3,6 +3,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import {
   RetentionOperationSchema,
+  SCHEMA_VERSIONS,
   type RetentionOperation,
   validateSchema,
 } from "codepunk-protocol";
@@ -11,7 +12,7 @@ import { canonicalJson, sha256Text } from "../platform/hash.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 import { readLock, staleLockReason } from "../session/index.ts";
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = SCHEMA_VERSIONS.stateHome;
 
 /** Thrown when state-version.json records a version newer than this build (spec 0016 C2). */
 export class NewerStateVersionError extends Error {

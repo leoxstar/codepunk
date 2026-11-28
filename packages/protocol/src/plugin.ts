@@ -1,7 +1,8 @@
 import { Type, type Static } from "typebox";
 import { NonEmptyStringSchema } from "./common.ts";
+import { SCHEMA_VERSIONS } from "./constants.ts";
 
-export const PLUGIN_PROTOCOL_VERSION = 1 as const;
+export const PLUGIN_PROTOCOL_VERSION = SCHEMA_VERSIONS.plugin;
 export const PLUGIN_MAX_FRAME_BYTES = 1024 * 1024;
 
 export const PluginMethodSchema = Type.Union([

@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { CODEPUNK_VERSION } from "../build-meta.ts";
 import { canonicalNetworkHost, domainListDenies } from "../network/index.ts";
 
 export const WEB_SEARCH_TOOL_NAME = "web_search" as const;
@@ -11,7 +12,7 @@ const MAX_ALLOWED_RESULTS = 10;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
 const TIMEOUT_MS = 10_000;
-const USER_AGENT = "codepunk-web-search/0.1";
+const USER_AGENT = `codepunk-web-search/${CODEPUNK_VERSION}`;
 
 export interface WebSearchResultItem {
   readonly title: string;

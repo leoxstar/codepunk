@@ -3,9 +3,13 @@ import { readSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
+import {
+  PLUGIN_MAX_FRAME_BYTES,
+  PLUGIN_PROTOCOL_VERSION,
+} from "codepunk-protocol";
 
-const PROTOCOL_VERSION = 1;
-const MAX_FRAME_BYTES = 1024 * 1024;
+const PROTOCOL_VERSION = PLUGIN_PROTOCOL_VERSION;
+const MAX_FRAME_BYTES = PLUGIN_MAX_FRAME_BYTES;
 
 interface ToolDefinition {
   name: string;

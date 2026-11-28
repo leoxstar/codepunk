@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { SCHEMA_VERSIONS } from "codepunk-protocol";
 import { FormatVersionError, checkStoreVersion } from "../compat/index.ts";
 import {
   atomicWriteBytes,
@@ -23,7 +24,7 @@ export {
   type ShadowGitStoreOptions,
 } from "./shadow-git.ts";
 
-const CHECKPOINT_VERSION = 1;
+const CHECKPOINT_VERSION = SCHEMA_VERSIONS.checkpointIndex;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_ENTRIES = 100;
