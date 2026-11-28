@@ -73,7 +73,7 @@ export class DeferredSandbox implements ShellProvider {
   private readonly lifecycle: SandboxLifecycle | null;
   private state: "pending" | "closed" = "pending";
   private closePromise: Promise<void> | null = null;
-  private lateClosePromise: Promise<void> | null = null;
+  private providerClosePromise: Promise<void> | null = null;
 
   constructor(
     ready: Promise<ShellProvider | null>,
@@ -87,13 +87,21 @@ export class DeferredSandbox implements ShellProvider {
         if (this.provider === null) {
           this.provider = resolved;
         }
-        if (this.state === "closed") {
-          this.lateClosePromise = resolved?.close?.() ?? null;
-          return this.lateClosePromise?.catch(() => undefined);
+        if (this.state === "closed" && resolved !== null) {
+          return this.closeProviderOnce(resolved);
         }
       },
       () => undefined,
     );
+  }
+
+  private closeProviderOnce(provider: ShellProvider): Promise<void> {
+    if (this.providerClosePromise === null) {
+      this.providerClosePromise = Promise.resolve(provider.close?.()).catch(
+        () => undefined,
+      );
+    }
+    return this.providerClosePromise;
   }
 
   get sandboxed(): boolean {
@@ -159,7 +167,9 @@ export class DeferredSandbox implements ShellProvider {
 
   async close(): Promise<void> {
     if (this.state === "closed") {
-      return this.closePromise ?? this.lateClosePromise ?? Promise.resolve();
+      await (this.closePromise ?? Promise.resolve());
+      await (this.providerClosePromise ?? Promise.resolve());
+      return;
     }
     this.state = "closed";
     this.closePromise = (async () => {
@@ -167,11 +177,10 @@ export class DeferredSandbox implements ShellProvider {
         this.lifecycle?.cancelPendingInitialization(),
       ).catch(() => undefined);
       if (this.provider !== null) {
-        await this.provider.close?.().catch(() => undefined);
-        return;
+        await this.closeProviderOnce(this.provider);
       }
     })();
-    return this.closePromise;
+    await this.closePromise;
   }
 }
 
