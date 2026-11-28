@@ -725,3 +725,111 @@ test("compaction writes exactly one summary for the run", async () => {
     }
   });
 });
+
+test("W-03: model memory_search tool appends schema-valid memory/retrieve events and rejects malformed payloads", async () => {
+  await withTempDirectory("codepunk-w03-memory-search-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const memory = await core.MemoryManager.open({
+      paths,
+      enabled: true,
+      maxTokens: 400,
+    });
+    const added = await memory.add({
+      scope: "project",
+      content: "Use pnpm run verify before every release tag.",
+      kind: "convention",
+      source: "user",
+      tags: ["release"],
+    });
+    assert.equal(added.ok, true);
+    assert.ok(added.record);
+
+    const store = await core.SessionStore.create({
+      rootDir: paths.home,
+      cwd: projectRoot,
+      projectRoot,
+      projectId: paths.projectId,
+    });
+    const ledger = await core.EvidenceLedger.open(
+      path.join(paths.home, "evidence.jsonl"),
+    );
+    const host = await core.createPiHost({
+      cwd: projectRoot,
+      workspaceRoot: projectRoot,
+      deliveryRoot: projectRoot,
+      codepunkHome: paths.home,
+      sessionId: store.sessionId,
+      runId: "run-w03-memory-search",
+      writeSet: [projectRoot],
+      mode: "interactive",
+      approval: null,
+      ledger,
+      sandbox: null,
+      sessionStore: store,
+      memory,
+      enabledTools: ["read", "memory_search"],
+      model: TEST_MODEL,
+    });
+    try {
+      await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+      const calls = installScriptedStream(host.session, (index) => {
+        if (index === 0) {
+          return {
+            type: "toolCall",
+            id: "call-memory-search-w03",
+            name: "memory_search",
+            args: { query: "verify" },
+          };
+        }
+        return { type: "text", text: "found release verification rule" };
+      });
+
+      await host.session.prompt("how do we verify a release?");
+
+      assert.ok(calls.length >= 2);
+      const retrieveEvents = store.allEvents.filter(
+        (event) => event.kind === "memory/retrieve",
+      );
+      assert.ok(retrieveEvents.length >= 1, "expected memory/retrieve event");
+      const searchEvent = retrieveEvents.at(-1);
+      assert.ok(searchEvent.data.ids.includes(added.record.id));
+      assert.ok(searchEvent.data.hashes.includes(added.record.content_sha256));
+      assert.equal(
+        Object.hasOwn(searchEvent.data, "query_sha256"),
+        false,
+        "extra query_sha256 field must not leak into memory/retrieve event",
+      );
+
+      // Negative controls: extra property and malformed hash must be rejected without mutating log_seq/meta.
+      const beforeSeq = store.metadata.log_seq;
+      const beforeCount = store.allEvents.length;
+      await assert.rejects(
+        () =>
+          store.append("memory/retrieve", {
+            ids: [added.record.id],
+            hashes: [added.record.content_sha256],
+            cap: 1000,
+            truncated: false,
+            digest_sha256: added.record.content_sha256,
+            query_sha256: added.record.content_sha256,
+          }),
+        /cannot append invalid memory\/retrieve event/u,
+      );
+      await assert.rejects(
+        () =>
+          store.append("memory/retrieve", {
+            ids: [added.record.id],
+            hashes: ["not-a-sha256"],
+            cap: 1000,
+            truncated: false,
+            digest_sha256: added.record.content_sha256,
+          }),
+        /cannot append invalid memory\/retrieve event/u,
+      );
+      assert.equal(store.metadata.log_seq, beforeSeq);
+      assert.equal(store.allEvents.length, beforeCount);
+    } finally {
+      await host.dispose();
+    }
+  });
+});

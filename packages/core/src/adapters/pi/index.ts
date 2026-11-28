@@ -403,7 +403,13 @@ export async function createPiHost(
       await appendEvent("plugin/tool_call", event);
     },
     onMemorySearch: async (retrieval) => {
-      await appendEvent("memory/retrieve", retrieval);
+      await appendEvent("memory/retrieve", {
+        ids: retrieval.ids,
+        hashes: retrieval.hashes,
+        cap: retrieval.cap,
+        truncated: retrieval.truncated,
+        digest_sha256: retrieval.digest_sha256,
+      });
     },
     onExecutionEvent: async (kind, data) => {
       await appendEvent(kind, data);
