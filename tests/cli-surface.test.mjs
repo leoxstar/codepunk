@@ -272,6 +272,24 @@ test("the TUI command registration matches the snapshot", async () => {
   );
   assert.ok(commandNames.length > 0, "no slash command was registered");
 
+  const { loadPiBuiltinSlashCommands } = await importSource(
+    "packages/cli/src/tui/host-commands.ts",
+  );
+  const builtinNames = new Set(
+    (await loadPiBuiltinSlashCommands()).map((command) => command.name),
+  );
+  const registeredRawNames = commandNames.map((entry) =>
+    entry.slice("registerCommand ".length),
+  );
+  const collisions = registeredRawNames.filter((name) =>
+    builtinNames.has(name),
+  );
+  assert.deepEqual(
+    collisions,
+    [],
+    `extension command(s) collide with Pi built-in slash commands: ${collisions.join(", ")}`,
+  );
+
   await compareOrUpdate("tui", [
     [
       "registration.txt",

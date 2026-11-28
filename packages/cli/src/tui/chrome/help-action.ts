@@ -74,6 +74,11 @@ export async function dispatchSlashOrPrefill(
       await openRewindPicker(state, context as never);
       return;
     }
+    case "/copy": {
+      const { runCopyAction } = await import("../commands/copy.ts");
+      await runCopyAction(runtime, context, "");
+      return;
+    }
     case "/model":
     case "/compact":
     case "/tree":

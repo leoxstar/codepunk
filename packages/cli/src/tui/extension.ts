@@ -13,7 +13,6 @@ import {
   btwCommand,
   presetCommand,
 } from "./commands/background.ts";
-import { copyCommand } from "./commands/copy.ts";
 import { runCommand } from "./commands/custom-commands.ts";
 import { editorCommand } from "./commands/editor.ts";
 import { learnCommand } from "./commands/learn.ts";
@@ -107,7 +106,6 @@ const COMMAND_FACTORIES: readonly ((state: TuiState) => TuiCommand)[] = [
   signCommand,
   rememberCommand,
   memoryCommand,
-  copyCommand,
   editorCommand,
   runCommand,
   stashCommand,

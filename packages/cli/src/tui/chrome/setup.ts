@@ -25,6 +25,7 @@ import {
   startNewSession,
 } from "../commands/session.ts";
 import { configurePermissions } from "../commands/permission-actions.ts";
+import { runCopyAction } from "../commands/copy.ts";
 import { sendWorkspaceImage } from "../commands/images.ts";
 import { showInteractiveSettingsMenu } from "../commands/settings.ts";
 import { configureTrust } from "../commands/trust-actions.ts";
@@ -321,6 +322,10 @@ async function handlePiSlashCommand(
       ].join("\n"),
       "warning",
     );
+    return true;
+  }
+  if (isSlashCommand(trimmed, "/copy")) {
+    await runCopyAction(runtime, context, trimmed.slice("/copy".length).trim());
     return true;
   }
   if (isSlashCommand(trimmed, "/reload")) {

@@ -249,6 +249,16 @@ test("W-04: /new, /fork, /clone, and /resume immediately support /status, /conte
     try {
       await waitFor("permissions standard");
       await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.doesNotMatch(
+        stripAnsi(output),
+        /Extension command '\/copy' conflicts|conflicts with built-in interactive command/u,
+        "W-07: startup emitted /copy built-in command conflict warning",
+      );
+
+      // W-07: verify /copy intercepts cleanly via EditorBridge without built-in conflict.
+      let copyMark = output.length;
+      child.stdin.write("/copy code\r");
+      await waitFor("No matching fenced code block", copyMark, 8_000);
 
       // Create one settled turn so /fork and /clone have agent state.
       let mark = output.length;
