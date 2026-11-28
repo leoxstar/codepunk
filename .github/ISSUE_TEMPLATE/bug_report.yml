@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible defect in Codepunk
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, flags, or TUI inputs. Avoid pasting secrets or personal paths.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `codepunk --version`, `codepunk doctor` (redacted), OS, and Node.js version.
+    validations:
+      required: true

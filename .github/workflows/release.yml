@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Extract changelog notes and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            printf 'invalid release tag: %s\n' "$TAG" >&2
+            exit 2
+          fi
+          notes_file="$(mktemp)"
+          awk -v target="## [${version}]" '
+            $0 == target { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > "$notes_file"
+          if [ ! -s "$notes_file" ]; then
+            printf 'CHANGELOG.md is missing a section for %s\n' "$version" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$notes_file"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file "$notes_file"
+          fi

@@ -1008,12 +1008,25 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
   {
     name: "CI install command drift",
     rule: "ci.contract",
-    path: ".github/workflows/ci.yml",
+    path: ".github/actions/setup/action.yml",
     async apply(root) {
-      return replaceFile(root, ".github/workflows/ci.yml", (content) =>
+      return replaceFile(root, ".github/actions/setup/action.yml", (content) =>
         content.replace(
           "run: pnpm install --frozen-lockfile --ignore-scripts",
           "run: pnpm install --no-frozen-lockfile",
+        ),
+      );
+    },
+  },
+  {
+    name: "release workflow rejects npm publish",
+    rule: "ci.contract",
+    path: ".github/workflows/release.yml",
+    async apply(root) {
+      return replaceFile(root, ".github/workflows/release.yml", (content) =>
+        content.replace(
+          "          if gh release view",
+          "          npm publish\n          if gh release view",
         ),
       );
     },
@@ -1702,7 +1715,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         name: "release-smoke rejects a push trigger",
         transform: (content) =>
           content.replace(
-            "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Published codepunk-cli version, for example 0.1.0\n        required: true\n        type: string\n",
+            /on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Published codepunk-cli version, for example 0\.1\.\d+\n        required: true\n        type: string\n/u,
             "on:\n  push:\n",
           ),
         message: /only workflow_dispatch may trigger the release smoke/u,

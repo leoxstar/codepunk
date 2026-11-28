@@ -1,0 +1,18 @@
+name: Feature request
+description: Propose a capability or workflow improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What workflow or safety gap does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the desired CLI/TUI interface and failure behavior.
+    validations:
+      required: true
