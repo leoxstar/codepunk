@@ -76,6 +76,26 @@ export async function sessionResumeIssue(
   }
 }
 
+async function withSessionTransition<T>(
+  state: TuiState,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previous = state.transitionPromise;
+  if (previous !== null && previous !== undefined) {
+    await previous.catch(() => undefined);
+  }
+  const { promise, resolve } = Promise.withResolvers<void>();
+  state.transitionPromise = promise;
+  try {
+    return await run();
+  } finally {
+    if (state.transitionPromise === promise) {
+      state.transitionPromise = null;
+    }
+    resolve();
+  }
+}
+
 export async function resumeSession(
   state: TuiState,
   context: ExtensionContext,
@@ -208,20 +228,25 @@ export async function resumeSession(
     );
     return;
   }
-  const issue = await sessionResumeIssue(runtime, targetId);
-  if (issue !== null) {
-    context.ui.notify(issue, "error");
-    return;
-  }
-  try {
-    const replacement = await state.replaceRuntime({ sessionId: targetId });
-    replacement.context.ui.notify(`resumed session ${targetId}`, "info");
-  } catch (error) {
-    context.ui.notify(
-      `resume failed: ${error instanceof Error ? error.message : String(error)}`,
-      "error",
-    );
-  }
+  await withSessionTransition(state, async () => {
+    const issue = await sessionResumeIssue(runtime, targetId);
+    if (issue !== null) {
+      (state.context ?? context).ui.notify(issue, "error");
+      return;
+    }
+    try {
+      const replacement = await state.replaceRuntime!({ sessionId: targetId });
+      (state.context ?? replacement.context).ui.notify(
+        `resumed session ${targetId}`,
+        "info",
+      );
+    } catch (error) {
+      (state.context ?? context).ui.notify(
+        `resume failed: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }
+  });
 }
 
 export async function forkCurrentSession(
@@ -250,73 +275,77 @@ export async function forkCurrentSession(
       return;
     }
   }
-  await session.waitForIdle();
-  let parentState = await runtime.host.saveAgentState();
-  let stableSaves = 0;
-  for (
-    let attempt = 0;
-    attempt < 50 && parentState !== null && stableSaves < 2;
-    attempt += 1
-  ) {
-    if (runtime.session.metadata.state_covers_seq === runtime.session.lastSeq) {
-      stableSaves += 1;
-      if (stableSaves >= 2) {
-        break;
+  await withSessionTransition(state, async () => {
+    await session.waitForIdle();
+    let parentState = await runtime.host.saveAgentState();
+    let stableSaves = 0;
+    for (
+      let attempt = 0;
+      attempt < 50 && parentState !== null && stableSaves < 2;
+      attempt += 1
+    ) {
+      if (
+        runtime.session.metadata.state_covers_seq === runtime.session.lastSeq
+      ) {
+        stableSaves += 1;
+        if (stableSaves >= 2) {
+          break;
+        }
+      } else {
+        stableSaves = 0;
       }
-    } else {
-      stableSaves = 0;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (stableSaves < 2) {
+        await session.waitForIdle();
+        parentState = await runtime.host.saveAgentState();
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (parentState === null) {
+      (state.context ?? context).ui.notify(
+        "the current session has no agent state to fork",
+        "error",
+      );
+      return;
+    }
     if (stableSaves < 2) {
-      await session.waitForIdle();
-      parentState = await runtime.host.saveAgentState();
+      (state.context ?? context).ui.notify(
+        "the current session did not settle before forking",
+        "error",
+      );
+      return;
     }
-  }
-  if (parentState === null) {
-    context.ui.notify(
-      "the current session has no agent state to fork",
-      "error",
-    );
-    return;
-  }
-  if (stableSaves < 2) {
-    context.ui.notify(
-      "the current session did not settle before forking",
-      "error",
-    );
-    return;
-  }
-  const branch =
-    entryId.length === 0
-      ? parentState.branch
-      : runtime.host.sessionManager.getBranch(entryId);
-  try {
-    const forked = await forkLiveSession({
-      parent: runtime.session,
-      parentState,
-      rootDir: runtime.paths.home,
-      cwd: runtime.paths.cwd,
-      projectRoot: runtime.paths.deliveryRoot,
-      projectId: runtime.paths.projectId,
-      branch,
-      ...(entryId.length === 0 ? {} : { forkEntryId: entryId }),
-    });
-    const replacement = await state.replaceRuntime({
-      sessionId: forked.sessionId,
-    });
-    replacement.context.ui.notify(
-      [
-        `forked ${forked.parentSessionId} -> ${forked.sessionId}`,
-        `entries: ${forked.forkEntries}; parent last seq: ${forked.parentLastSeq}`,
-      ].join("\n"),
-      "info",
-    );
-  } catch (error) {
-    context.ui.notify(
-      `fork failed: ${error instanceof Error ? error.message : String(error)}`,
-      "error",
-    );
-  }
+    const branch =
+      entryId.length === 0
+        ? parentState.branch
+        : runtime.host.sessionManager.getBranch(entryId);
+    try {
+      const forked = await forkLiveSession({
+        parent: runtime.session,
+        parentState,
+        rootDir: runtime.paths.home,
+        cwd: runtime.paths.cwd,
+        projectRoot: runtime.paths.deliveryRoot,
+        projectId: runtime.paths.projectId,
+        branch,
+        ...(entryId.length === 0 ? {} : { forkEntryId: entryId }),
+      });
+      const replacement = await state.replaceRuntime!({
+        sessionId: forked.sessionId,
+      });
+      (state.context ?? replacement.context).ui.notify(
+        [
+          `forked ${forked.parentSessionId} -> ${forked.sessionId}`,
+          `entries: ${forked.forkEntries}; parent last seq: ${forked.parentLastSeq}`,
+        ].join("\n"),
+        "info",
+      );
+    } catch (error) {
+      (state.context ?? context).ui.notify(
+        `fork failed: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }
+  });
 }
 
 export async function navigateSessionTree(
@@ -410,16 +439,18 @@ export async function startNewSession(
   if (selected !== "Start new session") {
     return;
   }
-  try {
-    const replacement = await state.replaceRuntime({ newSession: true });
-    replacement.context.ui.notify(
-      `started session ${replacement.runtime.session.sessionId}`,
-      "info",
-    );
-  } catch (error) {
-    context.ui.notify(
-      `new session failed: ${error instanceof Error ? error.message : String(error)}`,
-      "error",
-    );
-  }
+  await withSessionTransition(state, async () => {
+    try {
+      const replacement = await state.replaceRuntime!({ newSession: true });
+      (state.context ?? replacement.context).ui.notify(
+        `started session ${replacement.runtime.session.sessionId}`,
+        "info",
+      );
+    } catch (error) {
+      (state.context ?? context).ui.notify(
+        `new session failed: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }
+  });
 }

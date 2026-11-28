@@ -72,6 +72,8 @@ export interface RuntimeOptions {
   allowMissingModel?: boolean;
   disableMcp?: boolean;
   deferMcp?: boolean;
+  /** Optional wrapper around deferred MCP's `session.reload()` for TUI synchronization. */
+  runDeferredMcpReload?: (reload: () => Promise<void>) => Promise<void>;
   disableSkills?: boolean;
   disablePlugins?: boolean;
   bare?: boolean;

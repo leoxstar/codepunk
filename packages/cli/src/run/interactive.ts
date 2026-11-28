@@ -17,6 +17,7 @@ import type {
   TuiSessionTarget,
   TuiState,
 } from "../tui/state.ts";
+import { waitForIdleTuiCommands } from "../tui/command-context.ts";
 import { prepareFork, sessionSelector } from "./project.ts";
 import {
   resolveRunWorkspaceTrust,
@@ -98,6 +99,7 @@ type TuiModule = Awaited<ReturnType<typeof loadTuiModules>>[1];
 interface TuiRuntimeBuilderContext {
   cwd: string;
   options: CliOptions;
+  state: TuiState;
   extension: ExtensionFactory;
   channel: ApprovalChannel;
   questionChannel: QuestionChannel;
@@ -121,6 +123,7 @@ function createRuntimeBuilder(
   const {
     cwd,
     options,
+    state,
     extension,
     channel,
     questionChannel,
@@ -166,6 +169,23 @@ function createRuntimeBuilder(
       allowPlugins: options.allowPlugins,
       disableMcp: options.noMcp,
       deferMcp: true,
+      runDeferredMcpReload: async (reload) => {
+        await waitForIdleTuiCommands(state);
+        if (state.shuttingDown) {
+          return;
+        }
+        const pending = (async () => {
+          await reload();
+        })();
+        state.transitionPromise = pending;
+        try {
+          await pending;
+        } finally {
+          if (state.transitionPromise === pending) {
+            state.transitionPromise = null;
+          }
+        }
+      },
       disableSkills: options.noSkills,
       disablePlugins: options.noPlugins,
       bare: options.bare,
@@ -195,10 +215,21 @@ function installRuntimeReplacement(
     state.context = null;
     switchState.target = target;
     let replacementContext: ExtensionCommandContext | null = null;
+    const previousTransition = state.transitionPromise;
+    const ownsTransition =
+      previousTransition === null || previousTransition === undefined;
+    const { promise: transition, resolve: resolveTransition } =
+      Promise.withResolvers<void>();
+    if (ownsTransition) {
+      state.transitionPromise = transition;
+    }
     try {
       const result = await sessionRuntime.newSession({
         withSession: async (context) => {
           replacementContext = context;
+          if (slot.current !== null) {
+            applyReplacedRuntime(state, slot.current, context);
+          }
         },
       });
       if (result.cancelled) {
@@ -207,11 +238,12 @@ function installRuntimeReplacement(
       if (replacementContext === null || slot.current === null) {
         throw new Error("session switch did not produce a runtime");
       }
+      const liveContext = (state.context ??
+        replacementContext) as ExtensionCommandContext;
       const replacement: TuiRuntimeReplacement = {
         runtime: slot.current,
-        context: replacementContext,
+        context: liveContext,
       };
-      applyReplacedRuntime(state, replacement.runtime, replacement.context);
       return replacement;
     } catch (error) {
       switchState.target = null;
@@ -220,6 +252,11 @@ function installRuntimeReplacement(
         state.context = previousContext;
       }
       throw error;
+    } finally {
+      if (ownsTransition && state.transitionPromise === transition) {
+        state.transitionPromise = null;
+      }
+      resolveTransition();
     }
   };
 }
@@ -236,27 +273,35 @@ function watchSandboxStatus(
     if (state.shuttingDown || state.runtime !== runtime || context === null) {
       return;
     }
-    if (runtime.config.tui.widgets) {
-      context.ui.setWidget("sandbox-status", tui.sandboxStatusLines(runtime), {
-        placement: "aboveEditor",
-      });
-    }
-    tui.refreshStatus(state, context);
-    if (runtime.shellPreflightIssue !== null) {
-      state.sandboxNoticeShown = true;
-      context.ui.notify(
-        `srt shell unavailable: ${runtime.shellPreflightIssue}. Shell tools are disabled.`,
-        "warning",
-      );
-      return;
-    }
-    if (state.sandboxNoticeShown) {
-      return;
-    }
-    const lines = tui.sandboxStatusLines(runtime);
-    if (lines !== undefined) {
-      state.sandboxNoticeShown = true;
-      context.ui.notify(`${lines.join(". ")}.`, "warning");
+    try {
+      if (runtime.config.tui.widgets) {
+        context.ui.setWidget(
+          "sandbox-status",
+          tui.sandboxStatusLines(runtime),
+          {
+            placement: "aboveEditor",
+          },
+        );
+      }
+      tui.refreshStatus(state, context);
+      if (runtime.shellPreflightIssue !== null) {
+        state.sandboxNoticeShown = true;
+        context.ui.notify(
+          `srt shell unavailable: ${runtime.shellPreflightIssue}. Shell tools are disabled.`,
+          "warning",
+        );
+        return;
+      }
+      if (state.sandboxNoticeShown) {
+        return;
+      }
+      const lines = tui.sandboxStatusLines(runtime);
+      if (lines !== undefined) {
+        state.sandboxNoticeShown = true;
+        context.ui.notify(`${lines.join(". ")}.`, "warning");
+      }
+    } catch {
+      // A concurrent session replacement or deferred MCP reload invalidated this context.
     }
   })();
   void (async () => {
@@ -265,9 +310,13 @@ function watchSandboxStatus(
     if (state.shuttingDown || state.runtime !== runtime || context === null) {
       return;
     }
-    tui.refreshStatus(state, context);
-    for (const warning of runtime.mcpStartupWarnings) {
-      context.ui.notify(`codepunk warning: ${warning}`, "warning");
+    try {
+      tui.refreshStatus(state, context);
+      for (const warning of runtime.mcpStartupWarnings) {
+        context.ui.notify(`codepunk warning: ${warning}`, "warning");
+      }
+    } catch {
+      // A concurrent session replacement invalidated this context.
     }
   })();
 }
@@ -402,6 +451,7 @@ export async function runTui(
   const buildTuiRuntime = createRuntimeBuilder({
     cwd: effectiveCwd,
     options,
+    state,
     extension,
     channel,
     questionChannel,

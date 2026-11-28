@@ -404,18 +404,34 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
   context.ui.setEditorComponent(
     (tui, theme, keybindings) =>
       new EditorBridge(tui, theme, keybindings, async (text) => {
+        if (
+          state.transitionPromise !== null &&
+          state.transitionPromise !== undefined
+        ) {
+          await state.transitionPromise.catch(() => undefined);
+        }
+        const activeRuntime = state.runtime;
+        const activeContext = state.context;
+        if (activeRuntime === null || activeContext === null) {
+          return true;
+        }
         const trimmed = text.trim();
         const command = trimmed.split(/\s+/u)[0] ?? "";
         if (trimmed.startsWith("!")) {
-          return await handleShellInput(runtime, context, trimmed);
+          return await handleShellInput(activeRuntime, activeContext, trimmed);
         }
         if (command.startsWith("/skill:")) {
-          return await handleSkillInput(runtime, context, trimmed, command);
+          return await handleSkillInput(
+            activeRuntime,
+            activeContext,
+            trimmed,
+            command,
+          );
         }
         const sessionResult = await handleSessionSlashCommand(
           state,
-          context,
-          runtime,
+          activeContext,
+          activeRuntime,
           trimmed,
         );
         if (sessionResult !== null) {
@@ -423,8 +439,8 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         }
         const configResult = await handleConfigSlashCommand(
           state,
-          context,
-          runtime,
+          activeContext,
+          activeRuntime,
           trimmed,
         );
         if (configResult !== null) {
@@ -432,8 +448,8 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         }
         const piResult = await handlePiSlashCommand(
           state,
-          context,
-          runtime,
+          activeContext,
+          activeRuntime,
           trimmed,
         );
         if (piResult !== null) {
@@ -442,24 +458,26 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         const droppedImage = extractDroppedImageInput(trimmed);
         if (droppedImage !== null) {
           const resolvedImage = path.resolve(
-            runtime.paths.cwd,
+            activeRuntime.paths.cwd,
             droppedImage.rawPath,
           );
           if (existsSync(resolvedImage)) {
             if (!state.modelSelected) {
-              await promptForMissingModel(state, context);
+              await promptForMissingModel(state, activeContext);
               return true;
             }
-            if (!isInsidePath(runtime.paths.deliveryRoot, resolvedImage)) {
-              context.ui.notify(
+            if (
+              !isInsidePath(activeRuntime.paths.deliveryRoot, resolvedImage)
+            ) {
+              activeContext.ui.notify(
                 "Dropped image is outside this workspace; copy it into the project or use `/image --clipboard`.",
                 "warning",
               );
               return true;
             }
             await sendWorkspaceImage(
-              runtime,
-              context,
+              activeRuntime,
+              activeContext,
               resolvedImage,
               droppedImage.prompt,
             );
@@ -469,7 +487,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
         if (trimmed.startsWith("/")) {
           const commandName = trimmed.slice(1).split(/\s+/u)[0] ?? "";
           if (!state.hostCommands.has(commandName)) {
-            context.ui.notify(
+            activeContext.ui.notify(
               [
                 `Unknown command /${commandName}.`,
                 "Type /help for the available Codepunk commands.",
@@ -484,7 +502,7 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
           state.runtime !== null &&
           !state.modelSelected
         ) {
-          await promptForMissingModel(state, context);
+          await promptForMissingModel(state, activeContext);
           return true;
         }
         return false;

@@ -864,12 +864,32 @@ async function createRuntimeInner(
           await next.close().catch(() => undefined);
           return;
         }
-        await host.replaceExtraTools([
-          ...next.tools,
-          ...next.resourceTools,
-          ...pluginState.current.tools,
-        ]);
-        await host.session.reload();
+        const hasNewTools =
+          next.tools.length > 0 || next.resourceTools.length > 0;
+        if (hasNewTools) {
+          const executeReload = async (): Promise<void> => {
+            if (runtimeDisposed) {
+              return;
+            }
+            if (host.session.isStreaming || host.session.isCompacting) {
+              await host.session.waitForIdle().catch(() => undefined);
+            }
+            if (runtimeDisposed) {
+              return;
+            }
+            await host.replaceExtraTools([
+              ...next.tools,
+              ...next.resourceTools,
+              ...pluginState.current.tools,
+            ]);
+            await host.session.reload();
+          };
+          if (options.runDeferredMcpReload !== undefined) {
+            await options.runDeferredMcpReload(executeReload);
+          } else {
+            await executeReload();
+          }
+        }
         if (runtimeDisposed) {
           await next.close().catch(() => undefined);
           return;

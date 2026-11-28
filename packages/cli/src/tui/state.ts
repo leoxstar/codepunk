@@ -50,6 +50,12 @@ export interface TuiState {
   resumeHint?: ResumeHint;
   /** In-session prompt draft stack managed by /stash and Alt+S. */
   promptStash?: Array<{ readonly text: string; readonly createdAt: string }>;
+  /** Number of active slash commands currently executing against the TUI context. */
+  activeCommandCount?: number;
+  /** Resolvers waiting for active slash commands to finish before background reload. */
+  idleCommandWaiters?: Array<() => void>;
+  /** In-flight session replacement or background reload promise to serialize incoming commands. */
+  transitionPromise?: Promise<void> | null;
 }
 
 export interface TuiSessionTarget {
