@@ -249,6 +249,9 @@ test("CLI --worktree parses bare and named flags, creates and reuses isolated gi
     const repo = path.join(root, "repo");
     await fs.mkdir(repo, { recursive: true });
     await execFileAsync("git", ["init", "-q"], { cwd: repo });
+    await execFileAsync("git", ["config", "core.autocrlf", "false"], {
+      cwd: repo,
+    });
     await fs.writeFile(path.join(repo, "README.md"), "# hello\n", "utf8");
     await execFileAsync("git", ["add", "README.md"], { cwd: repo });
     await execFileAsync(

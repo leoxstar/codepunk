@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -62,12 +63,37 @@ if (pidFile !== undefined && pidFile !== "") {
 }
 
 let timedOut = false;
+let exiting = false;
 let timeoutTimer;
+
+function killChildTree() {
+  try {
+    child.kill();
+  } catch {
+    // Ignore errors when the PTY child has already exited.
+  }
+  if (process.platform === "win32" && Number.isSafeInteger(child.pid) && child.pid > 0) {
+    try {
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: 5_000,
+      });
+    } catch {
+      // Ignore taskkill errors if the process tree is already gone.
+    }
+  }
+}
+
 const timeoutSeconds = Number(process.env["PTY_RUN_TIMEOUT"] ?? "0");
 if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
   timeoutTimer = setTimeout(() => {
     timedOut = true;
-    child.kill();
+    killChildTree();
+    setTimeout(() => {
+      cleanup();
+      process.exit(0);
+    }, 1_000).unref();
   }, timeoutSeconds * 1_000);
   timeoutTimer.unref();
 }
@@ -76,14 +102,20 @@ function cleanup() {
   if (timeoutTimer !== undefined) {
     clearTimeout(timeoutTimer);
   }
+  process.stdin.pause();
+  process.stdin.unref?.();
   if (pidFile !== undefined && pidFile !== "") {
     void fs.rm(pidFile, { force: true });
   }
 }
 
 function stop(signal) {
+  if (exiting) {
+    return;
+  }
+  exiting = true;
   cleanup();
-  child.kill();
+  killChildTree();
   process.exit(128 + (signal === "SIGINT" ? 2 : 15));
 }
 
@@ -101,6 +133,10 @@ process.stdin.resume();
 
 child.onData((chunk) => process.stdout.write(chunk));
 child.onExit(({ exitCode }) => {
+  if (exiting) {
+    return;
+  }
+  exiting = true;
   cleanup();
   process.exit(timedOut ? 0 : exitCode);
 });

@@ -725,6 +725,7 @@ test(
       if (exited === null) {
         await stopHarness(session);
       }
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -833,6 +834,7 @@ test(
       if (exited === null) {
         await stopHarness(session);
       }
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
       await fs.rm(root, { recursive: true, force: true });
     }

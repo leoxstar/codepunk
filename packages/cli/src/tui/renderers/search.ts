@@ -92,7 +92,7 @@ function relativePath(candidate: string, cwd: string): string {
   if (!path.isAbsolute(candidate)) {
     return candidate;
   }
-  const relative = path.relative(cwd, candidate);
+  const relative = path.relative(cwd, candidate).split(path.sep).join("/");
   return relative.length === 0 || relative.startsWith("..")
     ? candidate
     : relative;

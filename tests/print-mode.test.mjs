@@ -266,6 +266,7 @@ test("print and JSON modes run read-only through a local provider", async () => 
         ["hello", "hello"],
       );
     } finally {
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });
@@ -390,7 +391,8 @@ test("--bare starts without trusting instructions it will not load", async () =>
       assert.doesNotMatch(result.stderr, /workspace trust is unresolved/u);
       assert.doesNotMatch(result.stdout, /PROJECT_RULE_SENTINEL/u);
     } finally {
-      modelServer.server.close();
+      modelServer.server.closeAllConnections?.();
+      await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });
 });
@@ -534,6 +536,7 @@ test("--new-session-id writes the session under the explicit id", async () => {
       );
       assert.equal(otherSession, undefined);
     } finally {
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });

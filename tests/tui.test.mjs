@@ -1593,6 +1593,16 @@ async function stopPty(
   try {
     ptyPid = await killPtyGroup(session);
     if (session.child.exitCode === null && session.child.signalCode === null) {
+      if (process.platform === "win32" && session.child.pid !== undefined) {
+        await new Promise((resolve) => {
+          execFile(
+            "taskkill",
+            ["/PID", String(session.child.pid), "/T", "/F"],
+            { windowsHide: true, timeout: 5_000 },
+            () => resolve(),
+          );
+        });
+      }
       session.child.kill("SIGTERM");
       const graceful = await waitForPtyExit(session.terminated, gracefulMs);
       if (graceful === null) {
@@ -2312,7 +2322,8 @@ test("a real pty plans a requested task in plan mode", async () => {
       );
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -2480,7 +2491,8 @@ test("a real pty covers Goal, hooks, and structured review events", async () => 
       );
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -2784,7 +2796,8 @@ test("a real pty lists presets and roles and applies a preset", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -3083,7 +3096,8 @@ test("a real pty generates an image through a configured image model", async () 
       }
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -3316,7 +3330,8 @@ test("a real pty undoes and redoes Codepunk file changes", async (t) => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -3418,7 +3433,8 @@ test("a real pty signs a settled run with an explicit verdict", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -4070,7 +4086,8 @@ test("a real pty projects search, todo, and plan tool output", async () => {
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });
@@ -4146,7 +4163,8 @@ test("/init sends the repository-evidence prompt to the selected model", async (
       assert.deepEqual(result, { code: 0, signal: null });
     } finally {
       await stopPty(session);
-      model.server.close();
+      model.server.closeAllConnections?.();
+      await new Promise((resolve) => model.server.close(resolve));
     }
   });
 });

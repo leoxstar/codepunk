@@ -41,6 +41,7 @@ async function makeRepo(
   const project = path.join(root, name);
   await fs.mkdir(project);
   await git(project, ["init", "-q"]);
+  await git(project, ["config", "core.autocrlf", "false"]);
   await git(project, ["config", "user.email", "test@example.invalid"]);
   await git(project, ["config", "user.name", "Test User"]);
   await writeFile(path.join(project, "src", "app.txt"), "base\n");

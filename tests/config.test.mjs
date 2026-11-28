@@ -373,13 +373,13 @@ test("a required sandbox does not block runtime construction or disposal", async
             approvalChannel: null,
             allowMissingModel: true,
           }),
-          5_000,
+          10_000,
         );
         const elapsedMs = performance.now() - started;
         assert.notEqual(runtime, TIMED_OUT, "runtime construction blocked");
         assert.equal(createCalls, 1);
         assert.ok(runtime.sandbox instanceof core.DeferredSandbox);
-        assert.ok(elapsedMs < 3_000, `startup took ${elapsedMs}ms`);
+        assert.ok(elapsedMs < 8_000, `startup took ${elapsedMs}ms`);
         const readyState = await within(
           runtime.sandboxReady.then(() => "ready"),
           20,

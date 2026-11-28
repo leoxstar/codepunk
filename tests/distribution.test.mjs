@@ -37,7 +37,7 @@ test("packed CLI tarball excludes runtime state, bundles internal packages and h
     );
     const filename = JSON.parse(stdout).filename;
     const listing = await execFileAsync("tar", ["-tzf", filename]);
-    const files = listing.stdout.split("\n").filter(Boolean);
+    const files = listing.stdout.split(/\r?\n/u).filter(Boolean);
     assert.equal(
       files.some((file) =>
         /^package\/(?:verify|tests|node_modules|\.codepunk|sessions|evidence|logs|artifacts|cache)\//u.test(

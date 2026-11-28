@@ -26,7 +26,7 @@ function displayPath(raw: string, cwd: string): string {
   if (!path.isAbsolute(raw)) {
     return raw;
   }
-  const rel = path.relative(cwd, raw);
+  const rel = path.relative(cwd, raw).split(path.sep).join("/");
   return rel.length === 0 || rel.startsWith("..") ? raw : rel;
 }
 

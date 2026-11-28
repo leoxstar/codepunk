@@ -310,6 +310,16 @@ test("W-04: /new, /fork, /clone, and /resume immediately support /status, /conte
       ]);
     } finally {
       if (child.exitCode === null) {
+        if (process.platform === "win32" && child.pid !== undefined) {
+          await new Promise((resolve) => {
+            execFile(
+              "taskkill",
+              ["/PID", String(child.pid), "/T", "/F"],
+              { windowsHide: true, timeout: 5_000 },
+              () => resolve(),
+            );
+          });
+        }
         child.kill("SIGKILL");
         await Promise.race([
           exited,

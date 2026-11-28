@@ -181,6 +181,16 @@ async function stopPty(session) {
   try {
     ptyPid = await killPtyGroup(session);
     if (session.child.exitCode === null && session.child.signalCode === null) {
+      if (process.platform === "win32" && session.child.pid !== undefined) {
+        await new Promise((resolve) => {
+          execFile(
+            "taskkill",
+            ["/PID", String(session.child.pid), "/T", "/F"],
+            { windowsHide: true, timeout: 5_000 },
+            () => resolve(),
+          );
+        });
+      }
       session.child.kill("SIGTERM");
       const graceful = await waitForExit(session.terminated, 2_000);
       if (graceful === null) {
@@ -471,6 +481,7 @@ test("noninteractive stdin degrades to print mode", async () => {
         "unchanged\n",
       );
     } finally {
+      modelServer.server.closeAllConnections?.();
       await new Promise((resolve) => modelServer.server.close(resolve));
     }
   });

@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore, importSource } from "./support/core.mjs";
-import { withTempDirectory } from "./support/helpers.mjs";
+import { escapeRegExp, withTempDirectory } from "./support/helpers.mjs";
 
 const core = await importCore();
 const { parseCli } = await importSource("packages/cli/src/args/parse.ts");
@@ -311,7 +311,11 @@ test("attestSession and analyzePermissionInsights summarize verified evidence, s
     assert.match(markdown, /## Codepunk Verification Summary/u);
     assert.match(markdown, /\[REDACTED_TOKEN\]/u);
     assert.doesNotMatch(markdown, /demoTokenValue123456/u);
-    assert.doesNotMatch(markdown, new RegExp(workspace, "u"));
+    assert.doesNotMatch(markdown, new RegExp(escapeRegExp(workspace), "u"));
+    assert.doesNotMatch(
+      markdown,
+      new RegExp(escapeRegExp(workspace.split(path.sep).join("/")), "u"),
+    );
     assert.match(markdown, /`src\/auth\.ts`/u);
     assert.match(markdown, /`pnpm test` — exit 0 \(srt enforced\)/u);
     assert.match(markdown, /`taint\.untrusted_context`/u);

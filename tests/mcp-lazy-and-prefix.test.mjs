@@ -12,8 +12,7 @@ import { TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();
 
-const SAFE_COMMAND =
-  process.platform === "win32" ? path.basename(process.execPath) : "mkdir";
+const SAFE_COMMAND = process.platform === "win32" ? "robocopy" : "mkdir";
 
 function makeSyntheticMcpTools(count) {
   const tools = [];
