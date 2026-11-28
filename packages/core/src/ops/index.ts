@@ -42,7 +42,7 @@ export interface DoctorOptions {
   platform?: NodeJS.Platform;
   /**
    * Test seam for the platform version. Windows uses the OS build number to
-   * tell Windows 11 from Windows 10; production uses the running kernel.
+   * enforce the minimum supported build; production uses the running kernel.
    */
   platformVersion?: string;
   /**
@@ -73,7 +73,7 @@ export interface DoctorOptions {
   shellProbe?: () => Promise<string | null>;
 }
 
-const WINDOWS_11_MINIMUM_BUILD = 22_000;
+const WINDOWS_MINIMUM_BUILD = 19_045;
 
 function windowsBuildNumber(version: string): number {
   const build = Number.parseInt(version.split(".")[2] ?? "", 10);
@@ -93,7 +93,7 @@ function platformIsSupported(
   }
   return (
     arch === "x64" &&
-    windowsBuildNumber(platformVersion) >= WINDOWS_11_MINIMUM_BUILD
+    windowsBuildNumber(platformVersion) >= WINDOWS_MINIMUM_BUILD
   );
 }
 
@@ -221,7 +221,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     hint: platformIsSupported(platform, arch, platformVersion)
       ? null
       : platform === "win32"
-        ? `Windows support requires Windows 11 x64 (build ${WINDOWS_11_MINIMUM_BUILD} or newer); this host reports ${arch} build ${windowsBuildNumber(platformVersion)}`
+        ? `Windows support requires Windows 10 x64 (build ${WINDOWS_MINIMUM_BUILD} or newer) or Windows 11 x64; this host reports ${arch} build ${windowsBuildNumber(platformVersion)}`
         : `${platform} is not currently supported; doctor must not report ready until the platform has real install, sandbox, TUI, and ACL evidence`,
   });
   const shellIssue =

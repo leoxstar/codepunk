@@ -7,6 +7,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `doctor` now accepts Windows 10 22H2 (build 19045+) x64 with the same
+  platform boundary as Windows 11 x64. Builds below 19045 and Windows ARM64
+  remain rejected, and an unprovisioned `srt` sandbox remains blocking.
+
 ## [0.1.1]
 
 ### Added

@@ -104,29 +104,41 @@ test("doctor does not report ready on an unsupported platform", async () => {
   });
 });
 
-test("doctor accepts Windows 11 x64 and refuses older Windows", async () => {
+test("doctor accepts Windows 10 19045+ and Windows 11 x64 and refuses older Windows", async () => {
   await withTempDirectory("codepunk-operations-windows-gate-", async (root) => {
     const { paths } = await makeProject(root);
-    const supported = await core.runDoctor({
-      paths,
-      config: core.defaultConfig(),
-      platform: "win32",
-      platformVersion: "10.0.26100",
-      arch: "x64",
-      environment: { PATH: "" },
-      sandboxProbe: async () => null,
-      modelProbe: async () => null,
-      shellProbe: async () => null,
-    });
-    assert.equal(supported.ok, true);
-    const platform = supported.checks.find((check) => check.id === "platform");
-    assert.equal(platform?.status, "ok");
-    assert.equal(platform?.message, "win32 x64");
-    assert.match(core.formatDoctor(supported), /\[ok\] platform: win32 x64/u);
-    assert.match(core.formatDoctor(supported), /doctor: ready/u);
+    for (const platformVersion of ["10.0.19045", "10.0.26100"]) {
+      const supported = await core.runDoctor({
+        paths,
+        config: core.defaultConfig(),
+        platform: "win32",
+        platformVersion,
+        arch: "x64",
+        environment: { PATH: "" },
+        sandboxProbe: async () => null,
+        modelProbe: async () => null,
+        shellProbe: async () => null,
+      });
+      assert.equal(supported.ok, true, platformVersion);
+      const platform = supported.checks.find(
+        (check) => check.id === "platform",
+      );
+      assert.equal(platform?.status, "ok", platformVersion);
+      assert.equal(platform?.message, "win32 x64", platformVersion);
+      assert.match(
+        core.formatDoctor(supported),
+        /\[ok\] platform: win32 x64/u,
+        platformVersion,
+      );
+      assert.match(
+        core.formatDoctor(supported),
+        /doctor: ready/u,
+        platformVersion,
+      );
+    }
 
     for (const blocked of [
-      { platformVersion: "10.0.19045", arch: "x64" },
+      { platformVersion: "10.0.19044", arch: "x64" },
       { platformVersion: "10.0.26100", arch: "arm64" },
     ]) {
       const report = await core.runDoctor({
@@ -145,6 +157,10 @@ test("doctor accepts Windows 11 x64 and refuses older Windows", async () => {
         (check) => check.id === "platform",
       );
       assert.equal(platformCheck?.status, "error");
+      assert.match(
+        platformCheck?.hint ?? "",
+        /Windows 10 x64 \(build 19045 or newer\) or Windows 11 x64/u,
+      );
       assert.match(
         core.formatDoctor(report),
         /doctor: blocking issues remain/u,

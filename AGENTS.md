@@ -23,7 +23,8 @@ repository.
 - Do not add a runtime dependency without license and maintenance review.
 - Keep every dependency exact-pinned, including transitive lock entries.
 - Do not create a Git commit unless the task explicitly authorizes it.
-- Do not claim Windows support.
+- Windows support: Windows 10 22H2 (build 19045+) x64 and Windows 11 x64; do
+  not claim ARM64, older builds, or unverified Windows OS behavior.
 - Keep all paths in documentation and reports repository-relative.
 - Governance freeze (from 2026-11-23): until the CLI module split (spec 0014)
   and the TUI component spec are both implemented, do not add new governance

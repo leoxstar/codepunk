@@ -145,14 +145,17 @@ corresponding pre-format code reports
 `# tests 820 / # pass 811 / # fail 0 / # skipped 9`. Full CI run
 `44473437813` passed all seven targets at an earlier commit; the release
 commit's hosted CI has not been awaited. Hosted Windows evidence is not a
-Windows 11 support claim:
+real-machine Windows support claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
-WSL2 Ubuntu x64 is manual-smoke only and is not CI-covered. Windows is not
-claimed; the native Windows 0007 code and hosted gate are complete, but real
-Windows 11 x64 acceptance evidence is still missing. macOS 13-14 and other
-Linux distributions are not CI targets. See
+WSL2 Ubuntu x64 is manual-smoke only and is not CI-covered. Windows 10 22H2
+(build 19045+) x64 and Windows 11 x64 share the same support boundary. The
+2026-11-28 real-machine acceptance on Windows 10 19045 x64 covered the
+ordinary CLI/TUI surface against both a local tarball and the registry
+package; Windows-specific OS behavior remains unverified. Windows ARM64 is
+not supported. macOS 13-14 and other Linux distributions are not CI targets.
+See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the exact support boundary.
 
 ## Quick start
@@ -643,10 +646,10 @@ rendered inside pixels, so screenshot review still belongs to the user.
 
 - Node.js `>=22.19.0`
 - pnpm `12.18.0`
-- macOS or Linux
+- macOS, Linux, or Windows 10 22H2 (build 19045+) x64 / Windows 11 x64
 
-Windows 11 is not currently supported or claimed as verified. Real ConPTY and
-manual sandbox checks are still required before support can be announced. See
+Windows ARM64 is not supported. On Windows, `codepunk doctor` remains
+fail-closed on a missing shell or an unprovisioned `srt` sandbox. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 ## Models

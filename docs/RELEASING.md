@@ -259,13 +259,14 @@ error, including a missing sandbox dependency, fails the smoke test.
 
 ## Windows release smoke
 
-Run this section only on a real Windows 11 x64 machine with Node.js
+Run this section only on a real Windows 10 22H2 (build 19045+) or Windows 11
+x64 machine with Node.js
 `22.19.0`, npm from that Node.js installation, and one administrator-run srt-win
 provisioning completed. `windows-latest` is Windows Server 2025 hosted CI; it
-is not Windows 11 evidence and cannot replace this smoke test. If the machine,
-the provisioning step, or an independent acceptance reviewer is missing, record
-the Windows result as `unverified` and do not claim Windows support in the
-release notes.
+is not Windows 10 or Windows 11 evidence and cannot replace this smoke test. If
+the machine, the provisioning step, or an independent acceptance reviewer is
+missing, record the Windows smoke as `unverified` and do not present hosted CI
+as real-machine Windows evidence.
 
 Install the single local `codepunk-cli` tarball with one `npm install` command,
 keep the `--loglevel=http` output with the release evidence, and verify the
@@ -307,8 +308,9 @@ if ($doctor -notmatch '(?m)^\[ok\] platform: win32 x64$') { throw "platform is n
 if ($doctor -notmatch '(?m)^\[ok\] srt:') { throw "srt is not ok" }
 ```
 
-On an unprovisioned Windows 11 x64 snapshot, `platform` must stay `[ok]` while
-`srt` and `model` are `[error]`, and the srt hint must print the one-time
+On an unprovisioned Windows 10 19045+ or Windows 11 x64 snapshot, `platform`
+must stay `[ok]` while `srt` and `model` are `[error]`, and the srt hint must
+print the one-time
 `npx --yes @anthropic-ai/sandbox-runtime@0.0.82 windows-install` instruction
 without elevating automatically.
 

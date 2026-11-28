@@ -65,8 +65,8 @@ ignored, and never committed.
 
 ## Platform boundary
 
-macOS and Linux are the supported development platforms. Windows 11 is not
-currently supported or claimed as verified. See
+macOS, Linux, Windows 10 22H2 (build 19045+), and Windows 11 are supported
+development platforms on x64. Windows ARM64 is not supported. See
 [`PLATFORMS.md`](PLATFORMS.md).
 
 ## Change control

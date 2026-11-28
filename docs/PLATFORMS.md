@@ -7,7 +7,8 @@ These are the seven targets in the full release matrix. Full CI run
 The routine push gate runs the full test gate only on Ubuntu 24.04 and
 build-checks macOS 15 and Windows Server 2025; the seven-target matrix runs
 only from manual dispatch or a `v*` tag. `windows-latest` is hosted-CI
-evidence only and is not a Windows 11 support claim:
+evidence only and is not a real-machine Windows 10 or Windows 11 support
+claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
@@ -33,7 +34,7 @@ baseline at `main` (`2ca8739`) is
 candidate `c0383fa` reports 818 tests, 809 passing, 0 failing, and 9 skipped,
 and run `44473437813` passed all seven full-matrix jobs.
 `windows-latest` is Windows Server 2025 (`10.0.26100`, image
-`windows-2025-vs2026`), not Windows 11, and does not replace the
+`windows-2025-vs2026`), not Windows 10 or Windows 11, and does not replace the
 real-machine acceptance in spec 0007. The release runbook additionally
 requires a clean global install and `codepunk doctor` smoke test on each
 release target.
@@ -71,24 +72,27 @@ WSL2 smoke test.
 
 ## Windows
 
-Windows 11 x64 support is still not claimed as verified. The 0007 code path
-and the hosted `windows-latest` job are implemented. Run `44352649879` does
-not provide Windows gate evidence; its unprovisioned-`srt` failure is fixed
-for the release. Full CI run `44473437813` passed the hosted gate
-at `818 tests / 774 pass / 0 fail / 44 skipped`. That hosted gate includes
-explicit skips for 10 daemon/view
-tests because the daemon requires a Unix socket and Windows is fail-closed,
-23 tests that use POSIX executables, shell syntax, permission bits, or mount
-types, and tests that require the one-time elevated `srt-win` provisioning.
-Support still requires a real
-ConPTY TUI smoke test plus a manual `srt` install, shell check, ACL check,
-and process-tree termination check on Windows 11 hardware; hosted CI alone is
-insufficient.
+Windows 10 22H2 (build 19045 or newer) and Windows 11 on x64 are supported
+targets with the same product boundary. The 2026-11-28 real-machine
+acceptance on Windows 10 `10.0.19045` x64 ran the ordinary CLI/TUI surface
+against both a local tarball and the published `codepunk-cli@0.1.1`; its
+confirmed defects are tracked in spec 0030. Windows ARM64 is not supported.
 
-Until those checks pass, Windows behavior is fail-closed:
+The 0007 code path and the hosted `windows-latest` job are implemented. Run
+`44352649879` does not provide Windows gate evidence; its
+unprovisioned-`srt` failure is fixed for the release. Full CI run
+`44473437813` passed the hosted gate at `818 tests / 774 pass / 0 fail / 44
+skipped`. That hosted gate includes explicit skips for 10 daemon/view tests
+because the daemon requires a Unix socket and Windows is fail-closed, 23 tests
+that use POSIX executables, shell syntax, permission bits, or mount types, and
+tests that require the one-time elevated `srt-win` provisioning. Hosted CI is
+not a real-machine Windows acceptance and does not cover ConPTY, DACL, or
+process-tree behavior.
 
-- `codepunk doctor` accepts `win32 x64` only on build 22000 or newer, and
-  still reports a blocking `srt` error until the sandbox is provisioned;
+Windows-specific OS checks remain fail-closed where prerequisites are absent:
+
+- `codepunk doctor` accepts `win32 x64` on build 19045 or newer, and still
+  reports a blocking `srt` error until the sandbox is provisioned;
 - the sandbox probe resolves the pinned `srt-win` helper and reports the
   one-time elevated install needed to provision `srt-sandbox`;
 - shell execution stays disabled until that install exists; initialization
@@ -98,10 +102,13 @@ Until those checks pass, Windows behavior is fail-closed:
   after `--` starts with `-`, use `codepunk.cmd` or pass one quoted command
   string, such as `codepunk permissions why "pwsh -NoProfile"`; the `.cmd` and
   Node entry points receive the documented separator unchanged;
-- the local daemon does not start because it requires a Unix socket;
-- the product reports that Windows support is not implemented.
+- the local daemon does not start because it requires a Unix socket.
 
-No Windows support claim may be added without the manual verification evidence.
+Windows-specific OS behavior (elevated `srt-win` provisioning, DACL
+enforcement, ConPTY process trees, and daemon named pipes) has not been
+independently verified on Windows 11 hardware. The Windows 10 acceptance does
+not stand in for that separate evidence. Any extension beyond Windows 10
+19045+ or Windows 11 on x64 still requires its own real-machine evidence.
 
 ## Search prerequisites
 

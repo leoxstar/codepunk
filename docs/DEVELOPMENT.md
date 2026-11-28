@@ -53,8 +53,9 @@ The baseline is human-reviewed. The runner never rewrites it. Changing a case
 expectation or making the baseline threshold vacuous causes a non-zero exit.
 
 The eval proves deterministic regression, not model quality. It does not
-replace external benchmarks, and it does not prove that every platform passes:
-Windows 11 x64 acceptance is still unverified.
+replace external benchmarks, and it does not prove that every platform passes.
+Ordinary Windows 10 19045 x64 CLI/TUI acceptance completed on 2026-11-28;
+Windows-specific OS behavior is still unverified.
 
 ## Build identity and stale checkouts
 
@@ -170,7 +171,8 @@ current local baseline at `main` (`2ca8739`) reports 820 tests, 811 passing,
 0 failing, and 9 skipped; `pnpm run eval` passes 12/12 cases. The release
 candidate `c0383fa` reports 818 tests, 809 passing, 0 failing, and 9 skipped,
 and full CI run `44473437813` passed all seven targets. `windows-latest`
-covers non-privileged Windows checks and is not a Windows 11 support claim:
+covers non-privileged Windows checks and is not a real-machine Windows support
+claim:
 
 CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.
 
@@ -178,9 +180,10 @@ Each full-matrix target runs install, formatting, repository, typecheck,
 test, eval, build, and built-entry checks. The routine build jobs install and
 check only the built entry points; the Ubuntu test job still runs the full
 gate. The workflows use `pnpm/action-setup` and a frozen lockfile. WSL2 Ubuntu x64
-is manual-smoke only and is not CI-covered. Windows is not claimed; the 0007
-code and hosted gate are complete, but real Windows 11 x64 acceptance
-evidence is still missing.
+is manual-smoke only and is not CI-covered. Windows 10 22H2 (build 19045+) and
+Windows 11 x64 are supported; the 0007 code and hosted gate are complete, and
+ordinary Windows 10 19045 x64 CLI/TUI acceptance completed on 2026-11-28.
+Windows-specific OS behavior remains unverified.
 Before the test step, `scripts/ci-install-sandbox-deps.sh` installs the Linux
 packages `srt` needs (bubblewrap, socat, ripgrep), lifts the two AppArmor
 controls on Ubuntu that leave unprivileged user namespaces without

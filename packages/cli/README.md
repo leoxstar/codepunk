@@ -5,9 +5,10 @@ Local-first, supervised coding agent for your terminal — with OS-level shell s
 ## Requirements
 
 - **Node.js `>=22.19.0`**
-- **Supported platforms**: macOS (arm64 / x64) and Ubuntu 24.04+ (x64 / arm64)
+- **Supported platforms**: macOS (arm64 / x64), Ubuntu 24.04+ (x64 / arm64),
+  and Windows 10 22H2 (build 19045+) / Windows 11 (x64 only)
   - On Linux, install sandbox prerequisites first: `sudo apt-get install -y bubblewrap socat ripgrep`
-  - Windows 11 x64 is currently **experimental / unverified** (fail-closed until real-machine acceptance completes).
+  - On Windows, run the one-time elevated `srt-win` provisioning before shell execution. `codepunk doctor` reports the exact blocking prerequisite.
 
 ## Quick Start
 
