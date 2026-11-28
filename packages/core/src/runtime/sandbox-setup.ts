@@ -125,9 +125,9 @@ export function initializeRuntimeSandbox(input: {
         return null;
       });
     const pendingSandbox = new DeferredSandbox(sandboxReady, {
-      cancelPendingInitialization: () => {
+      cancelPendingInitialization: async () => {
         if (process.platform !== "linux") {
-          void SandboxManager.reset();
+          await SandboxManager.reset();
         }
       },
     });

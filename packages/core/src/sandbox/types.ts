@@ -33,7 +33,7 @@ export class SandboxUnavailableError extends Error {
 }
 
 export interface SandboxLifecycle {
-  cancelPendingInitialization(): void;
+  cancelPendingInitialization(): Promise<void> | void;
 }
 
 export interface SrtProfileInput {

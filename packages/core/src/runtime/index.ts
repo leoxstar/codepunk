@@ -134,9 +134,13 @@ export async function createRuntime(
   const startupCleanup: { current: (() => Promise<void>) | null } = {
     current: null,
   };
+  const resourceCleanups: Array<() => Promise<void>> = [];
   try {
-    return await createRuntimeInner(options, startupCleanup);
+    return await createRuntimeInner(options, startupCleanup, resourceCleanups);
   } catch (error) {
+    for (const cleanup of [...resourceCleanups].reverse()) {
+      await cleanup().catch(() => undefined);
+    }
     await closePendingSandboxForStartupFailure(startupCleanup);
     throw error;
   }
@@ -145,6 +149,7 @@ export async function createRuntime(
 async function createRuntimeInner(
   options: RuntimeOptions,
   startupCleanup: { current: (() => Promise<void>) | null },
+  resourceCleanups: Array<() => Promise<void>>,
 ): Promise<CodepunkRuntime> {
   const selectorIssue = sessionSelectorIssue(options);
   if (selectorIssue !== null) {
@@ -319,6 +324,9 @@ async function createRuntimeInner(
     ...(options.now !== undefined ? { now: options.now } : {}),
   });
   const pluginState: { current: IsolatedPluginBundle } = { current: plugins };
+  resourceCleanups.push(async () => {
+    await pluginState.current.close();
+  });
   for (const warning of plugins.summary.warnings) {
     loadedConfig.warnings.push(warning);
   }
@@ -520,11 +528,13 @@ async function createRuntimeInner(
         },
       });
     } catch (error) {
-      await pluginState.current.close().catch(() => undefined);
       throw new Error(
         `MCP startup failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    resourceCleanups.push(async () => {
+      await mcp.close();
+    });
   }
   for (const failure of mcp.failures) {
     loadedConfig.warnings.push(
@@ -764,10 +774,10 @@ async function createRuntimeInner(
         : {}),
       ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
     });
+    resourceCleanups.push(async () => {
+      await host.dispose();
+    });
   } catch (error) {
-    await closePendingSandboxForStartupFailure(startupCleanup);
-    await pluginState.current.close().catch(() => undefined);
-    await mcp.close();
     throw error;
   }
 

@@ -4,12 +4,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { importSource } from "./support/core.mjs";
+import { importCore, importSource } from "./support/core.mjs";
 import {
   ensureBuilt,
   withTempDirectory,
   withoutAmbientProviderEnv,
 } from "./support/helpers.mjs";
+
+const core = await importCore();
 
 const execFileAsync = promisify(execFile);
 const BASE_ENV = withoutAmbientProviderEnv();
@@ -289,6 +291,112 @@ test("codepunk resume is documented and refuses unsafe combinations", async () =
         assert.match(error.stderr, /resume needs an interactive terminal/u);
         return true;
       },
+    );
+  });
+});
+
+test("W-02: print mode exits promptly without hanging when resuming a stale session", async () => {
+  await withTempDirectory("codepunk-w02-stale-print-", async (root) => {
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+
+    // Create a session with an agent-state snapshot followed by a non-benign uncommitted event.
+    const paths = core.projectPaths(await core.findDeliveryRoot(project), home);
+    await core.ensureCodepunkHome(paths.home);
+    await core.ensureProjectRegistration(
+      await core.findDeliveryRoot(project),
+      paths,
+    );
+    const store = await core.SessionStore.create({
+      rootDir: paths.home,
+      cwd: paths.cwd,
+      projectRoot: paths.deliveryRoot,
+      projectId: paths.projectId,
+    });
+    const writer = await store.acquireWriter();
+    await store.saveAgentState(
+      {
+        type: "session",
+        id: "pi-stale-test",
+        cwd: paths.cwd,
+        timestamp: new Date().toISOString(),
+      },
+      [],
+      { entries: [], leafId: null },
+    );
+    await store.append("user/input", {
+      run_id: "run-1",
+      text: "uncommitted",
+    });
+    await writer.release();
+
+    // Configure a dummy model so createRuntime reaches MCP/sandbox/session resume.
+    await fs.writeFile(
+      path.join(home, "models.json"),
+      `${JSON.stringify(
+        {
+          providers: {
+            stub: {
+              api: "openai-completions",
+              baseUrl: "http://127.0.0.1:1/v1",
+              apiKey: "stub-key",
+              models: [
+                {
+                  id: "stub-model",
+                  name: "stub-model",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 8192,
+                  maxTokens: 1024,
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      '[model]\nprovider = "stub"\nid = "stub-model"\n',
+    );
+
+    const cli = await ensureBuilt();
+    const started = Date.now();
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [cli, "-p", "hi", "--session", store.sessionId],
+          {
+            cwd: project,
+            env: { ...BASE_ENV, CODEPUNK_HOME: home, NO_COLOR: "1" },
+            timeout: 10_000,
+          },
+        ),
+      (error) => {
+        assert.equal(
+          error.killed,
+          false,
+          "process timed out instead of exiting",
+        );
+        assert.equal(error.code, 1);
+        const matches =
+          error.stderr.match(
+            /refusing to resume with a stale model transcript/gu,
+          ) ?? [];
+        assert.equal(matches.length, 1, error.stderr);
+        return true;
+      },
+    );
+    assert.ok(
+      Date.now() - started < 10_000,
+      "stale session rejection took >= 10s",
     );
   });
 });

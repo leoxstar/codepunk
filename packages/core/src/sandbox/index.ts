@@ -163,7 +163,9 @@ export class DeferredSandbox implements ShellProvider {
     }
     this.state = "closed";
     this.closePromise = (async () => {
-      this.lifecycle?.cancelPendingInitialization();
+      await Promise.resolve(
+        this.lifecycle?.cancelPendingInitialization(),
+      ).catch(() => undefined);
       if (this.provider !== null) {
         await this.provider.close?.().catch(() => undefined);
         return;

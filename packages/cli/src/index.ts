@@ -127,5 +127,9 @@ main(process.argv.slice(2))
     process.stderr.write(
       `codepunk: ${error instanceof Error ? error.message : String(error)}\n`,
     );
+    if (process.stdin.isTTY !== true) {
+      process.stdin.pause();
+      (process.stdin as NodeJS.ReadStream & { unref?: () => void }).unref?.();
+    }
     process.exitCode = error instanceof ConfigError ? 2 : 1;
   });
