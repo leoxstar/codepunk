@@ -681,3 +681,68 @@ test("newer state-version refuses maintenance but keeps sessions readable (spec 
     assert.equal(reopened.sessionId, store.sessionId);
   });
 });
+
+test("W-01: backup restore and rollback overwrite read-only shadow-git objects cleanly", async () => {
+  await withTempDirectory("codepunk-restore-readonly-", async (root) => {
+    const { paths } = await makeProject(root);
+    const objectA = path.join(
+      paths.sessionsDir,
+      "sess-ro",
+      "shadow-git",
+      "objects",
+      "ab",
+      "cdef0123456789",
+    );
+    const objectB = path.join(
+      paths.sessionsDir,
+      "sess-ro",
+      "shadow-git",
+      "objects",
+      "cd",
+      "ef0123456789ab",
+    );
+    await writeFile(objectA, "original-object-a");
+    await writeFile(objectB, "original-object-b");
+    await fs.chmod(objectA, 0o444);
+    await fs.chmod(objectB, 0o444);
+
+    const backup = await core.createBackup(paths.home, {
+      roots: ["projects"],
+    });
+
+    // Mutate targets and make them read-only again (simulating Windows shadow-git objects).
+    await fs.chmod(objectA, 0o600);
+    await fs.writeFile(objectA, "mutated-object-a", "utf8");
+    await fs.chmod(objectA, 0o444);
+    await fs.chmod(objectB, 0o600);
+    await fs.writeFile(objectB, "mutated-object-b", "utf8");
+    await fs.chmod(objectB, 0o444);
+
+    // Rollback control: failure mid-restore rolls back read-only targets without EPERM.
+    await assert.rejects(
+      () =>
+        core.restoreBackup(paths.home, backup.id, {
+          failAfterWrites: 1,
+        }),
+      /restore failed and was rolled back/u,
+    );
+    assert.equal(await fs.readFile(objectA, "utf8"), "mutated-object-a");
+    assert.equal(await fs.readFile(objectB, "utf8"), "mutated-object-b");
+
+    // Re-lock read-only and run full restore positive control.
+    await fs.chmod(objectA, 0o444);
+    await fs.chmod(objectB, 0o444);
+    const restored = await core.restoreBackup(paths.home, backup.id);
+    assert.equal(restored.id, backup.id);
+    assert.equal(await fs.readFile(objectA, "utf8"), "original-object-a");
+    assert.equal(await fs.readFile(objectB, "utf8"), "original-object-b");
+
+    // No *.restore-* temporary files left behind.
+    const entriesA = await fs.readdir(path.dirname(objectA));
+    const entriesB = await fs.readdir(path.dirname(objectB));
+    assert.equal(
+      [...entriesA, ...entriesB].some((name) => name.includes(".restore-")),
+      false,
+    );
+  });
+});

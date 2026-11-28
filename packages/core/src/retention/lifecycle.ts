@@ -533,6 +533,45 @@ async function verifyBackup(
   return contents;
 }
 
+async function makeWritableIfExists(filePath: string): Promise<void> {
+  try {
+    await fs.chmod(filePath, 0o600);
+  } catch {
+    // Missing targets or filesystems without POSIX mode bits can proceed directly.
+  }
+}
+
+async function replaceRestoredFile(
+  target: string,
+  bytes: Buffer,
+): Promise<void> {
+  await ensurePrivateDir(path.dirname(target));
+  const temporary = `${target}.restore-${process.pid}-${randomBytes(4).toString("hex")}`;
+  await fs.writeFile(temporary, bytes, { mode: 0o600 });
+  try {
+    await makeWritableIfExists(target);
+    try {
+      await fs.rename(temporary, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "EEXIST") {
+        throw error;
+      }
+      await makeWritableIfExists(target);
+      await fs.rm(target, { force: true });
+      await fs.rename(temporary, target);
+    }
+  } catch (error) {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function removeRestoredTarget(target: string): Promise<void> {
+  await makeWritableIfExists(target);
+  await fs.rm(target, { force: true });
+}
+
 export async function restoreBackup(
   homeInput: string,
   id: string,
@@ -578,24 +617,20 @@ export async function restoreBackup(
         throw new Error("injected restore write failure");
       }
       const target = path.join(home, file.path);
-      await ensurePrivateDir(path.dirname(target));
-      const temporary = `${target}.restore-${process.pid}`;
-      await fs.writeFile(temporary, contents.get(file.path)!, { mode: 0o600 });
-      await fs.rename(temporary, target);
+      await replaceRestoredFile(target, contents.get(file.path)!);
       written += 1;
     }
     for (const relativePath of manifest.absent ?? []) {
-      await fs.rm(path.join(home, relativePath), { force: true });
+      await removeRestoredTarget(path.join(home, relativePath));
     }
   } catch (error) {
     for (const [relativePath, bytes] of originals) {
       const target = path.join(home, relativePath);
       if (bytes === null) {
-        await fs.rm(target, { force: true });
+        await removeRestoredTarget(target);
         continue;
       }
-      await ensurePrivateDir(path.dirname(target));
-      await fs.writeFile(target, bytes, { mode: 0o600 });
+      await replaceRestoredFile(target, bytes);
     }
     await appendRetentionOperation(home, {
       at: now.toISOString(),
