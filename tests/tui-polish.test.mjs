@@ -943,7 +943,14 @@ test("W-08: /btw reports clear unsupported-on-Windows message without foreground
     };
 
     // Direct win32 pre-check: clear product warning, no queue entry, no foreground fallback.
-    await runSideTask(state, runtime, context, "btw", "summarize git log", "win32");
+    await runSideTask(
+      state,
+      runtime,
+      context,
+      "btw",
+      "summarize git log",
+      "win32",
+    );
     assert.equal(notices.length, 1);
     assert.equal(notices[0].level, "warning");
     assert.match(notices[0].message, /not yet supported on Windows/u);

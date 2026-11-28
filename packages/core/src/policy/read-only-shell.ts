@@ -365,6 +365,7 @@ function isReadOnlyDateCommand(arguments_: readonly string[]): boolean {
           "--utc",
         ].includes(name)
       ) {
+        // Known read-only date formatting flags take no value.
       } else {
         return false;
       }

@@ -212,7 +212,10 @@ async function installPluginDirectory(
   }
   const suffix = randomBytes(4).toString("hex");
   const stageDir = path.join(extensionDir, `.install-${manifest.id}-${suffix}`);
-  const backupDir = path.join(extensionDir, `.replace-${manifest.id}-${suffix}`);
+  const backupDir = path.join(
+    extensionDir,
+    `.replace-${manifest.id}-${suffix}`,
+  );
   let movedBackup = false;
   try {
     await ensurePrivateDir(stageDir);
@@ -237,7 +240,9 @@ async function installPluginDirectory(
     if (movedBackup) {
       await fs.rename(backupDir, target).catch(() => undefined);
     }
-    await fs.rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
+    await fs
+      .rm(stageDir, { recursive: true, force: true })
+      .catch(() => undefined);
     throw error;
   }
 }

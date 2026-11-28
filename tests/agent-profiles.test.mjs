@@ -312,7 +312,7 @@ test("profiles reject policy widening, dead network lists, and unsafe shell argv
         /network allow and deny overlap/u,
       ],
     ];
-    for (const [file, lines, expected] of cases) {
+    for (const [file, lines] of cases) {
       await writeFile(
         path.join(agents, file),
         [

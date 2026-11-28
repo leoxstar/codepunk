@@ -12,7 +12,7 @@ import { atomicWriteFile } from "../platform/fs.ts";
 import { createUlid, recordHash, sha256Bytes } from "../platform/hash.ts";
 import { normalizeAbsolute } from "../platform/path.ts";
 import type { ProjectPaths } from "../platform/paths.ts";
-import { ClaimStore, type ClaimRecord } from "../workers/claims.ts";
+import { type ClaimStore, type ClaimRecord } from "../workers/claims.ts";
 import {
   gitBuffer,
   gitSucceeds,

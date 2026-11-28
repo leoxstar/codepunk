@@ -26,7 +26,7 @@ import type { McpServerFailure } from "../mcp/index.ts";
 import type { ConfiguredModel, ModelUsageSummary } from "../model/index.ts";
 import type { ProjectContext, ProjectPaths } from "../platform/paths.ts";
 import type { PluginSummary } from "../plugin/index.ts";
-import type { ShellProvider } from "../sandbox/index.ts";
+import type { ShellProvider, SrtSandbox } from "../sandbox/index.ts";
 import type { SessionStore } from "../session/index.ts";
 import type { SkillSource } from "../skills/index.ts";
 import type { AskUserChannel } from "../tools/ask-user.ts";
@@ -83,7 +83,7 @@ export interface RuntimeOptions {
   bindMode?: "print" | "tui";
   runId?: string;
   additionalExtensionFactories?: readonly InlineExtension[];
-  createSandbox?: typeof import("../sandbox/index.ts").SrtSandbox.create;
+  createSandbox?: typeof SrtSandbox.create;
   now?: () => Date;
   timeZone?: string;
 }

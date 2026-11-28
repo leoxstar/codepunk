@@ -3,7 +3,7 @@ import {
   PERMISSION_PROFILES,
   isThinkingLevel,
   openModelRuntime,
-  projectPaths,
+  type projectPaths,
   resolveModelSelection,
   type ConfigOverrides,
 } from "codepunk-core";

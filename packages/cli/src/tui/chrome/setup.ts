@@ -10,14 +10,17 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { TuiState } from "../state.ts";
 import { openInteractiveHelp } from "./help-action.ts";
-import { selectedModel } from "./model.ts";
+import { selectedModel, noAuthenticatedModelsMessage } from "./model.ts";
 import { refreshStatus, renderHeader } from "./statusline.ts";
 import { sandboxStatusLines } from "./status.ts";
 import { EditorBridge } from "./widgets.ts";
 import { isSlashCommand } from "../host-commands.ts";
-import { formatConfigReload } from "../format/reload.ts";
+import {
+  formatConfigReload,
+  formatPluginReload,
+  formatSkillReload,
+} from "../format/reload.ts";
 import { formatMcpReload } from "../format/status.ts";
-import { formatPluginReload, formatSkillReload } from "../format/reload.ts";
 import {
   forkCurrentSession,
   navigateSessionTree,
@@ -32,10 +35,12 @@ import { configureTrust } from "../commands/trust-actions.ts";
 import { extractDroppedImageInput } from "../format/clipboard-image.ts";
 import { refreshWelcomeWidget } from "./welcome.ts";
 import { refreshWorkWidget } from "./work-widget.ts";
-import { promptForMissingModel } from "../format/model.ts";
+import {
+  promptForMissingModel,
+  availableModels,
+  selectModelReference,
+} from "../format/model.ts";
 import { sessionSummary } from "../format/status-summary.ts";
-import { availableModels, selectModelReference } from "../format/model.ts";
-import { noAuthenticatedModelsMessage } from "./model.ts";
 
 function component(text: () => string, visible: () => boolean): Component {
   return {
@@ -353,6 +358,112 @@ async function handlePiSlashCommand(
   return null;
 }
 
+async function handleEditorInput(
+  state: TuiState,
+  text: string,
+): Promise<boolean> {
+  if (
+    state.transitionPromise !== null &&
+    state.transitionPromise !== undefined
+  ) {
+    await state.transitionPromise.catch(() => undefined);
+  }
+  const activeRuntime = state.runtime;
+  const activeContext = state.context;
+  if (activeRuntime === null || activeContext === null) {
+    return true;
+  }
+  const trimmed = text.trim();
+  const command = trimmed.split(/\s+/u)[0] ?? "";
+  if (trimmed.startsWith("!")) {
+    return await handleShellInput(activeRuntime, activeContext, trimmed);
+  }
+  if (command.startsWith("/skill:")) {
+    return await handleSkillInput(
+      activeRuntime,
+      activeContext,
+      trimmed,
+      command,
+    );
+  }
+  const sessionResult = await handleSessionSlashCommand(
+    state,
+    activeContext,
+    activeRuntime,
+    trimmed,
+  );
+  if (sessionResult !== null) {
+    return sessionResult;
+  }
+  const configResult = await handleConfigSlashCommand(
+    state,
+    activeContext,
+    activeRuntime,
+    trimmed,
+  );
+  if (configResult !== null) {
+    return configResult;
+  }
+  const piResult = await handlePiSlashCommand(
+    state,
+    activeContext,
+    activeRuntime,
+    trimmed,
+  );
+  if (piResult !== null) {
+    return piResult;
+  }
+  const droppedImage = extractDroppedImageInput(trimmed);
+  if (droppedImage !== null) {
+    const resolvedImage = path.resolve(
+      activeRuntime.paths.cwd,
+      droppedImage.rawPath,
+    );
+    if (existsSync(resolvedImage)) {
+      if (!state.modelSelected) {
+        await promptForMissingModel(state, activeContext);
+        return true;
+      }
+      if (!isInsidePath(activeRuntime.paths.deliveryRoot, resolvedImage)) {
+        activeContext.ui.notify(
+          "Dropped image is outside this workspace; copy it into the project or use `/image --clipboard`.",
+          "warning",
+        );
+        return true;
+      }
+      await sendWorkspaceImage(
+        activeRuntime,
+        activeContext,
+        resolvedImage,
+        droppedImage.prompt,
+      );
+      return true;
+    }
+  }
+  if (trimmed.startsWith("/")) {
+    const commandName = trimmed.slice(1).split(/\s+/u)[0] ?? "";
+    if (!state.hostCommands.has(commandName)) {
+      activeContext.ui.notify(
+        [
+          `Unknown command /${commandName}.`,
+          "Type /help for the available Codepunk commands.",
+        ].join("\n"),
+        "warning",
+      );
+      return true;
+    }
+  }
+  if (
+    !trimmed.startsWith("/") &&
+    state.runtime !== null &&
+    !state.modelSelected
+  ) {
+    await promptForMissingModel(state, activeContext);
+    return true;
+  }
+  return false;
+}
+
 export function setupChrome(state: TuiState, context: ExtensionContext): void {
   const runtime = state.runtime;
   if (runtime === null) {
@@ -408,109 +519,8 @@ export function setupChrome(state: TuiState, context: ExtensionContext): void {
   }
   context.ui.setEditorComponent(
     (tui, theme, keybindings) =>
-      new EditorBridge(tui, theme, keybindings, async (text) => {
-        if (
-          state.transitionPromise !== null &&
-          state.transitionPromise !== undefined
-        ) {
-          await state.transitionPromise.catch(() => undefined);
-        }
-        const activeRuntime = state.runtime;
-        const activeContext = state.context;
-        if (activeRuntime === null || activeContext === null) {
-          return true;
-        }
-        const trimmed = text.trim();
-        const command = trimmed.split(/\s+/u)[0] ?? "";
-        if (trimmed.startsWith("!")) {
-          return await handleShellInput(activeRuntime, activeContext, trimmed);
-        }
-        if (command.startsWith("/skill:")) {
-          return await handleSkillInput(
-            activeRuntime,
-            activeContext,
-            trimmed,
-            command,
-          );
-        }
-        const sessionResult = await handleSessionSlashCommand(
-          state,
-          activeContext,
-          activeRuntime,
-          trimmed,
-        );
-        if (sessionResult !== null) {
-          return sessionResult;
-        }
-        const configResult = await handleConfigSlashCommand(
-          state,
-          activeContext,
-          activeRuntime,
-          trimmed,
-        );
-        if (configResult !== null) {
-          return configResult;
-        }
-        const piResult = await handlePiSlashCommand(
-          state,
-          activeContext,
-          activeRuntime,
-          trimmed,
-        );
-        if (piResult !== null) {
-          return piResult;
-        }
-        const droppedImage = extractDroppedImageInput(trimmed);
-        if (droppedImage !== null) {
-          const resolvedImage = path.resolve(
-            activeRuntime.paths.cwd,
-            droppedImage.rawPath,
-          );
-          if (existsSync(resolvedImage)) {
-            if (!state.modelSelected) {
-              await promptForMissingModel(state, activeContext);
-              return true;
-            }
-            if (
-              !isInsidePath(activeRuntime.paths.deliveryRoot, resolvedImage)
-            ) {
-              activeContext.ui.notify(
-                "Dropped image is outside this workspace; copy it into the project or use `/image --clipboard`.",
-                "warning",
-              );
-              return true;
-            }
-            await sendWorkspaceImage(
-              activeRuntime,
-              activeContext,
-              resolvedImage,
-              droppedImage.prompt,
-            );
-            return true;
-          }
-        }
-        if (trimmed.startsWith("/")) {
-          const commandName = trimmed.slice(1).split(/\s+/u)[0] ?? "";
-          if (!state.hostCommands.has(commandName)) {
-            activeContext.ui.notify(
-              [
-                `Unknown command /${commandName}.`,
-                "Type /help for the available Codepunk commands.",
-              ].join("\n"),
-              "warning",
-            );
-            return true;
-          }
-        }
-        if (
-          !trimmed.startsWith("/") &&
-          state.runtime !== null &&
-          !state.modelSelected
-        ) {
-          await promptForMissingModel(state, activeContext);
-          return true;
-        }
-        return false;
-      }),
+      new EditorBridge(tui, theme, keybindings, (text) =>
+        handleEditorInput(state, text),
+      ),
   );
 }

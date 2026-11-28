@@ -72,7 +72,11 @@ function killChildTree() {
   } catch {
     // Ignore errors when the PTY child has already exited.
   }
-  if (process.platform === "win32" && Number.isSafeInteger(child.pid) && child.pid > 0) {
+  if (
+    process.platform === "win32" &&
+    Number.isSafeInteger(child.pid) &&
+    child.pid > 0
+  ) {
     try {
       spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
         windowsHide: true,

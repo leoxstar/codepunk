@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   assertProjectConfigFileSafe,
   assertProjectConfigSafe,

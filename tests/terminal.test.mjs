@@ -4,7 +4,6 @@ import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import test from "node:test";
 import { ensureBuilt, withTempDirectory } from "./support/helpers.mjs";
 import { importCore } from "./support/core.mjs";
@@ -13,7 +12,6 @@ import { sandboxTempBase, windowsSrtSkipReason } from "./support/helpers.mjs";
 const core = await importCore();
 const TESTS_DIR = import.meta.dirname;
 const REPO_ROOT = path.resolve(TESTS_DIR, "..");
-const execFileAsync = promisify(execFile);
 const CHILD_ENV_KEYS = [
   "PATH",
   "HOME",
@@ -65,10 +63,7 @@ function childEnv(env) {
 
 async function startModelServer() {
   const server = http.createServer((request, response) => {
-    let raw = "";
-    request.on("data", (chunk) => {
-      raw += chunk;
-    });
+    request.resume();
     request.on("end", () => {
       response.writeHead(200, {
         "content-type": "text/event-stream",

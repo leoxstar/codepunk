@@ -5,8 +5,11 @@ import {
   type WorkspaceTrust,
 } from "codepunk-core";
 import { budgetSnapshot, formatBudgetSummary } from "./status.ts";
-import { physicalModel, selectedModel } from "../chrome/model.ts";
-import { evidenceCount } from "../chrome/model.ts";
+import {
+  physicalModel,
+  selectedModel,
+  evidenceCount,
+} from "../chrome/model.ts";
 
 export function sessionSummary(runtime: CodepunkRuntime): string {
   const model = runtime.host.session.model;

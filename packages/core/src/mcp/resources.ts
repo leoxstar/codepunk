@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   McpAuthRequiredError,
-  McpClient,
+  type McpClient,
   McpConnectionClosedError,
   McpError as PiMcpError,
   McpTimeoutError,

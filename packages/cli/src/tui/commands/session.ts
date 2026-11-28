@@ -96,6 +96,59 @@ async function withSessionTransition<T>(
   }
 }
 
+async function pickSessionFromList(
+  runtime: CodepunkRuntime,
+  context: ExtensionContext,
+  entries: Awaited<ReturnType<typeof listProjectSessions>>,
+): Promise<string | undefined> {
+  if (typeof context.ui.custom === "function") {
+    try {
+      const [{ createSessionPicker }, { defaultViewportHeight }] =
+        await Promise.all([
+          import("../components/session-picker.ts"),
+          import("../components/frame.ts"),
+        ]);
+      const items = entries.map((entry) => ({
+        id: entry.id,
+        title: entry.title ?? "",
+        updatedAt: entry.updated_at,
+        pinned: entry.pinned === true,
+        current: entry.id === runtime.session.sessionId,
+        label: sessionChoiceLabel(entry, runtime.session.sessionId),
+      }));
+      const picked = await context.ui.custom<string | null>(
+        (_tui, theme, keybindings, done) =>
+          createSessionPicker(
+            {
+              title: "Resume session",
+              items,
+              viewportHeight: defaultViewportHeight(),
+            },
+            theme,
+            keybindings,
+            done,
+          ),
+      );
+      return picked ?? undefined;
+    } catch {
+      // Fall back to the standard select prompt when custom overlays are unavailable.
+    }
+  }
+  const visible = entries.slice(0, 20);
+  const labels = visible.map((entry) =>
+    sessionChoiceLabel(entry, runtime.session.sessionId),
+  );
+  const title =
+    entries.length > visible.length
+      ? `Resume session (showing 20 of ${entries.length}; type /resume <text> to search)`
+      : "Resume session";
+  const selected = await context.ui.select(title, labels);
+  if (selected === undefined) {
+    return undefined;
+  }
+  return entries[labels.indexOf(selected)]?.id;
+}
+
 export async function resumeSession(
   state: TuiState,
   context: ExtensionContext,
@@ -160,59 +213,7 @@ export async function resumeSession(
   } else if (entries.length === 1) {
     targetId = entries[0]!.id;
   } else {
-    let pickedViaCustom = false;
-    if (typeof context.ui.custom === "function") {
-      try {
-        const [{ createSessionPicker }, { defaultViewportHeight }] =
-          await Promise.all([
-            import("../components/session-picker.ts"),
-            import("../components/frame.ts"),
-          ]);
-        const items = entries.map((entry) => ({
-          id: entry.id,
-          title: entry.title ?? "",
-          updatedAt: entry.updated_at,
-          pinned: entry.pinned === true,
-          current: entry.id === runtime.session.sessionId,
-          label: sessionChoiceLabel(entry, runtime.session.sessionId),
-        }));
-        const picked = await context.ui.custom<string | null>(
-          (_tui, theme, keybindings, done) =>
-            createSessionPicker(
-              {
-                title: "Resume session",
-                items,
-                viewportHeight: defaultViewportHeight(),
-              },
-              theme,
-              keybindings,
-              done,
-            ),
-        );
-        pickedViaCustom = true;
-        if (picked === null || picked === undefined) {
-          return;
-        }
-        targetId = picked;
-      } catch {
-        pickedViaCustom = false;
-      }
-    }
-    if (!pickedViaCustom) {
-      const visible = entries.slice(0, 20);
-      const labels = visible.map((entry) =>
-        sessionChoiceLabel(entry, runtime.session.sessionId),
-      );
-      const title =
-        entries.length > visible.length
-          ? `Resume session (showing 20 of ${entries.length}; type /resume <text> to search)`
-          : "Resume session";
-      const selected = await context.ui.select(title, labels);
-      if (selected === undefined) {
-        return;
-      }
-      targetId = entries[labels.indexOf(selected)]?.id;
-    }
+    targetId = await pickSessionFromList(runtime, context, entries);
   }
   if (targetId === undefined) {
     return;

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   CURRENT_SESSION_VERSION,
-  SessionManager,
+  type SessionManager,
   type AgentSession,
   type AgentSessionServices,
   type ToolDefinition,

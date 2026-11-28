@@ -1,5 +1,5 @@
 import {
-  ModelRuntime,
+  type ModelRuntime,
   resolveCliModel,
   resolveModelScopeWithDiagnostics,
 } from "@earendil-works/pi-coding-agent";

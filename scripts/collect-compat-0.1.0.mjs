@@ -80,10 +80,10 @@ async function collectOnce() {
   const child = spawn(process.execPath, [workerPath, outputRoot], {
     stdio: ["ignore", "pipe", "pipe"],
   });
-  let stdout = "";
+  let _stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
+    _stdout += chunk.toString("utf8");
   });
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString("utf8");

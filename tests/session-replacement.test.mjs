@@ -127,10 +127,7 @@ test("W-04: /new, /fork, /clone, and /resume immediately support /status, /conte
     });
 
     const server = http.createServer((request, response) => {
-      let raw = "";
-      request.on("data", (chunk) => {
-        raw += chunk;
-      });
+      request.resume();
       request.on("end", () => {
         response.writeHead(200, { "content-type": "text/event-stream" });
         const send = (payload) => {
@@ -256,7 +253,7 @@ test("W-04: /new, /fork, /clone, and /resume immediately support /status, /conte
       );
 
       // W-07: verify /copy intercepts cleanly via EditorBridge without built-in conflict.
-      let copyMark = output.length;
+      const copyMark = output.length;
       child.stdin.write("/copy code\r");
       await waitFor("No matching fenced code block", copyMark, 8_000);
 

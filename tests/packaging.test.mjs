@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
 import { importCore, importSource } from "./support/core.mjs";
 import {
@@ -17,7 +15,6 @@ import {
 } from "./support/helpers.mjs";
 
 const core = await importCore();
-const execFileAsync = promisify(execFile);
 
 test("package commands delegate to npm with exact prefixes", async () => {
   await withTempDirectory("codepunk-package-", async (root) => {

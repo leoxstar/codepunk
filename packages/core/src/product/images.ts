@@ -310,13 +310,9 @@ export async function generateImage(options: {
     bytes: data.byteLength,
     sha256,
   };
-  try {
-    await options.appendEvidence(record);
-  } catch (error) {
-    // The artifact is content-addressed and may already be referenced by a
-    // concurrent writer. Keep it on evidence failure rather than deleting a
-    // path this call does not exclusively own.
-    throw error;
-  }
+  // The artifact is content-addressed and may already be referenced by a
+  // concurrent writer. Keep it on evidence failure rather than deleting a
+  // path this call does not exclusively own.
+  await options.appendEvidence(record);
   return record;
 }

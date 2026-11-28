@@ -37,9 +37,7 @@ function resolveGitCommit() {
 }
 
 function resolveSrtVersion() {
-  const pkgPath = require.resolve(
-    "@anthropic-ai/sandbox-runtime/package.json",
-  );
+  const pkgPath = require.resolve("@anthropic-ai/sandbox-runtime/package.json");
   const pkg = readJson(pkgPath);
   if (typeof pkg.version !== "string" || pkg.version.length === 0) {
     throw new Error(
@@ -92,7 +90,14 @@ async function main() {
 
   await esbuild.build({
     entryPoints: [
-      path.join(REPO_ROOT, "packages", "core", "src", "plugin", "host-child.ts"),
+      path.join(
+        REPO_ROOT,
+        "packages",
+        "core",
+        "src",
+        "plugin",
+        "host-child.ts",
+      ),
     ],
     bundle: true,
     platform: "node",

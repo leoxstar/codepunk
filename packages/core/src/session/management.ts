@@ -23,7 +23,7 @@ import {
 } from "../retention/lifecycle.ts";
 import {
   SessionLockedError,
-  SessionStore,
+  type SessionStore,
   type SessionWriter,
 } from "./index.ts";
 import { normalizeSessionTitle, resolveSession } from "./ops.ts";

@@ -5,10 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { resolveExecutable } from "../autonomy/index.ts";
-import { SrtSandbox, type SandboxUnavailableError } from "../sandbox/index.ts";
+import { SrtSandbox } from "../sandbox/index.ts";
 import type {
   ShellExecutionOptions,
   ShellExecutionResult,
+  SandboxUnavailableError,
 } from "../sandbox/index.ts";
 import { isInsidePath, normalizeAbsolute } from "../platform/path.ts";
 import { gitText } from "../delivery/git.ts";

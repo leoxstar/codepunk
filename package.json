@@ -15,16 +15,27 @@
     "eval": "node eval/run.mjs",
     "format": "prettier --write . --ignore-path .prettierignore",
     "format:check": "prettier --check . --ignore-path .prettierignore",
-    "test": "node --test tests/*.test.mjs",
+    "lint": "eslint .",
+    "test": "node --test --test-timeout=300000 tests/*.test.mjs",
+    "test:compat": "node --test --test-timeout=300000 tests/compat.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-timeout=300000 tests/*.test.mjs",
+    "test:pty": "node scripts/run-tests.mjs pty",
+    "test:repo": "node --test --test-timeout=300000 tests/repository.test.mjs tests/cli-surface.test.mjs",
+    "test:unit": "node scripts/run-tests.mjs unit",
     "typecheck": "pnpm --filter codepunk-protocol typecheck && pnpm --filter codepunk-core typecheck && pnpm --filter codepunk-cli typecheck",
-    "verify": "pnpm run format:check && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built"
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run check && pnpm run typecheck && pnpm test && pnpm run build && node scripts/check-repo.mjs --require-built"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "catalog:",
     "@earendil-works/pi-coding-agent": "catalog:",
+    "@eslint/js": "catalog:",
     "@types/node": "catalog:",
+    "@typescript/native": "catalog:",
+    "eslint": "catalog:",
+    "eslint-plugin-import-x": "catalog:",
     "node-pty": "catalog:",
     "prettier": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "typescript-eslint": "catalog:"
   }
 }

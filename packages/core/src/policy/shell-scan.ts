@@ -523,7 +523,7 @@ export function simpleShellArgv(command: string): string[] | null {
   if (
     scan.commandWords.some(
       (word) =>
-        /[*?\[\]{}]/u.test(word) ||
+        /[*?[\]{}]/u.test(word) ||
         /[$~#]/u.test(word) ||
         /[\0\n\r]/u.test(word),
     )

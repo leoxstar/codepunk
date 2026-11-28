@@ -252,8 +252,7 @@ export class WorkerPool {
           queue.length > 0
         ) {
           const job = queue.shift()!;
-          let task: Promise<void>;
-          task = this.runJob(job).finally(() => {
+          const task: Promise<void> = this.runJob(job).finally(() => {
             this.active.delete(task);
           });
           this.active.add(task);

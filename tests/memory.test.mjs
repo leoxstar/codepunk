@@ -17,17 +17,6 @@ import {
 
 const core = await importCore();
 
-async function waitFor(predicate, timeoutMs = 5_000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error("timed out waiting for condition");
-}
-
 async function manager(root, options = {}) {
   const { paths } = await makeProject(root);
   const memory = await core.MemoryManager.open({

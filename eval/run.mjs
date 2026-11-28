@@ -14,7 +14,6 @@ import {
 } from "../tests/support/pi-model.mjs";
 
 const EVAL_ROOT = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(EVAL_ROOT, "..");
 const core = await importCore();
 const protocol = await importSource("packages/protocol/src/index.ts");
 const { NetworkGuard } = await importSource(
@@ -172,8 +171,7 @@ async function wallClockSandbox(paths) {
 }
 
 function fakeWallClockSandbox() {
-  let sandbox;
-  sandbox = fakeSandbox((_command, _cwd, options = {}) => {
+  const sandbox = fakeSandbox((_command, _cwd, options = {}) => {
     return new Promise((resolve) => {
       const timer = setTimeout(
         () => resolve(successfulShellResult(sandbox.descriptor)),

@@ -70,9 +70,9 @@ async function assertLockFailClosed(operation, message) {
     release?.();
     await holderPromise;
     assert.deepEqual(await fs.readdir(lockDir), []);
-    if (operationError !== undefined) {
-      throw operationError;
-    }
+  }
+  if (operationError !== undefined) {
+    throw operationError;
   }
 }
 

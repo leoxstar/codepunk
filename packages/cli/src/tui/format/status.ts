@@ -1,11 +1,10 @@
-import type { CodepunkRuntime } from "codepunk-core";
+import type { CodepunkRuntime, WorkspaceTrust } from "codepunk-core";
 import {
   isFallbackModel,
   permissionBehaviorSummary,
   permissionProfileFor,
 } from "codepunk-core";
 import type { BudgetExceededEvent } from "codepunk-protocol";
-import type { WorkspaceTrust } from "codepunk-core";
 import {
   evidenceCount,
   physicalModel,

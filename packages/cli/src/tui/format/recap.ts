@@ -1,4 +1,4 @@
-import { createSessionRecap } from "codepunk-core";
+import { type createSessionRecap } from "codepunk-core";
 export function recapRange(
   argument: string,
   lastSeq: number,

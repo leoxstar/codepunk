@@ -883,7 +883,7 @@ test("retention command help and surfaces", async () => {
 });
 
 test("fresh homes initialize state version without reporting migration", async () => {
-  const cli = await ensureBuilt();
+  await ensureBuilt();
   await withTempDirectory("codepunk-fresh-home-", async (root) => {
     const project = path.join(root, "project");
     await fs.mkdir(project);
@@ -938,7 +938,7 @@ test(
     skip: process.platform === "win32" ? "POSIX-only symlink home" : false,
   },
   async () => {
-    const cli = await ensureBuilt();
+    await ensureBuilt();
     await withTempDirectory("codepunk-symlink-home-", async (root) => {
       const project = path.join(root, "project");
       await fs.mkdir(project);

@@ -1,6 +1,6 @@
 import {
   allWorkspaceTrustGrants,
-  findDeliveryRoot,
+  type findDeliveryRoot,
   formatWorkspaceTrustResourcePreview,
   initializeStateVersion,
   inspectSavedWorkspaceTrust,

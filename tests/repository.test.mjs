@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   cp,
@@ -30,6 +29,7 @@ const REPO_ROOT = path.resolve(
 const CHECK_SCRIPT = path.join(REPO_ROOT, "scripts", "check-repo.mjs");
 const COPY_EXCLUSIONS = new Set([
   ".git",
+  ".tsbuildinfo",
   "coverage",
   "dist",
   "node_modules",
@@ -156,6 +156,11 @@ async function copyRepositoryToTemporaryDirectory() {
   });
   execFileSync("git", ["-C", productRoot, "init", "-q"]);
   execFileSync("git", ["-C", productRoot, "add", "-A"]);
+  await symlink(
+    path.join(REPO_ROOT, "node_modules"),
+    path.join(temporaryRoot, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   return {
     temporaryRoot,
     root: productRoot,
@@ -168,105 +173,11 @@ async function copyRepositoryToTemporaryDirectory() {
 const CI_RUNNER_DOCUMENTATION_LINE =
   "CI runners: `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-26.04`, `macos-15`, `macos-15-intel`, `macos-26`, `windows-latest`.";
 
-async function createExecutableFixtureChecker(fixture) {
-  const script = path.join(fixture.temporaryRoot, "check-repo.mjs");
-  const content = await readFile(
-    path.join(fixture.root, "scripts/check-repo.mjs"),
-    "utf8",
-  );
-  await writeFile(
-    script,
-    content.replace(
-      '"typescript/unstable/ast"',
-      JSON.stringify(import.meta.resolve("typescript/unstable/ast")),
-    ),
-  );
-  return script;
-}
-
-async function runFixtureCheck(fixture, options = {}) {
+function runFixtureCheck(fixture, options = {}) {
   return runCheck(fixture.root, {
     ...options,
-    script: await createExecutableFixtureChecker(fixture),
+    script: path.join(fixture.root, "scripts", "check-repo.mjs"),
   });
-}
-
-async function replaceExpectedDigest(root, constantName, digest) {
-  return replaceFile(root, "scripts/check-repo.mjs", (content) =>
-    content.replace(
-      new RegExp(`(const ${constantName} =\\s*")[a-f0-9]{64}(";)`, "u"),
-      `$1${digest}$2`,
-    ),
-  );
-}
-
-async function refreshFixtureWorkflowDigest(root) {
-  const digest = createHash("sha256")
-    .update(await readFile(path.join(root, ".github/workflows/ci.yml")))
-    .digest("hex");
-  return replaceExpectedDigest(root, "EXPECTED_CI_SHA256", digest);
-}
-
-async function refreshFixtureFullCiDigest(root) {
-  const digest = createHash("sha256")
-    .update(await readFile(path.join(root, ".github/workflows/full-ci.yml")))
-    .digest("hex");
-  return replaceExpectedDigest(root, "EXPECTED_FULL_CI_SHA256", digest);
-}
-
-async function refreshFixtureControlCorpusDigest(root) {
-  const digest = createHash("sha256")
-    .update(await readFile(path.join(root, "tests/repository.test.mjs")))
-    .digest("hex");
-  return replaceExpectedDigest(root, "EXPECTED_CONTROL_CORPUS_SHA256", digest);
-}
-
-async function refreshFixtureReleaseSmokeDigest(root) {
-  const digest = createHash("sha256")
-    .update(
-      await readFile(path.join(root, ".github/workflows/release-smoke.yml")),
-    )
-    .digest("hex");
-  return replaceExpectedDigest(root, "EXPECTED_RELEASE_SMOKE_SHA256", digest);
-}
-
-async function mutateReleaseSmokeAndRefreshDigest(root, transform) {
-  const restoreWorkflow = await replaceFile(
-    root,
-    ".github/workflows/release-smoke.yml",
-    transform,
-  );
-  const restoreDigest = await refreshFixtureReleaseSmokeDigest(root);
-  return async () => {
-    await restoreDigest();
-    await restoreWorkflow();
-  };
-}
-
-async function mutateWorkflowAndRefreshDigest(root, transform) {
-  const restoreWorkflow = await replaceFile(
-    root,
-    ".github/workflows/ci.yml",
-    transform,
-  );
-  const restoreDigest = await refreshFixtureWorkflowDigest(root);
-  return async () => {
-    await restoreDigest();
-    await restoreWorkflow();
-  };
-}
-
-async function mutateFullCiAndRefreshDigest(root, transform) {
-  const restoreWorkflow = await replaceFile(
-    root,
-    ".github/workflows/full-ci.yml",
-    transform,
-  );
-  const restoreDigest = await refreshFixtureFullCiDigest(root);
-  return async () => {
-    await restoreDigest();
-    await restoreWorkflow();
-  };
 }
 
 async function createPackagingFixture() {
@@ -405,22 +316,16 @@ test("packaging accepts a synthetic release tree with real offline npm packing",
 test("packaging requires the CHANGELOG root allowlist entry", async () => {
   const fixture = await createPackagingFixture();
   try {
-    const script = path.join(fixture.temporaryRoot, "check-root-allowlist.mjs");
-    const content = await readFile(CHECK_SCRIPT, "utf8");
-    await writeFile(
-      script,
-      content
-        .replace('  "CHANGELOG.md",\n', "")
-        .replace(
-          '"typescript/unstable/ast"',
-          JSON.stringify(import.meta.resolve("typescript/unstable/ast")),
-        ),
+    const restore = await replaceFile(
+      fixture.root,
+      "scripts/checks/shared.mjs",
+      (content) => content.replace('  "CHANGELOG.md",\n', ""),
     );
-    assertRuleFailure(
-      runCheck(fixture.root, { script }),
-      "repo.root",
-      "CHANGELOG.md",
-    );
+    try {
+      assertRuleFailure(runFixtureCheck(fixture), "repo.root", "CHANGELOG.md");
+    } finally {
+      await restore();
+    }
   } finally {
     await fixture.cleanup();
   }
@@ -1279,12 +1184,46 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
     },
   },
   {
-    name: "transitive lockfile drift",
+    name: "lockfile integrity hash removed",
     rule: "deps.lock",
     path: "pnpm-lock.yaml",
     async apply(root) {
       return replaceFile(root, "pnpm-lock.yaml", (content) =>
-        content.replaceAll("undici@8.12.4", "undici@8.0.0"),
+        content.replace(
+          /integrity: sha512-[^\s}]+/u,
+          "integrity: sha1-invalid",
+        ),
+      );
+    },
+  },
+  {
+    name: "catalog range specifier in pnpm-workspace.yaml",
+    rule: "deps.pin",
+    path: "pnpm-workspace.yaml",
+    async apply(root) {
+      return replaceFile(root, "pnpm-workspace.yaml", (content) =>
+        content.replace(
+          '"@earendil-works/pi-ai": "1.6.0"',
+          '"@earendil-works/pi-ai": "^1.6.0"',
+        ),
+      );
+    },
+  },
+  {
+    name: "Node version file drift",
+    rule: "pkg.manifest",
+    path: ".node-version",
+    async apply(root) {
+      return replaceFile(root, ".node-version", () => "20.0.0\n");
+    },
+  },
+  {
+    name: "CLI build script drops required esbuild external",
+    rule: "pkg.manifest",
+    path: "packages/cli/build.mjs",
+    async apply(root) {
+      return replaceFile(root, "packages/cli/build.mjs", (content) =>
+        content.replace('  "node-pty",\n', ""),
       );
     },
   },
@@ -1412,11 +1351,8 @@ export const loadExtraModule = () => import(extraModuleSpecifier);
 
 test("0003 checker negative controls are isolated and reversible", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
-    fixture.root,
-  );
-  const assertRestored = async (label) => {
-    assertClean(await runFixtureCheck(fixture), label);
+  const assertRestored = (label) => {
+    assertClean(runFixtureCheck(fixture), label);
   };
   const assertMatrixFailure = (result) => {
     assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
@@ -1424,7 +1360,6 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       outputOf(result),
       /CI matrix must require macos-15, windows-latest/u,
     );
-    assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
     assert.doesNotMatch(
       outputOf(result),
       /Windows is not a supported CI runner/u,
@@ -1436,15 +1371,14 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       outputOf(result),
       /full CI matrix must require ubuntu-24\.04, ubuntu-24\.04-arm, ubuntu-26\.04, macos-15, macos-15-intel, macos-26, windows-latest/u,
     );
-    assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
   };
 
   try {
-    await assertRestored("0003 fixture before planting violations");
+    assertRestored("0003 fixture before planting violations");
 
     for (const matrixCase of [
       {
-        name: "ordered matrix rejects an omitted runner without a digest error",
+        name: "ordered matrix rejects an omitted runner",
         transform: (content) =>
           content.replace("          - windows-latest\n", ""),
       },
@@ -1457,7 +1391,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
           ),
       },
       {
-        name: "ordered matrix rejects reordered runners without a digest error",
+        name: "ordered matrix rejects reordered runners",
         transform: (content) =>
           content.replace(
             "          - macos-15\n          - windows-latest\n",
@@ -1466,65 +1400,61 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       },
     ]) {
       await t.test(matrixCase.name, async () => {
-        const restore = await mutateWorkflowAndRefreshDigest(
+        const restore = await replaceFile(
           fixture.root,
+          ".github/workflows/ci.yml",
           matrixCase.transform,
         );
         try {
-          const result = await runFixtureCheck(fixture);
+          const result = runFixtureCheck(fixture);
           assertMatrixFailure(result);
         } finally {
           await restore();
         }
-        await assertRestored(`restored ${matrixCase.name}`);
+        assertRestored(`restored ${matrixCase.name}`);
       });
     }
 
-    await t.test(
-      "full matrix rejects an omitted runner without a digest error",
-      async () => {
-        const restore = await mutateFullCiAndRefreshDigest(
-          fixture.root,
-          (content) => content.replace("          - macos-15-intel\n", ""),
-        );
-        try {
-          assertFullMatrixFailure(await runFixtureCheck(fixture));
-        } finally {
-          await restore();
-        }
-        await assertRestored("restored full matrix runner");
-      },
-    );
+    await t.test("full matrix rejects an omitted runner", async () => {
+      const restore = await replaceFile(
+        fixture.root,
+        ".github/workflows/full-ci.yml",
+        (content) => content.replace("          - macos-15-intel\n", ""),
+      );
+      try {
+        assertFullMatrixFailure(runFixtureCheck(fixture));
+      } finally {
+        await restore();
+      }
+      assertRestored("restored full matrix runner");
+    });
 
-    await t.test(
-      "full CI rejects a scheduled trigger without a digest error",
-      async () => {
-        const restore = await mutateFullCiAndRefreshDigest(
-          fixture.root,
-          (content) =>
-            content.replace(
-              "on:\n  workflow_dispatch:\n",
-              'on:\n  workflow_dispatch:\n  schedule:\n    - cron: "0 3 * * 1"\n',
-            ),
+    await t.test("full CI rejects a scheduled trigger", async () => {
+      const restore = await replaceFile(
+        fixture.root,
+        ".github/workflows/full-ci.yml",
+        (content) =>
+          content.replace(
+            "on:\n  workflow_dispatch:\n",
+            'on:\n  workflow_dispatch:\n  schedule:\n    - cron: "0 3 * * 1"\n',
+          ),
+      );
+      try {
+        const result = runFixtureCheck(fixture);
+        assertRuleFailure(
+          result,
+          "ci.contract",
+          ".github/workflows/full-ci.yml",
         );
-        try {
-          const result = await runFixtureCheck(fixture);
-          assertRuleFailure(
-            result,
-            "ci.contract",
-            ".github/workflows/full-ci.yml",
-          );
-          assert.match(
-            outputOf(result),
-            /full CI contains a condition, shell override, environment block, branch trigger, pull request trigger, or schedule/u,
-          );
-          assert.doesNotMatch(outputOf(result), /workflow digest differs/u);
-        } finally {
-          await restore();
-        }
-        await assertRestored("restored full CI trigger");
-      },
-    );
+        assert.match(
+          outputOf(result),
+          /full CI contains a condition, shell override, environment block, branch trigger, pull request trigger, or schedule/u,
+        );
+      } finally {
+        await restore();
+      }
+      assertRestored("restored full CI trigger");
+    });
 
     await t.test("platform table rejects a changed runner", async () => {
       const relativePath = "docs/PLATFORMS.md";
@@ -1545,14 +1475,14 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         },
       );
       try {
-        const result = await runFixtureCheck(fixture);
+        const result = runFixtureCheck(fixture);
         assertRuleFailure(result, "docs.platforms", relativePath);
         assert.match(outputOf(result), /CI runner table must require/u);
         assert.doesNotMatch(outputOf(result), /missing exact CI runner line/u);
       } finally {
         await restore();
       }
-      await assertRestored("restored platform table runner");
+      assertRestored("restored platform table runner");
     });
 
     for (const relativePath of [
@@ -1574,7 +1504,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
             ),
         );
         try {
-          const result = await runFixtureCheck(fixture);
+          const result = runFixtureCheck(fixture);
           assertRuleFailure(result, "docs.platforms", relativePath);
           assert.match(
             outputOf(result),
@@ -1583,7 +1513,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         } finally {
           await restore();
         }
-        await assertRestored(`restored fixed runner line in ${relativePath}`);
+        assertRestored(`restored fixed runner line in ${relativePath}`);
       });
     }
 
@@ -1606,7 +1536,7 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         },
       );
       try {
-        const result = await runFixtureCheck(fixture);
+        const result = runFixtureCheck(fixture);
         assertRuleFailure(result, "docs.platforms", relativePath);
         assert.match(
           outputOf(result),
@@ -1615,41 +1545,28 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
       } finally {
         await restore();
       }
-      await assertRestored("restored duplicate fixed runner line");
+      assertRestored("restored duplicate fixed runner line");
     });
 
-    for (const digestCase of [
-      {
-        name: "wrong workflow digest constant fails independently",
-        constantName: "EXPECTED_CI_SHA256",
-        rule: "ci.contract",
-        expectedPath: ".github/workflows/ci.yml",
-        message: /workflow digest differs/u,
-      },
-      {
-        name: "wrong control-corpus digest constant fails independently",
-        constantName: "EXPECTED_CONTROL_CORPUS_SHA256",
-        rule: "repo.controls",
-        expectedPath: "tests/repository.test.mjs",
-        message: /negative-control corpus differs/u,
-      },
-    ]) {
-      await t.test(digestCase.name, async () => {
-        const restore = await replaceExpectedDigest(
-          fixture.root,
-          digestCase.constantName,
-          "0".repeat(64),
-        );
-        try {
-          const result = await runFixtureCheck(fixture);
-          assertRuleFailure(result, digestCase.rule, digestCase.expectedPath);
-          assert.match(outputOf(result), digestCase.message);
-        } finally {
-          await restore();
-        }
-        await assertRestored(`restored ${digestCase.name}`);
-      });
-    }
+    await t.test("CI rejects removing the lint gate step", async () => {
+      const restore = await replaceFile(
+        fixture.root,
+        ".github/workflows/ci.yml",
+        (content) =>
+          content.replace(
+            "      - name: Lint\n        run: pnpm run lint\n\n",
+            "",
+          ),
+      );
+      try {
+        const result = runFixtureCheck(fixture);
+        assertRuleFailure(result, "ci.contract", ".github/workflows/ci.yml");
+        assert.match(outputOf(result), /CI run commands differ/u);
+      } finally {
+        await restore();
+      }
+      assertRestored("restored CI lint step");
+    });
 
     await t.test(
       "whitespace-padded LF policy is not the exact policy",
@@ -1662,33 +1579,29 @@ test("0003 checker negative controls are isolated and reversible", async (t) => 
         );
         try {
           assertRuleFailure(
-            await runFixtureCheck(fixture),
+            runFixtureCheck(fixture),
             "repo.lineEndings",
             ".gitattributes",
           );
         } finally {
           await restore();
         }
-        await assertRestored("restored exact LF policy");
+        assertRestored("restored exact LF policy");
       },
     );
   } finally {
-    await restoreControlDigest();
     await fixture.cleanup();
   }
 });
 
 test("0006 eval contract rejects removed gates and vacuous baselines", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
-    fixture.root,
-  );
-  const assertRestored = async (label) => {
-    assertClean(await runFixtureCheck(fixture), label);
+  const assertRestored = (label) => {
+    assertClean(runFixtureCheck(fixture), label);
   };
 
   try {
-    await assertRestored("0006 fixture before planting violations");
+    assertRestored("0006 fixture before planting violations");
 
     const cases = [
       {
@@ -1696,7 +1609,7 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
         rule: "repo.root",
         expectedPath: "eval",
         async apply(root) {
-          return replaceFile(root, "scripts/check-repo.mjs", (content) =>
+          return replaceFile(root, "scripts/checks/shared.mjs", (content) =>
             content.replace('  "eval",\n', ""),
           );
         },
@@ -1716,7 +1629,7 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
         rule: "ci.contract",
         expectedPath: ".github/workflows/ci.yml",
         async apply(root) {
-          return mutateWorkflowAndRefreshDigest(root, (content) =>
+          return replaceFile(root, ".github/workflows/ci.yml", (content) =>
             content.replace(
               "      - name: Run deterministic eval regression\n        run: pnpm run eval\n\n",
               "",
@@ -1736,14 +1649,12 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
         },
       },
       {
-        name: "wrong control-corpus digest",
+        name: "control corpus missing eval.baseline coverage",
         rule: "repo.controls",
         expectedPath: "tests/repository.test.mjs",
         async apply(root) {
-          return replaceExpectedDigest(
-            root,
-            "EXPECTED_CONTROL_CORPUS_SHA256",
-            "0".repeat(64),
+          return replaceFile(root, "tests/repository.test.mjs", (content) =>
+            content.replaceAll('"eval.baseline"', '"eval.removed"'),
           );
         },
       },
@@ -1753,7 +1664,7 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
       await t.test(negativeCase.name, async () => {
         const restore = await negativeCase.apply(fixture.root);
         try {
-          const result = await runFixtureCheck(fixture);
+          const result = runFixtureCheck(fixture);
           assertRuleFailure(
             result,
             negativeCase.rule,
@@ -1762,26 +1673,22 @@ test("0006 eval contract rejects removed gates and vacuous baselines", async (t)
         } finally {
           await restore();
         }
-        await assertRestored(`restored ${negativeCase.name}`);
+        assertRestored(`restored ${negativeCase.name}`);
       });
     }
   } finally {
-    await restoreControlDigest();
     await fixture.cleanup();
   }
 });
 
 test("0004 release-smoke contract rejects drift and extra workflows", async (t) => {
   const fixture = await copyRepositoryToTemporaryDirectory();
-  const restoreControlDigest = await refreshFixtureControlCorpusDigest(
-    fixture.root,
-  );
-  const assertRestored = async (label) => {
-    assertClean(await runFixtureCheck(fixture), label);
+  const assertRestored = (label) => {
+    assertClean(runFixtureCheck(fixture), label);
   };
 
   try {
-    await assertRestored("0004 fixture before planting violations");
+    assertRestored("0004 fixture before planting violations");
 
     const cases = [
       {
@@ -1820,16 +1727,27 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         message:
           /release smoke contains a publish command, secret reference, or non-blocking step/u,
       },
+      {
+        name: "release-smoke rejects an unreviewed action",
+        transform: (content) =>
+          content.replace(
+            "      - name: Check out release tag\n",
+            "      - name: Unreviewed\n        uses: example/action@v1\n\n      - name: Check out release tag\n",
+          ),
+        message:
+          /release smoke may use only the reviewed checkout, pnpm setup, and setup-node actions/u,
+      },
     ];
 
     for (const testCase of cases) {
       await t.test(testCase.name, async () => {
-        const restore = await mutateReleaseSmokeAndRefreshDigest(
+        const restore = await replaceFile(
           fixture.root,
+          ".github/workflows/release-smoke.yml",
           testCase.transform,
         );
         try {
-          const result = await runFixtureCheck(fixture);
+          const result = runFixtureCheck(fixture);
           assertRuleFailure(
             result,
             "release-smoke",
@@ -1839,29 +1757,9 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         } finally {
           await restore();
         }
-        await assertRestored(`restored ${testCase.name}`);
+        assertRestored(`restored ${testCase.name}`);
       });
     }
-
-    await t.test("stale release-smoke digest fails first", async () => {
-      const restore = await replaceExpectedDigest(
-        fixture.root,
-        "EXPECTED_RELEASE_SMOKE_SHA256",
-        "0".repeat(64),
-      );
-      try {
-        const result = await runFixtureCheck(fixture);
-        assertRuleFailure(
-          result,
-          "release-smoke",
-          ".github/workflows/release-smoke.yml",
-        );
-        assert.match(outputOf(result), /workflow digest differs/u);
-      } finally {
-        await restore();
-      }
-      await assertRestored("restored release-smoke digest");
-    });
 
     await t.test("a third workflow is still rejected", async () => {
       const remove = await createFileFixture(
@@ -1870,7 +1768,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
         "name: unreviewed\n",
       );
       try {
-        const result = await runFixtureCheck(fixture);
+        const result = runFixtureCheck(fixture);
         assertRuleFailure(
           result,
           "ci.contract",
@@ -1879,7 +1777,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       } finally {
         await remove();
       }
-      await assertRestored("removed the third workflow");
+      assertRestored("removed the third workflow");
     });
 
     await t.test("a missing release-smoke workflow is rejected", async () => {
@@ -1888,7 +1786,7 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       const original = await readFile(absolutePath);
       await rm(absolutePath);
       try {
-        const result = await runFixtureCheck(fixture);
+        const result = runFixtureCheck(fixture);
         assertRuleFailure(result, "release-smoke", relativePath);
         assert.match(
           outputOf(result),
@@ -1897,10 +1795,9 @@ test("0004 release-smoke contract rejects drift and extra workflows", async (t) 
       } finally {
         await writeFile(absolutePath, original);
       }
-      await assertRestored("restored the release-smoke workflow");
+      assertRestored("restored the release-smoke workflow");
     });
   } finally {
-    await restoreControlDigest();
     await fixture.cleanup();
   }
 });

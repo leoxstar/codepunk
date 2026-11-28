@@ -650,138 +650,130 @@ async function createRuntimeInner(
     }
   };
 
-  let host: PiHost;
-  try {
-    host = await createPiHost({
-      cwd: paths.cwd,
-      workspaceRoot: paths.deliveryRoot,
-      additionalRoots: paths.additionalRoots,
-      deliveryRoot: paths.deliveryRoot,
-      codepunkHome: paths.home,
-      sessionId: session.sessionId,
-      runId: initialRunId,
-      writeSet: writeSetWithAdditionalRoots,
-      readableSkillFiles,
-      filesystem: config.filesystem.mode,
-      userRules: [...policy.userRules, ...(headlessPolicy?.rules ?? [])],
-      projectRules: policy.projectRules,
-      layers,
-      mode: options.headless === true ? "headless" : "interactive",
-      approval,
-      autonomy,
-      ledger,
-      reviewer,
-      sandbox: () => {
-        if (sandboxSetup.getShellPreflightIssue() !== null) {
-          return null;
+  const host: PiHost = await createPiHost({
+    cwd: paths.cwd,
+    workspaceRoot: paths.deliveryRoot,
+    additionalRoots: paths.additionalRoots,
+    deliveryRoot: paths.deliveryRoot,
+    codepunkHome: paths.home,
+    sessionId: session.sessionId,
+    runId: initialRunId,
+    writeSet: writeSetWithAdditionalRoots,
+    readableSkillFiles,
+    filesystem: config.filesystem.mode,
+    userRules: [...policy.userRules, ...(headlessPolicy?.rules ?? [])],
+    projectRules: policy.projectRules,
+    layers,
+    mode: options.headless === true ? "headless" : "interactive",
+    approval,
+    autonomy,
+    ledger,
+    reviewer,
+    sandbox: () => {
+      if (sandboxSetup.getShellPreflightIssue() !== null) {
+        return null;
+      }
+      if (
+        sandboxSetup.isDegradedUnsandboxedFallback() &&
+        !sandboxSetup.canFallbackToHumanApprovedShell()
+      ) {
+        return null;
+      }
+      return sandboxSetup.pendingSandboxProvider();
+    },
+    forceShellApproval: () => sandboxSetup.isDegradedUnsandboxedFallback(),
+    userBashUnsandboxed: () =>
+      options.headless !== true && config.sandbox.user_bash === "uncovered",
+    closeSandbox: false,
+    approvalMode: () => config.approval.mode,
+    planMode: () => readPlanModeState(session.allEvents),
+    currentPlan: () => readWorkState(session.allEvents).plan,
+    networkAllowedDomains: config.sandbox.network_allow,
+    networkDeniedDomains: config.sandbox.network_deny,
+    shellUnavailableReason: () => {
+      const issue = sandboxSetup.getShellPreflightIssue();
+      return issue === null
+        ? shellUnavailableReason(sessionSandboxMode)
+        : `${shellUnavailableReason(sessionSandboxMode)} (${issue})`;
+    },
+    context: configuredContext,
+    artifactsDir: paths.artifactsDir,
+    checkpoints,
+    shadowGit,
+    projectTrusted: () => workspaceTrust.grants.config,
+    artifactThresholdTokens: config.context.artifact_threshold_tokens,
+    maxToolOutputTokens: config.context.max_tool_output_tokens,
+    truncation: config.context.truncation,
+    truncationThreshold: config.context.truncation_threshold,
+    beforeToolHook: async (input) => {
+      await hooks.run("before_tool", input, appendHookEvidence);
+    },
+    afterToolHook: async (input) => {
+      await hooks.run("after_tool", input, appendHookEvidence);
+    },
+    beforeStopHook: async (input) => {
+      await hooks.run("before_stop", input, appendHookEvidence);
+    },
+    sessionStore: session,
+    settings: piSettings(config, settingsContextWindow),
+    enabledTools: tools,
+    memory,
+    autoMemorySummary: config.memory.auto_summary,
+    disableUserBash: plugins.summary.enabled,
+    extensionPaths: plugins.legacyExtensionPaths,
+    ...(options.additionalExtensionFactories !== undefined
+      ? { additionalExtensionFactories: options.additionalExtensionFactories }
+      : {}),
+    bindMode: options.bindMode ?? (options.headless === true ? "print" : "tui"),
+    modelRuntime,
+    ...(selectedModel !== undefined ? { model: selectedModel } : {}),
+    ...(selectedModel !== undefined && config.model.fallback.length > 0
+      ? {
+          fallbackModels: config.model.fallback,
+          fallbackAllowCrossProvider:
+            config.model.fallback_allow_cross_provider,
         }
-        if (
-          sandboxSetup.isDegradedUnsandboxedFallback() &&
-          !sandboxSetup.canFallbackToHumanApprovedShell()
-        ) {
-          return null;
+      : {}),
+    ...(config.model.thinking !== undefined
+      ? { thinkingLevel: config.model.thinking as never }
+      : {}),
+    budget: {
+      ...(config.budget.max_tokens === null
+        ? {}
+        : { maxTokens: config.budget.max_tokens }),
+      ...(config.budget.max_cost_usd === null
+        ? {}
+        : { maxCostUsd: config.budget.max_cost_usd }),
+      maxToolCalls: config.budget.max_tool_calls,
+      maxWallMs: config.budget.max_wall_ms,
+    },
+    ...(state !== null ? { restore: state } : {}),
+    runtimeFacts: {
+      now: () => options.now?.() ?? new Date(),
+      ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
+    },
+    ...(headlessPolicy !== null
+      ? {
+          verifyExec: (argv: readonly string[], cwd: string) =>
+            verifyHeadlessExec(headlessPolicy!, argv, cwd),
         }
-        return sandboxSetup.pendingSandboxProvider();
-      },
-      forceShellApproval: () => sandboxSetup.isDegradedUnsandboxedFallback(),
-      userBashUnsandboxed: () =>
-        options.headless !== true && config.sandbox.user_bash === "uncovered",
-      closeSandbox: false,
-      approvalMode: () => config.approval.mode,
-      planMode: () => readPlanModeState(session.allEvents),
-      currentPlan: () => readWorkState(session.allEvents).plan,
-      networkAllowedDomains: config.sandbox.network_allow,
-      networkDeniedDomains: config.sandbox.network_deny,
-      shellUnavailableReason: () => {
-        const issue = sandboxSetup.getShellPreflightIssue();
-        return issue === null
-          ? shellUnavailableReason(sessionSandboxMode)
-          : `${shellUnavailableReason(sessionSandboxMode)} (${issue})`;
-      },
-      context: configuredContext,
-      artifactsDir: paths.artifactsDir,
-      checkpoints,
-      shadowGit,
-      projectTrusted: () => workspaceTrust.grants.config,
-      artifactThresholdTokens: config.context.artifact_threshold_tokens,
-      maxToolOutputTokens: config.context.max_tool_output_tokens,
-      truncation: config.context.truncation,
-      truncationThreshold: config.context.truncation_threshold,
-      beforeToolHook: async (input) => {
-        await hooks.run("before_tool", input, appendHookEvidence);
-      },
-      afterToolHook: async (input) => {
-        await hooks.run("after_tool", input, appendHookEvidence);
-      },
-      beforeStopHook: async (input) => {
-        await hooks.run("before_stop", input, appendHookEvidence);
-      },
-      sessionStore: session,
-      settings: piSettings(config, settingsContextWindow),
-      enabledTools: tools,
-      memory,
-      autoMemorySummary: config.memory.auto_summary,
-      disableUserBash: plugins.summary.enabled,
-      extensionPaths: plugins.legacyExtensionPaths,
-      ...(options.additionalExtensionFactories !== undefined
-        ? { additionalExtensionFactories: options.additionalExtensionFactories }
-        : {}),
-      bindMode:
-        options.bindMode ?? (options.headless === true ? "print" : "tui"),
-      modelRuntime,
-      ...(selectedModel !== undefined ? { model: selectedModel } : {}),
-      ...(selectedModel !== undefined && config.model.fallback.length > 0
-        ? {
-            fallbackModels: config.model.fallback,
-            fallbackAllowCrossProvider:
-              config.model.fallback_allow_cross_provider,
-          }
-        : {}),
-      ...(config.model.thinking !== undefined
-        ? { thinkingLevel: config.model.thinking as never }
-        : {}),
-      budget: {
-        ...(config.budget.max_tokens === null
-          ? {}
-          : { maxTokens: config.budget.max_tokens }),
-        ...(config.budget.max_cost_usd === null
-          ? {}
-          : { maxCostUsd: config.budget.max_cost_usd }),
-        maxToolCalls: config.budget.max_tool_calls,
-        maxWallMs: config.budget.max_wall_ms,
-      },
-      ...(state !== null ? { restore: state } : {}),
-      runtimeFacts: {
-        now: () => options.now?.() ?? new Date(),
-        ...(options.timeZone === undefined
-          ? {}
-          : { timeZone: options.timeZone }),
-      },
-      ...(headlessPolicy !== null
-        ? {
-            verifyExec: (argv: readonly string[], cwd: string) =>
-              verifyHeadlessExec(headlessPolicy!, argv, cwd),
-          }
-        : {}),
-      onRunStart: async (runId: string) => {
-        await ledger.prepare(runId);
-      },
-      onRunEnd: runEnded,
-      extraTools: [...mcp.tools, ...mcp.resourceTools, ...plugins.tools],
-      ...(options.questionChannel !== undefined
-        ? { questionChannel: options.questionChannel }
-        : {}),
-      ...(options.subagentExecutor !== undefined
-        ? { subagentExecutor: options.subagentExecutor }
-        : {}),
-      ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
-    });
-    resourceCleanups.push(async () => {
-      await host.dispose();
-    });
-  } catch (error) {
-    throw error;
-  }
+      : {}),
+    onRunStart: async (runId: string) => {
+      await ledger.prepare(runId);
+    },
+    onRunEnd: runEnded,
+    extraTools: [...mcp.tools, ...mcp.resourceTools, ...plugins.tools],
+    ...(options.questionChannel !== undefined
+      ? { questionChannel: options.questionChannel }
+      : {}),
+    ...(options.subagentExecutor !== undefined
+      ? { subagentExecutor: options.subagentExecutor }
+      : {}),
+    ...(skills.block.length > 0 ? { extraInstruction: skills.block } : {}),
+  });
+  resourceCleanups.push(async () => {
+    await host.dispose();
+  });
 
   hostRef.current = host;
   const wirePluginBundle = async (

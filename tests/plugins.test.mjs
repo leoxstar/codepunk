@@ -695,10 +695,7 @@ test("W-06: plugin installation and removal support plugin.toml directories with
       force: true,
     });
     assert.match(
-      await fs.readFile(
-        path.join(installedDir, "lib", "index.mjs"),
-        "utf8",
-      ),
+      await fs.readFile(path.join(installedDir, "lib", "index.mjs"), "utf8"),
       /v2:/u,
     );
 
@@ -723,7 +720,10 @@ test("W-06: plugin installation and removal support plugin.toml directories with
       path.join(binaryDir, "index.mjs"),
       "export default () => {};\n",
     );
-    await fs.writeFile(path.join(binaryDir, "blob.dat"), Buffer.from([1, 0, 2]));
+    await fs.writeFile(
+      path.join(binaryDir, "blob.dat"),
+      Buffer.from([1, 0, 2]),
+    );
     await assert.rejects(
       () => core.installUserPlugin({ extensionDir, source: binaryDir }),
       (error) => error.code === "plugin.binary_content",

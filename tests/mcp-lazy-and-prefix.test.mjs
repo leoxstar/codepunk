@@ -3,11 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { importCore } from "./support/core.mjs";
-import {
-  makeProject,
-  withTempDirectory,
-  writeFile,
-} from "./support/helpers.mjs";
+import { makeProject, withTempDirectory } from "./support/helpers.mjs";
 import { TEST_MODEL } from "./support/pi-model.mjs";
 
 const core = await importCore();

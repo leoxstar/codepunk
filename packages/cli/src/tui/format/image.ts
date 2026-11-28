@@ -3,7 +3,7 @@ import {
   createUlid,
   decidePolicy,
   ImageCapabilityError,
-  confirmImageInput,
+  type confirmImageInput,
   recordHash,
   sha256Text,
   redactOutputPreview,

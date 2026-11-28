@@ -171,7 +171,7 @@ export async function wrapUserBashCommand(
   let finalRule = gate.rule;
   let finalRuleSha256 = gate.rule_sha256;
   let finalReason = gate.reason;
-  let scopedRule = gate.scoped_rule;
+  const scopedRule = gate.scoped_rule;
   let budgetExceeded: EvidenceRecord["budget_exceeded"];
   const executionState = executionStateFor(options);
   const loopArgv = canonicalShellArgv("user_bash", {}, command);

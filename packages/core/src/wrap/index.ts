@@ -311,7 +311,7 @@ export async function wrapToolDefinition(
         let finalRule = gate.rule;
         let finalRuleSha256 = gate.rule_sha256;
         let finalReason = gate.reason;
-        let scopedRule = gate.scoped_rule;
+        const scopedRule = gate.scoped_rule;
         let consultApproval = gate.consult_approval;
         let taintEscalated = false;
         if (
