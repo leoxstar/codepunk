@@ -1,3 +1,4 @@
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import {
@@ -7,6 +8,80 @@ import {
 } from "../platform/path.ts";
 import type { SrtProfileInput } from "./types.ts";
 import { writeRoots } from "./windows.ts";
+
+function standardGitDenyPaths(gitDir: string): string[] {
+  return [
+    path.join(gitDir, "config"),
+    path.join(gitDir, "config.worktree"),
+    path.join(gitDir, "hooks"),
+    path.join(gitDir, "info"),
+    path.join(gitDir, "objects", "info"),
+    path.join(gitDir, "objects", "pack"),
+  ];
+}
+
+function resolveWorktreeGitPaths(root: string, gitFile: string): string[] {
+  const denied = new Set<string>([gitFile]);
+  let rawPointer = "";
+  try {
+    rawPointer = readFileSync(gitFile, "utf8");
+  } catch {
+    return [...denied];
+  }
+  const match = rawPointer.match(/^\s*gitdir:\s*(.+?)\s*$/mu);
+  if (match === null || match[1] === undefined || match[1].length === 0) {
+    return [...denied];
+  }
+  const rawGitDir = match[1].trim();
+  const worktreeGitDir = normalizeAbsolute(
+    path.isAbsolute(rawGitDir) ? rawGitDir : path.resolve(root, rawGitDir),
+  );
+  let commonGitDir: string | null = null;
+  try {
+    const rawCommon = readFileSync(
+      path.join(worktreeGitDir, "commondir"),
+      "utf8",
+    ).trim();
+    if (rawCommon.length > 0) {
+      commonGitDir = normalizeAbsolute(
+        path.isAbsolute(rawCommon)
+          ? rawCommon
+          : path.resolve(worktreeGitDir, rawCommon),
+      );
+    }
+  } catch {
+    // Standalone gitdir pointer without commondir (e.g. submodule or custom gitdir).
+  }
+  if (commonGitDir !== null && commonGitDir !== worktreeGitDir) {
+    for (const entry of [
+      path.join(worktreeGitDir, "config"),
+      path.join(worktreeGitDir, "config.worktree"),
+      path.join(worktreeGitDir, "hooks"),
+      path.join(worktreeGitDir, "info"),
+      ...standardGitDenyPaths(commonGitDir),
+    ]) {
+      denied.add(entry);
+    }
+  } else {
+    for (const entry of standardGitDenyPaths(worktreeGitDir)) {
+      denied.add(entry);
+    }
+  }
+  return [...denied];
+}
+
+function protectedGitPathsForRoot(root: string): string[] {
+  const rootGitPath = path.join(root, ".git");
+  try {
+    const stat = lstatSync(rootGitPath);
+    if (stat.isFile()) {
+      return resolveWorktreeGitPaths(root, rootGitPath);
+    }
+  } catch {
+    // Missing or unreadable .git keeps the standard directory deny paths.
+  }
+  return standardGitDenyPaths(rootGitPath);
+}
 
 export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
   const codepunkHome = normalizeAbsolute(input.codepunkHome);
@@ -77,17 +152,9 @@ export function srtProfile(input: SrtProfileInput): SandboxRuntimeConfig {
     projectConfig,
     ...additionalRoots.map((root) => path.join(root, ".codepunk")),
   ];
-  const protectedGitPaths = allRoots.flatMap((root) => {
-    const rootGitDir = path.join(root, ".git");
-    return [
-      path.join(rootGitDir, "config"),
-      path.join(rootGitDir, "config.worktree"),
-      path.join(rootGitDir, "hooks"),
-      path.join(rootGitDir, "info"),
-      path.join(rootGitDir, "objects", "info"),
-      path.join(rootGitDir, "objects", "pack"),
-    ];
-  });
+  const protectedGitPaths = [
+    ...new Set(allRoots.flatMap((root) => protectedGitPathsForRoot(root))),
+  ];
   const sensitiveHomeDirs =
     input.userHome === undefined || input.userHome.trim().length === 0
       ? []

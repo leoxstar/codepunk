@@ -1681,3 +1681,82 @@ test(
     });
   },
 );
+
+test("W-11: srtProfile handles git worktree .git pointer files without emitting child paths under a file", async () => {
+  await withSandboxTempDirectory("codepunk-w11-worktree-", async (root) => {
+    const home = path.join(root, "home");
+    const repo = path.join(root, "repo");
+    const worktree = path.join(root, "worktree");
+    await fs.mkdir(home, { recursive: true });
+    await fs.mkdir(repo, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      cwd: repo,
+    });
+    await execFileAsync("git", ["config", "user.name", "Test"], { cwd: repo });
+    await fs.writeFile(path.join(repo, "README.md"), "hello\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+    await execFileAsync(
+      "git",
+      ["worktree", "add", "-q", "-b", "wt-w11", worktree],
+      { cwd: repo },
+    );
+
+    const profile = core.srtProfile({
+      cwd: worktree,
+      workspaceRoot: worktree,
+      deliveryRoot: worktree,
+      codepunkHome: home,
+      writeSet: [worktree],
+    });
+    const denyWrite = profile.filesystem.denyWrite;
+    const worktreeGitFile = path.join(worktree, ".git");
+
+    // Positive controls: .git file itself is denied, and resolved gitdir + commondir targets are denied.
+    assert.ok(
+      denyWrite.includes(worktreeGitFile),
+      "worktree .git pointer file must be write-denied",
+    );
+    const commonGitDir = path.join(repo, ".git");
+    assert.ok(
+      denyWrite.includes(path.join(commonGitDir, "config")),
+      "common .git/config must be write-denied",
+    );
+    assert.ok(
+      denyWrite.includes(path.join(commonGitDir, "hooks")),
+      "common .git/hooks must be write-denied",
+    );
+    assert.ok(
+      denyWrite.includes(path.join(commonGitDir, "objects", "pack")),
+      "common .git/objects/pack must be write-denied",
+    );
+
+    // Negative control: never emit child paths beneath the .git regular file (causes srt-win exit 2 partial).
+    const filePrefix = `${worktreeGitFile}${path.sep}`;
+    assert.deepEqual(
+      denyWrite.filter((entry) => entry.startsWith(filePrefix)),
+      [],
+      "must not emit child denyWrite entries beneath worktree .git file",
+    );
+
+    // Standard repo control: normal directory .git still emits .git/config, hooks, etc.
+    const normalProfile = core.srtProfile({
+      cwd: repo,
+      workspaceRoot: repo,
+      deliveryRoot: repo,
+      codepunkHome: home,
+      writeSet: [repo],
+    });
+    assert.ok(
+      normalProfile.filesystem.denyWrite.includes(
+        path.join(commonGitDir, "config"),
+      ),
+    );
+    assert.ok(
+      normalProfile.filesystem.denyWrite.includes(
+        path.join(commonGitDir, "hooks"),
+      ),
+    );
+  });
+});
