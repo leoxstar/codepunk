@@ -107,8 +107,8 @@ function usageCapabilityPermission(): string[] {
     "  codepunk skills remove <name> [--scope user|project]",
     "  codepunk plugins [list] [--json]",
     "  codepunk plugins enable|disable",
-    "  codepunk plugins add <file> [--force]",
-    "  codepunk plugins remove <file>",
+    "  codepunk plugins add <file|dir> [--force]",
+    "  codepunk plugins remove <file|id>",
     "",
     "Configuration:",
     "  codepunk config [show] [--json] [--trust|--no-trust]",
@@ -383,8 +383,8 @@ function configurationSubcommandUsage(
         "usage:",
         "  codepunk plugins [list] [--json]",
         "  codepunk plugins enable|disable",
-        "  codepunk plugins add <file> [--force]",
-        "  codepunk plugins remove <file>",
+        "  codepunk plugins add <file|dir> [--force]",
+        "  codepunk plugins remove <file|id>",
       ];
     case "config":
       return [

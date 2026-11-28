@@ -609,6 +609,160 @@ test("plugin installation validates files and replacement", async () => {
   });
 });
 
+test("W-06: plugin installation and removal support plugin.toml directories with validation", async () => {
+  await withTempDirectory("codepunk-w06-plugin-dir-", async (root) => {
+    const { paths } = await makeProject(root);
+    const extensionDir = path.join(paths.home, "extensions");
+    const sourceDir = path.join(root, "source-plugin-dir");
+    await writeFile(
+      path.join(sourceDir, "plugin.toml"),
+      [
+        'id = "demo-dir"',
+        'version = "1.0.0"',
+        'entry = "lib/index.mjs"',
+        'tools = ["echo"]',
+        'capabilities = ["tools"]',
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      path.join(sourceDir, "lib", "index.mjs"),
+      [
+        "export default function (pi) {",
+        "  pi.registerTool({",
+        '    name: "echo",',
+        '    label: "Echo",',
+        '    description: "echo text",',
+        '    parameters: { type: "object", properties: { text: { type: "string" } } },',
+        "    async execute(_id, params) {",
+        '      return { content: [{ type: "text", text: `v1:${String(params.text ?? "")}` }], details: {} };',
+        "    },",
+        "  });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // Positive control: installs directory by manifest.id, lists manifest, loads and runs in PluginHost
+    const installedDir = await core.installUserPlugin({
+      extensionDir,
+      source: sourceDir,
+    });
+    assert.equal(installedDir, path.join(extensionDir, "demo-dir"));
+    assert.deepEqual(await core.listUserPluginFiles(extensionDir), [
+      path.join(extensionDir, "demo-dir", "plugin.toml"),
+    ]);
+    const loaded = await core.loadPluginManifests(extensionDir);
+    assert.deepEqual(loaded.errors, []);
+    assert.equal(loaded.manifests.length, 1);
+    assert.equal(loaded.manifests[0].id, "demo-dir");
+
+    const host = await core.PluginHost.start({ manifest: loaded.manifests[0] });
+    try {
+      const response = await host.callTool("echo", { text: "ok" });
+      assert.equal(response.content[0].text, "v1:ok");
+    } finally {
+      await host.stop();
+    }
+
+    // Duplicate without --force fails
+    await assert.rejects(
+      () => core.installUserPlugin({ extensionDir, source: sourceDir }),
+      (error) => error.code === "plugin.already_exists",
+    );
+
+    // Replace with --force updates files atomically
+    await writeFile(
+      path.join(sourceDir, "lib", "index.mjs"),
+      [
+        "export default function (pi) {",
+        "  pi.registerTool({",
+        '    name: "echo",',
+        '    label: "Echo",',
+        '    description: "echo text",',
+        '    parameters: { type: "object", properties: { text: { type: "string" } } },',
+        "    async execute(_id, params) {",
+        '      return { content: [{ type: "text", text: `v2:${String(params.text ?? "")}` }], details: {} };',
+        "    },",
+        "  });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    await core.installUserPlugin({
+      extensionDir,
+      source: sourceDir,
+      force: true,
+    });
+    assert.match(
+      await fs.readFile(
+        path.join(installedDir, "lib", "index.mjs"),
+        "utf8",
+      ),
+      /v2:/u,
+    );
+
+    // Negative control 1: directory missing plugin.toml is rejected
+    const unmanifested = path.join(root, "unmanifested");
+    await writeFile(
+      path.join(unmanifested, "index.mjs"),
+      "export default () => {};\n",
+    );
+    await assert.rejects(
+      () => core.installUserPlugin({ extensionDir, source: unmanifested }),
+      (error) => error.code === "plugin.manifest_missing",
+    );
+
+    // Negative control 2: directory containing NUL bytes is rejected
+    const binaryDir = path.join(root, "binary-plugin");
+    await writeFile(
+      path.join(binaryDir, "plugin.toml"),
+      'id = "bin-plugin"\nversion = "1.0.0"\nentry = "index.mjs"\n',
+    );
+    await writeFile(
+      path.join(binaryDir, "index.mjs"),
+      "export default () => {};\n",
+    );
+    await fs.writeFile(path.join(binaryDir, "blob.dat"), Buffer.from([1, 0, 2]));
+    await assert.rejects(
+      () => core.installUserPlugin({ extensionDir, source: binaryDir }),
+      (error) => error.code === "plugin.binary_content",
+    );
+
+    // Negative control 3: directory containing symlink is rejected (POSIX)
+    if (process.platform !== "win32") {
+      const symlinkDir = path.join(root, "symlink-plugin");
+      await writeFile(
+        path.join(symlinkDir, "plugin.toml"),
+        'id = "sym-plugin"\nversion = "1.0.0"\nentry = "index.mjs"\n',
+      );
+      await writeFile(
+        path.join(symlinkDir, "index.mjs"),
+        "export default () => {};\n",
+      );
+      await fs.symlink(
+        path.join(root, "source-plugin-dir", "plugin.toml"),
+        path.join(symlinkDir, "extra.toml"),
+      );
+      await assert.rejects(
+        () => core.installUserPlugin({ extensionDir, source: symlinkDir }),
+        (error) => error.code === "plugin.source_symlink",
+      );
+    }
+
+    // Positive control: removeUserPlugin removes directory plugin by id
+    assert.equal(
+      await core.removeUserPlugin({ extensionDir, name: "demo-dir" }),
+      installedDir,
+    );
+    assert.deepEqual(await core.listUserPluginFiles(extensionDir), []);
+    await assert.rejects(
+      () => core.removeUserPlugin({ extensionDir, name: "demo-dir" }),
+      (error) => error.code === "plugin.not_found",
+    );
+  });
+});
+
 test("runtime plugin reload replaces the extension surface in place", async () => {
   await withTempDirectory("codepunk-plugin-reload-", async (root) => {
     const project = path.join(root, "project");

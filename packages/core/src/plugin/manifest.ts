@@ -7,11 +7,12 @@ import {
   normalizeAbsolute,
   resolveRealPath,
 } from "../platform/path.ts";
-import { PluginError } from "./index.ts";
+import { PluginError } from "./error.ts";
 
 const MANIFEST_FILE = "plugin.toml";
 const MAX_ENTRY_BYTES = 1024 * 1024;
-const ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+export const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const ID_RE = PLUGIN_ID_RE;
 const VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
 const TOOL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const DOMAIN_RE =

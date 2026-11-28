@@ -35,8 +35,8 @@ export async function commandPlugins(options: CliOptions): Promise<number> {
         `directory: ${extensionDir}`,
         ...(files.length === 0 ? ["  none"] : files.map((file) => `  ${file}`)),
         "",
-        "add:     codepunk plugins add <file> [--force]",
-        "remove:  codepunk plugins remove <file>",
+        "add:     codepunk plugins add <file|dir> [--force]",
+        "remove:  codepunk plugins remove <file|id>",
         "enable:  codepunk plugins enable",
         "disable: codepunk plugins disable",
         "plugin state takes effect on the next Codepunk process",
@@ -66,7 +66,7 @@ export async function commandPlugins(options: CliOptions): Promise<number> {
   if (action === "add") {
     const source = options.positionals[2];
     if (source === undefined) {
-      throw new Error("usage: codepunk plugins add <file> [--force]");
+      throw new Error("usage: codepunk plugins add <file|dir> [--force]");
     }
     const target = await installUserPlugin({
       extensionDir,
@@ -88,7 +88,7 @@ export async function commandPlugins(options: CliOptions): Promise<number> {
   if (action === "remove") {
     const name = options.positionals[2];
     if (name === undefined) {
-      throw new Error("usage: codepunk plugins remove <file>");
+      throw new Error("usage: codepunk plugins remove <file|id>");
     }
     const target = await removeUserPlugin({
       extensionDir,

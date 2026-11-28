@@ -435,8 +435,8 @@ export async function openPluginsOverlay(
     `directory: ${directory}`,
     "enable:  codepunk plugins enable",
     "disable: codepunk plugins disable",
-    "add:     codepunk plugins add <file> [--force]",
-    "remove:  codepunk plugins remove <file>",
+    "add:     codepunk plugins add <file|dir> [--force]",
+    "remove:  codepunk plugins remove <file|id>",
     "run /reload after changes; plugin tools are rejected",
   ];
   if (typeof context.ui.custom === "function") {
