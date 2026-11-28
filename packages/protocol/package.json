@@ -1,6 +1,6 @@
 {
   "name": "codepunk-protocol",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Boundary schemas, record shapes, and version constants.",
   "license": "MIT",

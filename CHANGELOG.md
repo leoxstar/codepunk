@@ -5,13 +5,86 @@ All notable changes to Codepunk are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2]
+
+### Added
+
+- Captured the `0.1.1` single-package compatibility corpus
+  (`tests/fixtures/compat/0.1.1/`, 20 files + `MANIFEST.json`) and generalized
+  `checkCompatCorpus` / `tests/compat.test.mjs` to validate every versioned
+  corpus directory (D81).
+- Added ESLint 10 Flat Config (`eslint.config.mjs`) with type-aware
+  `typescript-eslint` and `eslint-plugin-import-x` rules (`pnpm run lint`),
+  wired into `pnpm run verify`, `ci.yml`, and `full-ci.yml` (D84).
+- Added `.node-version` (`22.19.0`), `scripts/bump-version.mjs`,
+  `packages/cli/build.mjs`, `tsconfig.base.json` (TypeScript Project
+  References), tiered test scripts (`test:unit`, `test:pty`, `test:compat`,
+  `test:repo`, `test:coverage`) with `--test-timeout=300000`, composite
+  `.github/actions/setup`, tag-triggered `.github/workflows/release.yml`,
+  `.editorconfig`, `CODEOWNERS`, `dependabot.yml`, PR/issue templates, and
+  `docs/CLI_REFERENCE.md`.
+
+### Changed
+
+- Centralized product constants, schema versions, environment variable names,
+  state filenames, and exit codes in `packages/protocol/src/constants.ts`, and
+  injected `__CODEPUNK_VERSION__` / `__SRT_VERSION__` / `__BUILD_COMMIT__` via
+  `packages/core/src/build-meta.ts` to eliminate scattered hardcoded version
+  literals (D84).
+- Migrated shared dependency pins to exact-pinned `pnpm-workspace.yaml`
+  `catalog:` entries and `"workspace:*"` internal links; modularized
+  `scripts/check-repo.mjs` into `scripts/checks/*.mjs` with structural CI,
+  lockfile, and control-corpus checks (D84).
+- Split monolithic `tests/tui.test.mjs` into `tests/support/tui-pty.mjs` and
+  four focused suites (`tui-unit`, `tui-pty-core`, `tui-pty-trust`,
+  `tui-pty-workflow`), upgraded GitHub Actions workflows to Node 24 actions
+  (`actions/checkout@v7`, `actions/setup-node@v7`, `pnpm/action-setup@v6`),
+  and streamlined root `README.md` by moving exhaustive command details to
+  `docs/CLI_REFERENCE.md`.
 
 ### Fixed
 
-- `doctor` now accepts Windows 10 22H2 (build 19045+) x64 with the same
-  platform boundary as Windows 11 x64. Builds below 19045 and Windows ARM64
-  remain rejected, and an unprovisioned `srt` sandbox remains blocking.
+- **W-01**: `codepunk backup restore` and its rollback path now clear read-only
+  file attributes before replacing targets (such as Windows Shadow Git objects)
+  and remove temporary `*.restore-*` files cleanly.
+- **W-02**: `createRuntime` now cleans up startup resources on stale-session
+  resume errors so `codepunk -p --session <stale-id>` exits promptly instead of
+  hanging, and `DeferredSandbox.close()` deduplicates concurrent close calls.
+- **W-03**: Mapped `memory_search` tool results in the Pi adapter to the
+  `memory/retrieve` event schema (`ids`, `hashes`, `truncated`,
+  `digest_sha256`).
+- **W-04**: Serialized TUI session transitions (`/new`, `/resume`, `/fork`,
+  `/clone`) and bound deferred MCP reloads to live command context, eliminating
+  first-command `stale ctx` errors after session replacement.
+- **W-05**: Unified `state-version.json` initialization before creating runtime
+  or trust state directories and narrowed legacy home markers so fresh
+  print-only homes no longer trigger false `migrate --check` warnings (D83).
+- **W-06**: Extended `codepunk plugins add` and `plugins remove` to install and
+  remove `plugin.toml` manifest directories with symlink, escape, NUL, and size
+  validation.
+- **W-07**: Intercepted built-in `/copy` in `handlePiSlashCommand` instead of
+  registering a conflicting extension command.
+- **W-08**: Reported an explicit platform limitation for `/btw` on Windows
+  without falling back to a foreground blocking turn.
+- **W-09**: Improved scoped rule rejection messages with actionable executable
+  resolution guidance for Windows built-ins and interpreters.
+- **W-10**: Skipped writing empty or placeholder (`NONE`) automatic session
+  summaries to memory.
+- **W-11**: Resolved linked worktree `.git` pointer files (`gitdir` and
+  `commondir`) in `srtProfile` `denyWrite` rules so `-w` worktrees no longer
+  emit `srt-win` `.git exists as a FILE` partial warnings.
+- **W-12**: `doctor` now accepts Windows 10 22H2 (build 19045+) x64 with the
+  same platform boundary as Windows 11 x64. Builds below 19045 and Windows
+  ARM64 remain rejected, and an unprovisioned `srt` sandbox remains blocking.
+- Fixed 8 Windows `full-ci` test failures (path normalization, CRLF handling,
+  and shell quoting) and hardened Windows ConPTY process-tree and HTTP mock
+  server teardown.
+
+### Security
+
+- Retains the documented accepted risk for `GHSA-mrhx-c7xc-m3w5`
+  (`zod@3.25.76` `<4.6.6` via pinned Pi and `@anthropic-ai/sandbox-runtime`
+  transitive dependencies) pending an upstream compatible release.
 
 ## [0.1.1]
 
