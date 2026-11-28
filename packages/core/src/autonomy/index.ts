@@ -188,7 +188,7 @@ export async function verifyScopedRule(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string | null> {
   if (isShellLauncher(rule.argv)) {
-    return "scoped rules cannot launch a shell or interpreter";
+    return "scoped rules cannot launch a shell or interpreter; pin a direct native executable such as git or whoami (or an explicit .exe path on Windows)";
   }
   const executable = await resolveExecutable(
     rule.argv[0]!,
@@ -196,7 +196,7 @@ export async function verifyScopedRule(
     environment,
   );
   if (executable === null) {
-    return "scoped rule executable cannot be resolved";
+    return "scoped rule executable cannot be resolved; shell built-ins cannot be pinned — use a standalone executable on PATH or an absolute executable path";
   }
   const digest = await executableDigest(executable);
   if (digest !== rule.executable_sha256) {

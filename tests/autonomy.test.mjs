@@ -747,3 +747,44 @@ test(
     });
   },
 );
+
+test("W-09: scoped rule rejections include actionable Windows executable guidance", async () => {
+  await withTempDirectory("codepunk-w09-scoped-", async (root) => {
+    const { projectRoot, paths } = await makeProject(root);
+    const file = path.join(paths.home, "scoped-rules.toml");
+
+    // Negative control 1: shell/interpreter rejection stays fail-closed with guidance.
+    await assert.rejects(
+      () =>
+        core.persistScopedRule({
+          paths,
+          cwd: projectRoot,
+          filePath: file,
+          argv: ["cmd.exe", "/c", "echo", "hi"],
+        }),
+      /cannot launch a shell or interpreter.*pin a direct native executable/u,
+    );
+
+    // Negative control 2: unresolvable built-in explains built-ins cannot be pinned.
+    await assert.rejects(
+      () =>
+        core.persistScopedRule({
+          paths,
+          cwd: projectRoot,
+          filePath: file,
+          argv: ["nonexistent-shell-builtin", "hi"],
+          environment: { PATH: "" },
+        }),
+      /executable cannot be resolved.*shell built-ins.*standalone executable/u,
+    );
+
+    // Positive control: direct native executable still persists and loads cleanly.
+    const persisted = await core.persistScopedRule({
+      paths,
+      cwd: projectRoot,
+      filePath: file,
+      argv: [SAFE_COMMAND, "--version"],
+    });
+    assert.equal(persisted.created, true);
+  });
+});

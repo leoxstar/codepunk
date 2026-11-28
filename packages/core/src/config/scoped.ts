@@ -125,7 +125,7 @@ function validateRule(entry: unknown, index: number): ScopedRule {
   }
   if (isShellLauncher(argv)) {
     throw new ConfigError(
-      `scoped rule ${id} cannot launch a shell or interpreter`,
+      `scoped rule ${id} cannot launch a shell or interpreter (pin a direct native executable such as git or whoami, or an explicit .exe path on Windows)`,
     );
   }
   const cwd = table["cwd"];
@@ -271,7 +271,7 @@ export async function persistScopedRule(
   // on whether this host happens to have /bin/sh or cmd.exe on disk.
   if (isShellLauncher(argv)) {
     throw new ConfigError(
-      "scoped rule cannot launch a shell or interpreter",
+      `scoped rule cannot launch a shell or interpreter (${argv[0] ?? ""}); pin a direct native executable such as git or whoami (or an explicit .exe path on Windows)`,
       "autonomy.scoped_rules",
     );
   }
@@ -282,7 +282,7 @@ export async function persistScopedRule(
   );
   if (executable === null) {
     throw new ConfigError(
-      "scoped rule executable cannot be resolved",
+      `scoped rule executable cannot be resolved (${argv[0] ?? ""}); shell built-ins such as echo or dir cannot be pinned — use a standalone executable on PATH (such as git or whoami) or an absolute executable path`,
       "autonomy.scoped_rules",
     );
   }
