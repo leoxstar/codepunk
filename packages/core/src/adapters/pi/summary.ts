@@ -4,6 +4,7 @@ import { isFallbackModel } from "../../model/fallback.ts";
 import { sha256Text } from "../../platform/hash.ts";
 import type { SessionStore } from "../../session/index.ts";
 import {
+  isEmptySessionSummary,
   SESSION_SUMMARY_MAX_TOKENS,
   SESSION_SUMMARY_SYSTEM_PROMPT,
   summarizeProjection,
@@ -170,7 +171,7 @@ export function createSessionSummarizer(
             .join("\n"),
         ),
       );
-      if (summary.length === 0) {
+      if (isEmptySessionSummary(summary)) {
         return;
       }
       const added = await memory.add({

@@ -11,8 +11,40 @@ export const SESSION_SUMMARY_SYSTEM_PROMPT = [
   "Return plain text only. Use the conversation's language.",
   "Record durable decisions, commands, files, pitfalls, and unresolved work.",
   "Do not include secrets, credentials, raw tool output, full transcripts, or instructions to an agent.",
-  "If there is nothing durable, return an empty string.",
+  "If there is nothing durable, return NONE.",
 ].join("\n");
+
+const EMPTY_SUMMARY_SENTINELS = new Set([
+  "none",
+  "empty",
+  "empty string",
+  "n/a",
+  "na",
+  "null",
+  "nothing",
+  "nothing durable",
+  "no durable memory",
+  "no durable information",
+  "no durable facts",
+  "no durable decisions",
+  "no durable items",
+  "nothing to remember",
+  "nothing to record",
+  "无",
+  "没有",
+]);
+
+export function isEmptySessionSummary(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  const normalized = trimmed
+    .replace(/^[`"'([{<\s]+|[`"')\]}>.\s!]+$/gu, "")
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
+  return normalized.length === 0 || EMPTY_SUMMARY_SENTINELS.has(normalized);
+}
 
 function summaryText(content: unknown): string {
   if (typeof content === "string") {

@@ -833,3 +833,100 @@ test("W-03: model memory_search tool appends schema-valid memory/retrieve events
     }
   });
 });
+
+test("W-10: auto session summaries skip placeholder empty responses and keep durable summaries", async () => {
+  for (const [index, placeholder] of [
+    "(empty string)",
+    "NONE",
+    "None.",
+    '""',
+    "Nothing durable.",
+    "N/A",
+  ].entries()) {
+    await withTempDirectory(`codepunk-w10-empty-${index}-`, async (root) => {
+      const { memory, host } = await summaryHost(root, {
+        sessionId: `session-w10-empty-${index}`,
+        runId: `run-w10-empty-${index}`,
+      });
+      try {
+        await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+        installScriptedStream(host.session, () => ({
+          type: "text",
+          text: "ok",
+        }));
+        host.session.modelRuntime.completeSimple = async () => ({
+          role: "assistant",
+          content: [{ type: "text", text: placeholder }],
+          api: "openai-responses",
+          provider: "openai",
+          model: "gpt-test",
+          usage: {
+            input: 10,
+            output: 3,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 13,
+            cost: { total: 0 },
+          },
+          stopReason: "stop",
+          timestamp: Date.now(),
+        });
+        await host.session.prompt("just saying hello");
+        assert.equal(
+          memory.project.records.filter(
+            (record) => record.kind === "session_summary",
+          ).length,
+          0,
+          `placeholder ${JSON.stringify(placeholder)} must not be stored as session_summary`,
+        );
+      } finally {
+        await host.dispose();
+      }
+    });
+  }
+
+  // Positive control: a real durable summary is still persisted.
+  await withTempDirectory("codepunk-w10-durable-", async (root) => {
+    const { memory, host } = await summaryHost(root, {
+      sessionId: "session-w10-durable",
+      runId: "run-w10-durable",
+    });
+    try {
+      await host.services.modelRuntime.setRuntimeApiKey("openai", "test-key");
+      installScriptedStream(host.session, () => ({
+        type: "text",
+        text: "verified",
+      }));
+      host.session.modelRuntime.completeSimple = async () => ({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Use pnpm run check before tagging releases.",
+          },
+        ],
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-test",
+        usage: {
+          input: 10,
+          output: 8,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 18,
+          cost: { total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      });
+      await host.session.prompt("record release check");
+      const summaries = memory.project.records.filter(
+        (record) => record.kind === "session_summary",
+      );
+      assert.equal(summaries.length, 1);
+      assert.match(summaries[0].content, /pnpm run check/u);
+    } finally {
+      await host.dispose();
+    }
+  });
+});
