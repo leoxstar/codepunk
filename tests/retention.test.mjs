@@ -746,3 +746,81 @@ test("W-01: backup restore and rollback overwrite read-only shadow-git objects c
     );
   });
 });
+
+test("W-05: fresh print/runtime homes with pre-seeded config initialize state-version while legacy homes still require migration", async () => {
+  await withTempDirectory("codepunk-w05-state-", async (root) => {
+    const project = path.join(root, "project");
+    await fs.mkdir(project, { recursive: true });
+
+    // Positive control 1: fresh home with only config.toml + models.json pre-seeded
+    const seededHome = path.join(root, "seeded-home");
+    await writeFile(
+      path.join(seededHome, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    await writeFile(
+      path.join(seededHome, "models.json"),
+      JSON.stringify({ providers: {} }),
+    );
+    const beforeRuntime = await core.checkMigration(seededHome);
+    assert.deepEqual(beforeRuntime, {
+      current: core.STATE_VERSION,
+      target: core.STATE_VERSION,
+      required: false,
+    });
+
+    const runtime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: seededHome },
+      headless: true,
+      bindMode: "print",
+      projectTrust: false,
+      projectTrustSource: "flag",
+    });
+    try {
+      const stateVersionPath = path.join(seededHome, "state-version.json");
+      const saved = JSON.parse(await fs.readFile(stateVersionPath, "utf8"));
+      assert.equal(saved.version, core.STATE_VERSION);
+      const afterRuntime = await core.checkMigration(seededHome);
+      assert.deepEqual(afterRuntime, {
+        current: core.STATE_VERSION,
+        target: core.STATE_VERSION,
+        required: false,
+      });
+    } finally {
+      await runtime.dispose();
+    }
+
+    // Negative control: legacy home with projects/ and no state-version.json still requires migration
+    const legacyHome = path.join(root, "legacy-home");
+    await fs.mkdir(path.join(legacyHome, "projects", "legacy-id"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(legacyHome, "config.toml"),
+      '[sandbox]\nmode = "uncovered"\n',
+    );
+    const legacyRuntime = await core.createRuntime({
+      cwd: project,
+      environment: { CODEPUNK_HOME: legacyHome },
+      headless: true,
+      bindMode: "print",
+      projectTrust: false,
+      projectTrustSource: "flag",
+    });
+    try {
+      await assert.rejects(
+        fs.access(path.join(legacyHome, "state-version.json")),
+        { code: "ENOENT" },
+      );
+      const legacyCheck = await core.checkMigration(legacyHome);
+      assert.deepEqual(legacyCheck, {
+        current: 0,
+        target: core.STATE_VERSION,
+        required: true,
+      });
+    } finally {
+      await legacyRuntime.dispose();
+    }
+  });
+});

@@ -2,6 +2,7 @@ import {
   allWorkspaceTrustGrants,
   findDeliveryRoot,
   formatWorkspaceTrustResourcePreview,
+  initializeStateVersion,
   inspectSavedWorkspaceTrust,
   previewWorkspaceTrustResources,
   projectPaths,
@@ -257,6 +258,7 @@ async function promptForWorkspaceTrust(
     return trustWithGrants(resolved, allWorkspaceTrustGrants(false), "prompt");
   }
   const grants = allWorkspaceTrustGrants(decision === "always");
+  await initializeStateVersion(paths.home);
   const saved = await saveWorkspaceTrustGrants(
     paths.home,
     resolved.root,

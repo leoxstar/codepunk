@@ -62,6 +62,7 @@ import {
   loadIsolatedPluginBundle,
   type IsolatedPluginBundle,
 } from "../plugin/runtime-bridge.ts";
+import { initializeStateVersion } from "../retention/lifecycle.ts";
 import {
   DeferredActionReviewer,
   resolveActionReviewer,
@@ -195,6 +196,7 @@ async function createRuntimeInner(
   const projectConfigSafety = projectResourceRequested
     ? await assertProjectConfigSafe(paths)
     : "project config and policy are not trusted";
+  await initializeStateVersion(paths.home);
   await ensureCodepunkHome(paths.home);
   await ensureProjectRegistration(project, paths);
   if (projectConfigSafety === null && projectResourceRequested) {

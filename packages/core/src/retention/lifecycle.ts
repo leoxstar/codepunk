@@ -54,12 +54,8 @@ const RETENTION_DIR = "retention";
 const DEFAULT_ROOTS = ["projects", "artifacts"];
 const LEGACY_STATE_ENTRIES = [
   "projects",
-  "config.toml",
   "trust.json",
   "workspace-trust.json",
-  "models.json",
-  "auth.json",
-  "mcp-auth.json",
   "backups",
   "retention",
   "run",
